@@ -7,10 +7,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::{
-    input::{PlaybackCommand, PlaybackMouse, read_input_events},
+    drop_target::{draw_drop_target, is_remote_url_text, media_candidates_from_text},
+    input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
     overlay::{OverlayState, PlaybackOverlay},
     terminal::{
@@ -36,24 +37,58 @@ pub(crate) fn run() -> Result<()> {
         enable_tmux_passthrough();
     }
 
-    let source = probe_video(&config.path).with_context(|| {
-        format!(
-            "failed to inspect video metadata for {}",
-            config.path.display()
-        )
-    })?;
+    if let Some(path) = config.path {
+        let _terminal = TerminalGuard::enter()?;
+        play_media(path)
+    } else {
+        run_drop_target()
+    }
+}
+
+fn run_drop_target() -> Result<()> {
+    let _terminal = TerminalGuard::enter()?;
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    let mut status = None::<String>;
+
+    loop {
+        draw_drop_target(&mut out, status.as_deref())?;
+        let input = read_drop_events()?;
+        if input.command == DropCommand::Quit {
+            return Ok(());
+        }
+        let Some(text) = input.text else {
+            continue;
+        };
+
+        match media_path_from_drop_text(&text) {
+            Ok(path) => {
+                clear_screen_and_images(&mut out)?;
+                out.flush()?;
+                drop(out);
+                return play_media(path);
+            }
+            Err(error) => {
+                status = Some(error.to_string());
+            }
+        }
+    }
+}
+
+fn play_media(path: PathBuf) -> Result<()> {
+    let source = probe_video(&path)
+        .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
     let mut target = terminal_target(source.width, source.height);
 
-    let mut decoder = VideoDecoder::spawn(&config.path, target.width, target.height, source.fps)?;
+    let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
     let mut audio = if source.has_audio {
-        Some(AudioPlayer::spawn(&config.path)?)
+        Some(AudioPlayer::spawn(&path)?)
     } else {
         None
     };
     let mut audio_done = !source.has_audio;
     let playback_started_at = Instant::now();
 
-    let _terminal = TerminalGuard::enter()?;
     let stdout = io::stdout();
     let mut out =
         BufWriter::with_capacity(target.frame_len() + target.frame_len() / 2, stdout.lock());
@@ -110,7 +145,7 @@ pub(crate) fn run() -> Result<()> {
                 }
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                 seek_playback(
-                    &config.path,
+                    &path,
                     source.has_audio,
                     &mut decoder,
                     &mut audio,
@@ -137,7 +172,7 @@ pub(crate) fn run() -> Result<()> {
             frame.resize(target.frame_len(), 0);
             composited_frame.resize(target.frame_len(), 0);
             decoder = VideoDecoder::spawn_at(
-                &config.path,
+                &path,
                 target.width,
                 target.height,
                 source.fps,
@@ -268,7 +303,7 @@ pub(crate) fn run() -> Result<()> {
                 break;
             }
             seek_playback(
-                &config.path,
+                &path,
                 source.has_audio,
                 &mut decoder,
                 &mut audio,
@@ -634,7 +669,7 @@ fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<
 }
 
 struct Config {
-    path: PathBuf,
+    path: Option<PathBuf>,
     force: bool,
 }
 
@@ -660,7 +695,48 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config> {
         positionals.push(arg);
     }
 
-    let path = join_positionals(positionals).ok_or_else(|| anyhow!("expected a video path"))?;
+    let path = join_positionals(positionals)
+        .map(media_path_from_argument)
+        .transpose()?;
+
+    Ok(Config { path, force })
+}
+
+fn media_path_from_argument(path: PathBuf) -> Result<PathBuf> {
+    let text = path.as_os_str().to_string_lossy();
+    let path = media_candidates_from_text(&text)
+        .into_iter()
+        .next()
+        .unwrap_or(path);
+    validate_media_path(&path)?;
+    Ok(path)
+}
+
+fn media_path_from_drop_text(text: &str) -> Result<PathBuf> {
+    let candidates = media_candidates_from_text(text);
+    if candidates.is_empty() {
+        bail!("drop a video file or URL to play");
+    }
+
+    let mut last_error = None::<String>;
+    for candidate in candidates {
+        match validate_media_path(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+
+    bail!(
+        "{}",
+        last_error.unwrap_or_else(|| "drop a video file or URL to play".to_string())
+    )
+}
+
+fn validate_media_path(path: &Path) -> Result<()> {
+    let text = path.as_os_str().to_string_lossy();
+    if is_remote_url_text(&text) {
+        return Ok(());
+    }
     if !path.exists() {
         bail!(
             "video does not exist: {}. If the path contains spaces, quote it.",
@@ -670,8 +746,7 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config> {
     if !path.is_file() {
         bail!("video path is not a file: {}", path.display());
     }
-
-    Ok(Config { path, force })
+    Ok(())
 }
 
 fn join_positionals(positionals: Vec<OsString>) -> Option<PathBuf> {
@@ -691,9 +766,10 @@ fn print_help() {
 rigoberto - video player for Kitty-compatible terminals
 
 Usage:
-  rigoberto [--force] <video>
+  rigoberto [--force] [video-or-url]
 
 Controls:
+  Drop file/URL      play from launcher
   Space, right click  pause/play
   Left, Right         seek 5 seconds
   q, Esc, Ctrl-C    quit playback
@@ -780,6 +856,25 @@ mod tests {
         .expect("path should be reconstructed");
 
         assert_eq!(path, PathBuf::from("/tmp/La fascinante historia.mp4"));
+    }
+
+    #[test]
+    fn parse_args_accepts_launcher_without_path() {
+        let config = parse_args(Vec::<OsString>::new().into_iter()).expect("args should parse");
+
+        assert_eq!(config.path, None);
+        assert!(!config.force);
+    }
+
+    #[test]
+    fn parse_args_accepts_remote_url() {
+        let config = parse_args(vec![OsString::from("https://example.com/video.mp4")].into_iter())
+            .expect("url should parse");
+
+        assert_eq!(
+            config.path,
+            Some(PathBuf::from("https://example.com/video.mp4"))
+        );
     }
 
     #[test]

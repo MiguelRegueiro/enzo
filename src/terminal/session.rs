@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::{Hide, Show},
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -24,6 +24,7 @@ impl TerminalGuard {
             EnterAlternateScreen,
             Clear(ClearType::All),
             Hide,
+            EnableBracketedPaste,
             EnableMouseCapture
         )
         .context("failed to enter terminal playback mode")?;
@@ -35,7 +36,13 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
         let _ = clear_all_kitty_images(&mut stdout);
-        let _ = execute!(stdout, DisableMouseCapture, Show, LeaveAlternateScreen);
+        let _ = execute!(
+            stdout,
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            Show,
+            LeaveAlternateScreen
+        );
         let _ = stdout.flush();
         let _ = disable_raw_mode();
     }

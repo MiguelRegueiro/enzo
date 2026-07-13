@@ -19,8 +19,15 @@ It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resam
 cargo run --release -- /path/to/video.mp4
 ```
 
+Run without a path to open the drop target:
+
+```sh
+cargo run --release
+```
+
 Controls:
 
+- Drop a file or URL on the launcher to play it.
 - Space or right click pauses/resumes playback.
 - Left/right arrows seek backward/forward by 5 seconds.
 - Click or drag the progress bar to seek.
@@ -28,5 +35,4 @@ Controls:
 
 The playback overlay appears while paused, after seeking, and on mouse activity.
 
-The first version intentionally accepts only a video path, plus `--force` for compatible terminals
-that do not advertise themselves as Kitty.
+Use `--force` for compatible terminals that do not advertise themselves as Kitty.

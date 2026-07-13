@@ -27,6 +27,18 @@ pub(crate) enum PlaybackMouse {
     LeftUp { column: u16 },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DropInput {
+    pub(crate) command: DropCommand,
+    pub(crate) text: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DropCommand {
+    None,
+    Quit,
+}
+
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
@@ -86,4 +98,39 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     }
 
     Ok(input)
+}
+
+pub(crate) fn read_drop_events() -> Result<DropInput> {
+    let mut input = DropInput {
+        command: DropCommand::None,
+        text: None,
+    };
+
+    if !event::poll(Duration::from_millis(100)).context("failed to poll terminal input")? {
+        return Ok(input);
+    }
+
+    loop {
+        match event::read().context("failed to read terminal input")? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    // Ignore key releases/repeats in the launcher.
+                } else if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                    || (matches!(key.code, KeyCode::Char('c'))
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                {
+                    input.command = DropCommand::Quit;
+                    return Ok(input);
+                }
+            }
+            Event::Paste(text) => {
+                input.text = Some(text);
+            }
+            _ => {}
+        }
+
+        if !event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
+            return Ok(input);
+        }
+    }
 }
