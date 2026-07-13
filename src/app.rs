@@ -198,7 +198,8 @@ pub(crate) fn run() -> Result<()> {
             }
         }
 
-        if let Some(mouse) = input.mouse {
+        let mut pointer_seek_target = None;
+        for mouse in input.mouse_events {
             let seek_target = match mouse {
                 PlaybackMouse::LeftDown { column, row } => {
                     scrub_position = mouse_video_position(column, row, layout, target)
@@ -233,23 +234,27 @@ pub(crate) fn run() -> Result<()> {
             };
 
             if let Some(seek_target) = seek_target {
-                if is_end_seek(seek_target, source.duration) {
-                    break;
-                }
-                seek_playback(
-                    &config.path,
-                    source.has_audio,
-                    &mut decoder,
-                    &mut audio,
-                    &mut audio_done,
-                    seek_target,
-                    paused,
-                )?;
-                playback_position = seek_target;
-                video_ended = false;
-                next_frame_at = Instant::now();
-                redraw_current_frame = false;
+                pointer_seek_target = Some(seek_target);
             }
+        }
+
+        if let Some(seek_target) = pointer_seek_target {
+            if is_end_seek(seek_target, source.duration) {
+                break;
+            }
+            seek_playback(
+                &config.path,
+                source.has_audio,
+                &mut decoder,
+                &mut audio,
+                &mut audio_done,
+                seek_target,
+                paused,
+            )?;
+            playback_position = seek_target;
+            video_ended = false;
+            next_frame_at = Instant::now();
+            redraw_current_frame = false;
         }
 
         let overlay_is_visible = overlay_visible(

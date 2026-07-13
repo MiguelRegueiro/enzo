@@ -13,16 +13,15 @@ pub(crate) enum PlaybackCommand {
     SeekBy(i32),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PlaybackInput {
     pub(crate) command: PlaybackCommand,
     pub(crate) mouse_activity: bool,
-    pub(crate) mouse: Option<PlaybackMouse>,
+    pub(crate) mouse_events: Vec<PlaybackMouse>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlaybackMouse {
-    Move,
     LeftDown { column: u16, row: u16 },
     LeftDrag { column: u16 },
     LeftUp { column: u16 },
@@ -32,7 +31,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
         mouse_activity: false,
-        mouse: None,
+        mouse_events: Vec::new(),
     };
     while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
         match event::read().context("failed to read terminal input")? {
@@ -60,22 +59,19 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
             Event::Mouse(mouse) => {
                 input.mouse_activity = true;
                 match mouse.kind {
-                    MouseEventKind::Moved => {
-                        input.mouse = Some(PlaybackMouse::Move);
-                    }
                     MouseEventKind::Down(MouseButton::Left) => {
-                        input.mouse = Some(PlaybackMouse::LeftDown {
+                        input.mouse_events.push(PlaybackMouse::LeftDown {
                             column: mouse.column,
                             row: mouse.row,
                         });
                     }
                     MouseEventKind::Drag(MouseButton::Left) => {
-                        input.mouse = Some(PlaybackMouse::LeftDrag {
+                        input.mouse_events.push(PlaybackMouse::LeftDrag {
                             column: mouse.column,
                         });
                     }
                     MouseEventKind::Up(MouseButton::Left) => {
-                        input.mouse = Some(PlaybackMouse::LeftUp {
+                        input.mouse_events.push(PlaybackMouse::LeftUp {
                             column: mouse.column,
                         });
                     }
