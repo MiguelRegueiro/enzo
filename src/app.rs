@@ -14,6 +14,7 @@ use crate::{
     input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
     overlay::{OverlayState, PlaybackOverlay},
+    subtitle::{SubtitleRenderer, SubtitleTrack, sidecar_subtitle_path},
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
         clear_screen_and_images, enable_tmux_passthrough, inside_tmux, looks_like_kitty,
@@ -46,13 +47,13 @@ pub(crate) fn run() -> Result<()> {
 
     if let Some(path) = config.path {
         let _terminal = TerminalGuard::enter()?;
-        play_media(path)
+        play_media(path, config.sub_file.as_deref())
     } else {
-        run_drop_target()
+        run_drop_target(config.sub_file.as_deref())
     }
 }
 
-fn run_drop_target() -> Result<()> {
+fn run_drop_target(sub_file: Option<&Path>) -> Result<()> {
     let _terminal = TerminalGuard::enter()?;
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -73,7 +74,7 @@ fn run_drop_target() -> Result<()> {
                 clear_screen_and_images(&mut out)?;
                 out.flush()?;
                 drop(out);
-                return play_media(path);
+                return play_media(path, sub_file);
             }
             Err(error) => {
                 status = Some(error.to_string());
@@ -82,9 +83,11 @@ fn run_drop_target() -> Result<()> {
     }
 }
 
-fn play_media(path: PathBuf) -> Result<()> {
+fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
     let source = probe_video(&path)
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
+    let subtitle_track = load_subtitle_track(&path, sub_file)?;
+    let mut subtitles_visible = subtitle_track.is_some();
     let mut target = terminal_target(source.width, source.height);
 
     let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
@@ -102,6 +105,7 @@ fn play_media(path: PathBuf) -> Result<()> {
         BufWriter::with_capacity(target.frame_len() + target.frame_len() / 2, stdout.lock());
     let mut sequence = Vec::with_capacity(target.frame_len() + target.frame_len() / 2 + 4096);
     let mut overlay = PlaybackOverlay::new();
+    let mut subtitle_renderer = SubtitleRenderer::new();
     clear_screen_and_images(&mut out)?;
 
     let mut frame = vec![0_u8; target.frame_len()];
@@ -156,6 +160,25 @@ fn play_media(path: PathBuf) -> Result<()> {
                     text: if muted { "MUTE ON" } else { "MUTE OFF" },
                     visible_until: input_at + STATUS_VISIBLE_FOR,
                 });
+                redraw_current_frame = have_frame;
+            }
+            PlaybackCommand::ToggleSubtitles => {
+                if subtitle_track.is_some() {
+                    subtitles_visible = !subtitles_visible;
+                    status_message = Some(StatusMessage {
+                        text: if subtitles_visible {
+                            "SUBTITLES ON"
+                        } else {
+                            "SUBTITLES OFF"
+                        },
+                        visible_until: input_at + STATUS_VISIBLE_FOR,
+                    });
+                } else {
+                    status_message = Some(StatusMessage {
+                        text: "NO SUBTITLES",
+                        visible_until: input_at + STATUS_VISIBLE_FOR,
+                    });
+                }
                 redraw_current_frame = have_frame;
             }
             PlaybackCommand::SeekBy(seconds) => {
@@ -242,6 +265,10 @@ fn play_media(path: PathBuf) -> Result<()> {
                     &mut frame_serial,
                     &frame,
                     &mut composited_frame,
+                    &mut subtitle_renderer,
+                    subtitle_track.as_ref(),
+                    subtitles_visible,
+                    playback_position,
                     &mut overlay,
                     state,
                     &mut sequence,
@@ -375,6 +402,10 @@ fn play_media(path: PathBuf) -> Result<()> {
                 &mut frame_serial,
                 &frame,
                 &mut composited_frame,
+                &mut subtitle_renderer,
+                subtitle_track.as_ref(),
+                subtitles_visible,
+                playback_position,
                 &mut overlay,
                 state,
                 &mut sequence,
@@ -405,6 +436,10 @@ fn play_media(path: PathBuf) -> Result<()> {
                         &mut frame_serial,
                         &frame,
                         &mut composited_frame,
+                        &mut subtitle_renderer,
+                        subtitle_track.as_ref(),
+                        subtitles_visible,
+                        playback_position,
                         &mut overlay,
                         state,
                         &mut sequence,
@@ -450,6 +485,10 @@ fn play_media(path: PathBuf) -> Result<()> {
                     &mut frame_serial,
                     &frame,
                     &mut composited_frame,
+                    &mut subtitle_renderer,
+                    subtitle_track.as_ref(),
+                    subtitles_visible,
+                    playback_position,
                     &mut overlay,
                     state,
                     &mut sequence,
@@ -487,6 +526,10 @@ fn play_media(path: PathBuf) -> Result<()> {
                         &mut frame_serial,
                         &frame,
                         &mut composited_frame,
+                        &mut subtitle_renderer,
+                        subtitle_track.as_ref(),
+                        subtitles_visible,
+                        playback_position,
                         &mut overlay,
                         state,
                         &mut sequence,
@@ -520,6 +563,10 @@ fn draw_frame(
     frame_serial: &mut u32,
     frame: &[u8],
     composited_frame: &mut [u8],
+    subtitle_renderer: &mut SubtitleRenderer,
+    subtitle_track: Option<&SubtitleTrack>,
+    subtitles_visible: bool,
+    playback_position: Duration,
     overlay: &mut PlaybackOverlay,
     overlay_state: OverlayState,
     sequence: &mut Vec<u8>,
@@ -532,6 +579,16 @@ fn draw_frame(
     }
 
     composited_frame.copy_from_slice(frame);
+    if subtitles_visible && let Some(subtitle_track) = subtitle_track {
+        subtitle_renderer.render(
+            composited_frame,
+            target.width,
+            target.height,
+            subtitle_track,
+            playback_position,
+            subtitle_bottom_reserve(target.height, overlay_state.visible),
+        );
+    }
     overlay.render(composited_frame, target.width, target.height, overlay_state);
 
     let image_id = KITTY_IMAGE_IDS[(*frame_serial as usize) % KITTY_IMAGE_IDS.len()];
@@ -614,6 +671,14 @@ fn overlay_state(
 
 fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
     message.and_then(|message| (now < message.visible_until).then_some(message.text))
+}
+
+fn subtitle_bottom_reserve(height: u32, overlay_visible: bool) -> u32 {
+    if overlay_visible {
+        (height / 7).clamp(28, 64)
+    } else {
+        0
+    }
 }
 
 fn overlay_visible(
@@ -711,9 +776,24 @@ fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<
     Ok(())
 }
 
+fn load_subtitle_track(
+    media_path: &Path,
+    sub_file: Option<&Path>,
+) -> Result<Option<SubtitleTrack>> {
+    let Some(path) = sub_file
+        .map(Path::to_path_buf)
+        .or_else(|| sidecar_subtitle_path(media_path))
+    else {
+        return Ok(None);
+    };
+
+    SubtitleTrack::load(&path).map(Some)
+}
+
 struct Config {
     path: Option<PathBuf>,
     force: bool,
+    sub_file: Option<PathBuf>,
 }
 
 fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config> {
@@ -724,16 +804,35 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config> {
     }
 
     let mut force = false;
+    let mut sub_file = None::<PathBuf>;
     let mut positionals = Vec::<OsString>::new();
-    for arg in args {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         if arg == "--force" {
             force = true;
             continue;
         }
-
-        if arg.to_string_lossy().starts_with('-') && positionals.is_empty() {
-            bail!("unknown argument: {}", arg.to_string_lossy());
+        if arg == "--sub-file" {
+            let value = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--sub-file requires a path"))?;
+            let path = PathBuf::from(value);
+            validate_subtitle_path(&path)?;
+            sub_file = Some(path);
+            continue;
         }
+        let arg_text = arg.to_string_lossy();
+        if let Some(value) = arg_text.strip_prefix("--sub-file=") {
+            let path = PathBuf::from(value);
+            validate_subtitle_path(&path)?;
+            sub_file = Some(path);
+            continue;
+        }
+
+        if arg_text.starts_with('-') && positionals.is_empty() {
+            bail!("unknown argument: {}", arg_text);
+        }
+        drop(arg_text);
 
         positionals.push(arg);
     }
@@ -742,7 +841,11 @@ fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config> {
         .map(media_path_from_argument)
         .transpose()?;
 
-    Ok(Config { path, force })
+    Ok(Config {
+        path,
+        force,
+        sub_file,
+    })
 }
 
 fn media_path_from_argument(path: PathBuf) -> Result<PathBuf> {
@@ -792,6 +895,16 @@ fn validate_media_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_subtitle_path(path: &Path) -> Result<()> {
+    if !path.exists() {
+        bail!("subtitle file does not exist: {}", path.display());
+    }
+    if !path.is_file() {
+        bail!("subtitle path is not a file: {}", path.display());
+    }
+    Ok(())
+}
+
 fn join_positionals(positionals: Vec<OsString>) -> Option<PathBuf> {
     let mut iter = positionals.into_iter();
     let first = iter.next()?;
@@ -809,12 +922,13 @@ fn print_help() {
 rigoberto - video player for Kitty-compatible terminals
 
 Usage:
-  rigoberto [--force] [video-or-url]
+  rigoberto [--force] [--sub-file path.srt] [video-or-url]
 
 Controls:
   Drop file/URL      play from launcher
   Space, right click  pause/play
   m                  mute/unmute
+  v                  subtitles on/off
   Left, Right         seek 5 seconds
   q                  quit
 "
@@ -908,6 +1022,7 @@ mod tests {
 
         assert_eq!(config.path, None);
         assert!(!config.force);
+        assert_eq!(config.sub_file, None);
     }
 
     #[test]
@@ -919,6 +1034,37 @@ mod tests {
             config.path,
             Some(PathBuf::from("https://example.com/video.mp4"))
         );
+        assert_eq!(config.sub_file, None);
+    }
+
+    #[test]
+    fn parse_args_accepts_sub_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-app-subtitle-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let sub_file = temp_dir.join("movie.srt");
+        std::fs::write(&sub_file, "").expect("subtitle should be written");
+
+        let config = parse_args(
+            vec![
+                OsString::from("--sub-file"),
+                sub_file.clone().into_os_string(),
+                OsString::from("https://example.com/video.mp4"),
+            ]
+            .into_iter(),
+        )
+        .expect("args should parse");
+
+        assert_eq!(
+            config.path,
+            Some(PathBuf::from("https://example.com/video.mp4"))
+        );
+        assert_eq!(config.sub_file, Some(sub_file));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

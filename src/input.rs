@@ -9,6 +9,7 @@ pub(crate) enum PlaybackCommand {
     Quit,
     TogglePause,
     ToggleMute,
+    ToggleSubtitles,
     SeekBy(i32),
 }
 
@@ -59,6 +60,9 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 }
                 if matches!(key.code, KeyCode::Char('m')) {
                     input.command = PlaybackCommand::ToggleMute;
+                }
+                if matches!(key.code, KeyCode::Char('v')) {
+                    input.command = PlaybackCommand::ToggleSubtitles;
                 }
                 if matches!(key.code, KeyCode::Right) {
                     input.command = PlaybackCommand::SeekBy(5);

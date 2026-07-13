@@ -4,6 +4,7 @@ mod font;
 mod input;
 mod media;
 mod overlay;
+mod subtitle;
 mod terminal;
 
 fn main() {

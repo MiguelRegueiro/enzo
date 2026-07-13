@@ -19,6 +19,13 @@ It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resam
 cargo run --release -- /path/to/video.mp4
 ```
 
+Sidecar subtitles are loaded automatically from `/path/to/video.srt`.
+Use `--sub-file` to select a specific SRT file:
+
+```sh
+cargo run --release -- --sub-file /path/to/subtitles.srt /path/to/video.mp4
+```
+
 Run without a path to open the drop target:
 
 ```sh
@@ -30,6 +37,7 @@ Controls:
 - Drop a file or URL on the launcher to play it.
 - Space or right click pauses/resumes playback.
 - `m` toggles mute.
+- `v` toggles subtitles.
 - Left/right arrows seek backward/forward by 5 seconds.
 - Click or drag the progress bar to seek.
 - `q` quits.
