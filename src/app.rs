@@ -17,8 +17,8 @@ use crate::{
     subtitle::{SubtitleRenderer, SubtitleTrack, sidecar_subtitle_path},
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
-        clear_screen_and_images, enable_tmux_passthrough, inside_tmux, looks_like_kitty,
-        terminal_image_area, write_kitty_rgb_frame,
+        clear_screen_and_images, enable_tmux_passthrough, image_area_for_terminal, inside_tmux,
+        looks_like_kitty, terminal_pixel_size, write_kitty_rgb_frame,
     },
 };
 
@@ -89,7 +89,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
     let subtitle_track = load_subtitle_track(&path, sub_file)?;
     let mut subtitles_visible = subtitle_track.is_some();
     let media_title = media_title(&path);
-    let mut target = terminal_target(source.width, source.height);
+    let (mut target, mut canvas) = terminal_target_and_canvas(source.width, source.height);
 
     let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
     let mut muted = false;
@@ -103,15 +103,14 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
 
     let stdout = io::stdout();
     let mut out =
-        BufWriter::with_capacity(target.frame_len() + target.frame_len() / 2, stdout.lock());
-    let mut sequence = Vec::with_capacity(target.frame_len() + target.frame_len() / 2 + 4096);
+        BufWriter::with_capacity(canvas.frame_len() + canvas.frame_len() / 2, stdout.lock());
+    let mut sequence = Vec::with_capacity(canvas.frame_len() + canvas.frame_len() / 2 + 4096);
     let mut overlay = PlaybackOverlay::new();
     let mut subtitle_renderer = SubtitleRenderer::new();
     clear_screen_and_images(&mut out)?;
 
     let mut frame = vec![0_u8; target.frame_len()];
-    let mut composited_frame = vec![0_u8; target.frame_len()];
-    let mut last_layout = None::<ImageArea>;
+    let mut composited_frame = vec![0_u8; canvas.frame_len()];
     let mut previous_image_id = None;
     let mut frame_serial = 0_u32;
     let mut have_frame = false;
@@ -207,7 +206,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
             PlaybackCommand::None => {}
         }
 
-        let current_target = terminal_target(source.width, source.height);
+        let (current_target, current_canvas) =
+            terminal_target_and_canvas(source.width, source.height);
         if current_target != target {
             if !paused && let Some(audio) = audio.as_mut() {
                 audio.set_paused(true);
@@ -216,7 +216,6 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
             decoder.stop()?;
             target = current_target;
             frame.resize(target.frame_len(), 0);
-            composited_frame.resize(target.frame_len(), 0);
             decoder = VideoDecoder::spawn_at(
                 &path,
                 target.width,
@@ -231,7 +230,6 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
             }
 
             clear_screen_and_images(&mut out)?;
-            last_layout = None;
             previous_image_id = None;
             have_frame = false;
             redraw_current_frame = false;
@@ -242,10 +240,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
             next_frame_at = Instant::now();
         }
 
-        let layout = terminal_image_area(target.width, target.height);
-        if last_layout != Some(layout) {
+        if current_canvas != canvas {
+            canvas = current_canvas;
+            composited_frame.resize(canvas.frame_len(), 0);
             clear_screen_and_images(&mut out)?;
-            last_layout = Some(layout);
             previous_image_id = None;
             last_drawn_overlay_visible = false;
             last_drawn_status_visible = false;
@@ -262,7 +260,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                 draw_frame(
                     &mut out,
                     target,
-                    layout,
+                    canvas,
                     &mut previous_image_id,
                     &mut frame_serial,
                     &frame,
@@ -285,11 +283,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
         for mouse in input.mouse_events {
             let seek_target = match mouse {
                 PlaybackMouse::LeftDown { column, row } => {
-                    let point = mouse_video_position(column, row, layout, target);
+                    let point = mouse_canvas_position(column, row, canvas);
                     if point.is_some_and(|point| {
                         overlay.playback_button_hit_test(
-                            target.width,
-                            target.height,
+                            canvas.width,
+                            canvas.height,
                             source.duration,
                             point.x,
                             point.y,
@@ -303,8 +301,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                         scrub_position = point
                             .and_then(|point| {
                                 overlay.progress_hit_test(
-                                    target.width,
-                                    target.height,
+                                    canvas.width,
+                                    canvas.height,
                                     source.duration,
                                     point.x,
                                     point.y,
@@ -318,10 +316,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     None
                 }
                 PlaybackMouse::LeftDrag { column } if scrub_position.is_some() => {
-                    let x = mouse_video_x(column, layout, target);
+                    let x = mouse_canvas_x(column, canvas);
                     let ratio = overlay.progress_ratio_from_x(
-                        target.width,
-                        target.height,
+                        canvas.width,
+                        canvas.height,
                         source.duration,
                         x,
                     );
@@ -330,10 +328,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     None
                 }
                 PlaybackMouse::LeftUp { column } if scrub_position.is_some() => {
-                    let x = mouse_video_x(column, layout, target);
+                    let x = mouse_canvas_x(column, canvas);
                     let ratio = overlay.progress_ratio_from_x(
-                        target.width,
-                        target.height,
+                        canvas.width,
+                        canvas.height,
                         source.duration,
                         x,
                     );
@@ -400,7 +398,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
             draw_frame(
                 &mut out,
                 target,
-                layout,
+                canvas,
                 &mut previous_image_id,
                 &mut frame_serial,
                 &frame,
@@ -435,7 +433,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     draw_frame(
                         &mut out,
                         target,
-                        layout,
+                        canvas,
                         &mut previous_image_id,
                         &mut frame_serial,
                         &frame,
@@ -485,7 +483,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                 draw_frame(
                     &mut out,
                     target,
-                    layout,
+                    canvas,
                     &mut previous_image_id,
                     &mut frame_serial,
                     &frame,
@@ -527,7 +525,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     draw_frame(
                         &mut out,
                         target,
-                        layout,
+                        canvas,
                         &mut previous_image_id,
                         &mut frame_serial,
                         &frame,
@@ -564,7 +562,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
 fn draw_frame(
     out: &mut impl Write,
     target: TargetFrame,
-    layout: ImageArea,
+    canvas: CanvasFrame,
     previous_image_id: &mut Option<u32>,
     frame_serial: &mut u32,
     frame: &[u8],
@@ -577,25 +575,32 @@ fn draw_frame(
     overlay_state: OverlayState,
     sequence: &mut Vec<u8>,
 ) -> io::Result<()> {
-    if composited_frame.len() != frame.len() {
+    if frame.len() != target.frame_len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "overlay scratch frame length does not match decoded frame length",
+            "decoded frame length does not match target frame length",
+        ));
+    }
+    if composited_frame.len() != canvas.frame_len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "composited frame length does not match canvas frame length",
         ));
     }
 
-    composited_frame.copy_from_slice(frame);
+    composited_frame.fill(0);
+    copy_video_into_canvas(frame, target, composited_frame, canvas);
     if subtitles_visible && let Some(subtitle_track) = subtitle_track {
         subtitle_renderer.render(
             composited_frame,
-            target.width,
-            target.height,
+            canvas.width,
+            canvas.height,
             subtitle_track,
             playback_position,
-            subtitle_bottom_reserve(target.height, overlay_state.visible),
+            subtitle_bottom_reserve(canvas.height, overlay_state.visible),
         );
     }
-    overlay.render(composited_frame, target.width, target.height, overlay_state);
+    overlay.render(composited_frame, canvas.width, canvas.height, overlay_state);
 
     let image_id = KITTY_IMAGE_IDS[(*frame_serial as usize) % KITTY_IMAGE_IDS.len()];
     write_kitty_rgb_frame(
@@ -605,9 +610,9 @@ fn draw_frame(
             placement_id: KITTY_PLACEMENT_ID,
             z_index: 0,
             previous_image_id: *previous_image_id,
-            width: target.width,
-            height: target.height,
-            area: layout,
+            width: canvas.width,
+            height: canvas.height,
+            area: canvas.area,
         },
         composited_frame,
         sequence,
@@ -615,6 +620,25 @@ fn draw_frame(
     *previous_image_id = Some(image_id);
     *frame_serial = frame_serial.wrapping_add(1);
     Ok(())
+}
+
+fn copy_video_into_canvas(
+    frame: &[u8],
+    target: TargetFrame,
+    canvas_frame: &mut [u8],
+    canvas: CanvasFrame,
+) {
+    let src_row_bytes = target.width as usize * 3;
+    let dst_width = canvas.width as usize;
+    let dst_x = canvas.video_x as usize;
+    let dst_y = canvas.video_y as usize;
+
+    for row in 0..target.height as usize {
+        let src_start = row * src_row_bytes;
+        let dst_start = ((dst_y + row) * dst_width + dst_x) * 3;
+        canvas_frame[dst_start..dst_start + src_row_bytes]
+            .copy_from_slice(&frame[src_start..src_start + src_row_bytes]);
+    }
 }
 
 fn seek_playback(
@@ -718,36 +742,31 @@ struct VideoPoint {
     y: u32,
 }
 
-fn mouse_video_position(
-    column: u16,
-    row: u16,
-    layout: ImageArea,
-    target: TargetFrame,
-) -> Option<VideoPoint> {
-    let end_col = layout.x.saturating_add(layout.cols);
-    let end_row = layout.y.saturating_add(layout.rows);
-    if column < layout.x || column >= end_col || row < layout.y || row >= end_row {
+fn mouse_canvas_position(column: u16, row: u16, canvas: CanvasFrame) -> Option<VideoPoint> {
+    let end_col = canvas.area.x.saturating_add(canvas.area.cols);
+    let end_row = canvas.area.y.saturating_add(canvas.area.rows);
+    if column < canvas.area.x || column >= end_col || row < canvas.area.y || row >= end_row {
         return None;
     }
 
     Some(VideoPoint {
-        x: cell_to_video_pixel(column - layout.x, layout.cols, target.width),
-        y: cell_to_video_pixel(row - layout.y, layout.rows, target.height),
+        x: cell_to_pixel(column - canvas.area.x, canvas.area.cols, canvas.width),
+        y: cell_to_pixel(row - canvas.area.y, canvas.area.rows, canvas.height),
     })
 }
 
-fn mouse_video_x(column: u16, layout: ImageArea, target: TargetFrame) -> u32 {
-    let rel = if column <= layout.x {
+fn mouse_canvas_x(column: u16, canvas: CanvasFrame) -> u32 {
+    let rel = if column <= canvas.area.x {
         0
     } else {
         column
-            .saturating_sub(layout.x)
-            .min(layout.cols.saturating_sub(1))
+            .saturating_sub(canvas.area.x)
+            .min(canvas.area.cols.saturating_sub(1))
     };
-    cell_to_video_pixel(rel, layout.cols, target.width)
+    cell_to_pixel(rel, canvas.area.cols, canvas.width)
 }
 
-fn cell_to_video_pixel(cell: u16, cells: u16, pixels: u32) -> u32 {
+fn cell_to_pixel(cell: u16, cells: u16, pixels: u32) -> u32 {
     let cells = f64::from(cells.max(1));
     let pixels = pixels.max(1);
     (((f64::from(cell) + 0.5) * f64::from(pixels)) / cells)
@@ -965,10 +984,77 @@ impl TargetFrame {
     }
 }
 
-fn terminal_target(source_width: u32, source_height: u32) -> TargetFrame {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CanvasFrame {
+    width: u32,
+    height: u32,
+    video_x: u32,
+    video_y: u32,
+    area: ImageArea,
+}
+
+impl CanvasFrame {
+    fn frame_len(self) -> usize {
+        self.width as usize * self.height as usize * 3
+    }
+}
+
+fn terminal_target_and_canvas(source_width: u32, source_height: u32) -> (TargetFrame, CanvasFrame) {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let (pixel_width, pixel_height) = crate::terminal::terminal_pixel_size(cols, rows);
-    target_for_bounds(source_width, source_height, pixel_width, pixel_height)
+    let cols = cols.max(1);
+    let rows = rows.max(1);
+    let (pixel_width, pixel_height) = terminal_pixel_size(cols, rows);
+    let target = target_for_bounds(source_width, source_height, pixel_width, pixel_height);
+    let video_area = image_area_for_terminal(
+        target.width,
+        target.height,
+        cols,
+        rows,
+        pixel_width,
+        pixel_height,
+    );
+    (target, canvas_for_terminal(target, video_area, cols, rows))
+}
+
+fn canvas_for_terminal(
+    target: TargetFrame,
+    video_area: ImageArea,
+    cols: u16,
+    rows: u16,
+) -> CanvasFrame {
+    let left = scale_cells_to_pixels(video_area.x, video_area.cols, target.width);
+    let right_cols = cols.saturating_sub(video_area.x.saturating_add(video_area.cols));
+    let right = scale_cells_to_pixels(right_cols, video_area.cols, target.width);
+    let top = scale_cells_to_pixels(video_area.y, video_area.rows, target.height);
+    let bottom_rows = rows.saturating_sub(video_area.y.saturating_add(video_area.rows));
+    let bottom = scale_cells_to_pixels(bottom_rows, video_area.rows, target.height);
+    let width = left
+        .saturating_add(target.width)
+        .saturating_add(right)
+        .max(1);
+    let height = top
+        .saturating_add(target.height)
+        .saturating_add(bottom)
+        .max(1);
+
+    CanvasFrame {
+        width,
+        height,
+        video_x: left,
+        video_y: top,
+        area: ImageArea {
+            x: 0,
+            y: 0,
+            cols,
+            rows,
+        },
+    }
+}
+
+fn scale_cells_to_pixels(cells: u16, reference_cells: u16, reference_pixels: u32) -> u32 {
+    let numerator = u64::from(reference_pixels).saturating_mul(u64::from(cells));
+    let denominator = u64::from(reference_cells.max(1));
+    ((numerator + denominator / 2) / denominator).min(u64::from(u32::MAX)) as u32
 }
 
 fn target_for_bounds(
@@ -1192,22 +1278,96 @@ mod tests {
     }
 
     #[test]
-    fn mouse_position_maps_terminal_cell_to_video_pixel() {
-        let layout = ImageArea {
-            x: 10,
-            y: 5,
-            cols: 20,
-            rows: 10,
+    fn canvas_uses_terminal_letterbox_space() {
+        let canvas = canvas_for_terminal(
+            TargetFrame {
+                width: 1280,
+                height: 536,
+            },
+            ImageArea {
+                x: 0,
+                y: 4,
+                cols: 80,
+                rows: 16,
+            },
+            80,
+            24,
+        );
+
+        assert_eq!(
+            canvas,
+            CanvasFrame {
+                width: 1280,
+                height: 804,
+                video_x: 0,
+                video_y: 134,
+                area: ImageArea {
+                    x: 0,
+                    y: 0,
+                    cols: 80,
+                    rows: 24,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn mouse_position_maps_terminal_cell_to_canvas_pixel() {
+        let canvas = CanvasFrame {
+            width: 1280,
+            height: 804,
+            video_x: 0,
+            video_y: 134,
+            area: ImageArea {
+                x: 0,
+                y: 0,
+                cols: 80,
+                rows: 24,
+            },
         };
+
+        let point = mouse_canvas_position(40, 20, canvas).expect("point should be inside");
+
+        assert_eq!(point.x, 648);
+        assert_eq!(point.y, 686);
+    }
+
+    #[test]
+    fn copy_video_places_frame_inside_canvas() {
         let target = TargetFrame {
-            width: 200,
-            height: 100,
+            width: 2,
+            height: 2,
         };
+        let canvas = CanvasFrame {
+            width: 4,
+            height: 4,
+            video_x: 1,
+            video_y: 1,
+            area: ImageArea {
+                x: 0,
+                y: 0,
+                cols: 4,
+                rows: 4,
+            },
+        };
+        let frame = vec![
+            1, 2, 3, 4, 5, 6, //
+            7, 8, 9, 10, 11, 12,
+        ];
+        let mut canvas_frame = vec![0_u8; canvas.frame_len()];
 
-        let point = mouse_video_position(20, 10, layout, target).expect("point should be inside");
+        copy_video_into_canvas(&frame, target, &mut canvas_frame, canvas);
 
-        assert_eq!(point.x, 105);
-        assert_eq!(point.y, 55);
+        let row_bytes = canvas.width as usize * 3;
+        assert_eq!(
+            &canvas_frame[row_bytes + 3..row_bytes + 9],
+            &[1, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(
+            &canvas_frame[row_bytes * 2 + 3..row_bytes * 2 + 9],
+            &[7, 8, 9, 10, 11, 12]
+        );
+        assert_eq!(&canvas_frame[..3], &[0, 0, 0]);
     }
 
     #[test]

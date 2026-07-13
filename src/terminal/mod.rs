@@ -8,5 +8,5 @@ pub(crate) use kitty_graphics::{
     KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, clear_screen_and_images,
     write_kitty_rgb_frame,
 };
-pub(crate) use layout::{ImageArea, terminal_image_area, terminal_pixel_size};
+pub(crate) use layout::{ImageArea, image_area_for_terminal, terminal_pixel_size};
 pub(crate) use session::TerminalGuard;

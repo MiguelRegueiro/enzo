@@ -1,5 +1,3 @@
-use crossterm::terminal;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ImageArea {
     pub(crate) x: u16,
@@ -8,9 +6,14 @@ pub(crate) struct ImageArea {
     pub(crate) rows: u16,
 }
 
-pub(crate) fn terminal_image_area(source_width: u32, source_height: u32) -> ImageArea {
-    let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let (pixel_width, pixel_height) = terminal_pixel_size(cols, rows);
+pub(crate) fn image_area_for_terminal(
+    source_width: u32,
+    source_height: u32,
+    cols: u16,
+    rows: u16,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> ImageArea {
     let cell_width = f64::from(pixel_width) / f64::from(cols.max(1));
     let cell_height = f64::from(pixel_height) / f64::from(rows.max(1));
     fit_image_area(
