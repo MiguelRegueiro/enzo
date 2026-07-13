@@ -184,6 +184,7 @@ impl FontRenderer {
         width.max(0) as u32
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_text(
         &mut self,
         frame: &mut [u8],
@@ -266,6 +267,7 @@ impl FontRenderer {
         to_pixels(unsafe { (*slot).advance.x }) as i32
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_current_glyph(
         &self,
         frame: &mut [u8],

@@ -103,7 +103,7 @@ impl SubtitleRenderer {
             lines,
             max_width.max(1),
             fallback_scale,
-            font.as_mut().map(|font| &mut **font),
+            font.as_deref_mut(),
             &mut self.wrapped_lines,
         );
         if self.wrapped_lines.is_empty() {
@@ -125,11 +125,10 @@ impl SubtitleRenderer {
         let mut y = start_y;
 
         for line in &self.wrapped_lines {
-            let line_width =
-                text_width(font.as_mut().map(|font| &mut **font), line, fallback_scale);
+            let line_width = text_width(font.as_deref_mut(), line, fallback_scale);
             let x = width.saturating_sub(line_width) / 2;
             draw_subtitle_text(
-                font.as_mut().map(|font| &mut **font),
+                font.as_deref_mut(),
                 frame,
                 width,
                 height,
@@ -276,11 +275,7 @@ fn wrap_subtitle_lines(
             } else {
                 format!("{current} {word}")
             };
-            if text_width(
-                font.as_mut().map(|font| &mut **font),
-                &candidate,
-                fallback_scale,
-            ) <= max_width
+            if text_width(font.as_deref_mut(), &candidate, fallback_scale) <= max_width
                 || current.is_empty()
             {
                 current = candidate;
@@ -295,6 +290,7 @@ fn wrap_subtitle_lines(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_subtitle_text(
     mut font: Option<&mut FontRenderer>,
     frame: &mut [u8],
@@ -316,7 +312,7 @@ fn draw_subtitle_text(
         (1, 1),
     ] {
         draw_text(
-            font.as_mut().map(|font| &mut **font),
+            font.as_deref_mut(),
             frame,
             width,
             height,
@@ -342,6 +338,7 @@ fn draw_subtitle_text(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_text(
     font: Option<&mut FontRenderer>,
     frame: &mut [u8],
@@ -400,6 +397,7 @@ fn subtitle_bottom_margin(height: u32) -> u32 {
     (height / 16).clamp(10, 46)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_bitmap_text(
     frame: &mut [u8],
     width: u32,
@@ -421,6 +419,7 @@ fn draw_bitmap_text(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     frame: &mut [u8],
     width: u32,
@@ -452,6 +451,7 @@ fn draw_glyph(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_solid_rect(
     frame: &mut [u8],
     width: u32,

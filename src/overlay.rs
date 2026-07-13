@@ -7,6 +7,8 @@ const TRACK_COLOR: [u8; 3] = [82, 82, 91];
 const ACCENT_COLOR: [u8; 3] = [239, 68, 68];
 const TEXT_COLOR: [u8; 3] = [250, 250, 250];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
+const MIN_SCALE_PERCENT: u32 = 100;
+const MAX_SCALE_PERCENT: u32 = 125;
 
 #[derive(Clone, Copy)]
 pub(crate) struct OverlayState {
@@ -36,12 +38,14 @@ impl PlaybackOverlay {
         frame: &mut [u8],
         width: u32,
         height: u32,
+        scale_percent: u32,
         state: OverlayState,
     ) {
         render_overlay_rgb(
             frame,
             width,
             height,
+            scale_percent,
             state,
             &mut self.scratch,
             self.font.as_mut(),
@@ -52,11 +56,12 @@ impl PlaybackOverlay {
         &mut self,
         width: u32,
         height: u32,
+        scale_percent: u32,
         duration: Option<Duration>,
         x: u32,
         y: u32,
     ) -> Option<f64> {
-        let metrics = self.metrics(width, height, duration);
+        let metrics = self.metrics(width, height, scale_percent, duration);
         progress_hit_ratio(metrics, x, y)
     }
 
@@ -64,10 +69,11 @@ impl PlaybackOverlay {
         &mut self,
         width: u32,
         height: u32,
+        scale_percent: u32,
         duration: Option<Duration>,
         x: u32,
     ) -> f64 {
-        let metrics = self.metrics(width, height, duration);
+        let metrics = self.metrics(width, height, scale_percent, duration);
         progress_ratio_for_x(metrics, x)
     }
 
@@ -75,16 +81,23 @@ impl PlaybackOverlay {
         &mut self,
         width: u32,
         height: u32,
+        scale_percent: u32,
         duration: Option<Duration>,
         x: u32,
         y: u32,
     ) -> bool {
-        let metrics = self.metrics(width, height, duration);
+        let metrics = self.metrics(width, height, scale_percent, duration);
         playback_button_hit(metrics, x, y)
     }
 
-    fn metrics(&mut self, width: u32, height: u32, duration: Option<Duration>) -> OverlayMetrics {
-        overlay_metrics(width, height, duration, self.font.as_mut())
+    fn metrics(
+        &mut self,
+        width: u32,
+        height: u32,
+        scale_percent: u32,
+        duration: Option<Duration>,
+    ) -> OverlayMetrics {
+        overlay_metrics(width, height, scale_percent, duration, self.font.as_mut())
     }
 }
 
@@ -177,6 +190,7 @@ fn render_overlay_rgb(
     frame: &mut [u8],
     width: u32,
     height: u32,
+    scale_percent: u32,
     state: OverlayState,
     scratch: &mut String,
     font: Option<&mut FontRenderer>,
@@ -188,17 +202,9 @@ fn render_overlay_rgb(
         return;
     }
 
-    let text_size = text_size(width, height);
-    let fallback_text_scale = fallback_text_scale(width, height);
-    let mut font = if let Some(font) = font {
-        if font.set_pixel_size(text_size) {
-            Some(font)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let text_size = text_size(width, height, scale_percent);
+    let fallback_text_scale = fallback_text_scale(width, height, scale_percent);
+    let mut font = font.and_then(|font| font.set_pixel_size(text_size).then_some(font));
     let text_height = font
         .as_ref()
         .map(|font| font.line_height())
@@ -206,7 +212,7 @@ fn render_overlay_rgb(
 
     if let Some(message) = state.status_message {
         draw_top_message(
-            font.as_mut().map(|font| &mut **font),
+            font.as_deref_mut(),
             frame,
             width,
             height,
@@ -224,7 +230,7 @@ fn render_overlay_rgb(
 
     if let Some(title) = state.media_title {
         draw_top_message(
-            font.as_mut().map(|font| &mut **font),
+            font.as_deref_mut(),
             frame,
             width,
             height,
@@ -236,11 +242,7 @@ fn render_overlay_rgb(
         );
     }
 
-    let time_width = time_column_width(
-        font.as_mut().map(|font| &mut **font),
-        state.duration,
-        fallback_text_scale,
-    );
+    let time_width = time_column_width(font.as_deref_mut(), state.duration, fallback_text_scale);
     let metrics = OverlayMetrics::new(
         width,
         height,
@@ -320,7 +322,7 @@ fn render_overlay_rgb(
 
     draw_playback_control(frame, width, height, metrics, state.paused);
     draw_overlay_text(
-        font.as_mut().map(|font| &mut **font),
+        font,
         frame,
         width,
         height,
@@ -339,6 +341,7 @@ enum HorizontalAnchor {
     Right,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_top_message(
     mut font: Option<&mut FontRenderer>,
     frame: &mut [u8],
@@ -405,21 +408,18 @@ fn draw_top_message(
 fn overlay_metrics(
     width: u32,
     height: u32,
+    scale_percent: u32,
     duration: Option<Duration>,
     font: Option<&mut FontRenderer>,
 ) -> OverlayMetrics {
-    let text_size = text_size(width, height);
-    let fallback_text_scale = fallback_text_scale(width, height);
+    let text_size = text_size(width, height, scale_percent);
+    let fallback_text_scale = fallback_text_scale(width, height, scale_percent);
     let mut font = font;
     let text_height = font
         .as_mut()
         .and_then(|font| font.set_pixel_size(text_size).then(|| font.line_height()))
         .unwrap_or(7 * fallback_text_scale);
-    let time_width = time_column_width(
-        font.as_mut().map(|font| &mut **font),
-        duration,
-        fallback_text_scale,
-    );
+    let time_width = time_column_width(font, duration, fallback_text_scale);
     OverlayMetrics::new(
         width,
         height,
@@ -575,46 +575,49 @@ fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
     f64::from(x.saturating_sub(metrics.bar_x)) / f64::from(metrics.bar_width.max(1))
 }
 
-fn text_size(width: u32, video_height: u32) -> u32 {
-    if width >= 960 && video_height >= 540 {
-        24
-    } else if width >= 420 && video_height >= 240 {
+fn text_size(width: u32, video_height: u32, scale_percent: u32) -> u32 {
+    let base = if width >= 420 && video_height >= 240 {
         18
     } else {
         12
-    }
+    };
+    scaled_overlay_pixels(base, scale_percent)
 }
 
-fn fallback_text_scale(width: u32, video_height: u32) -> u32 {
-    if width >= 960 && video_height >= 540 {
-        3
-    } else if width >= 420 && video_height >= 240 {
-        2
+fn fallback_text_scale(width: u32, video_height: u32, scale_percent: u32) -> u32 {
+    (text_size(width, video_height, scale_percent) / 7).clamp(1, 4)
+}
+
+fn scaled_overlay_pixels(value: u32, scale_percent: u32) -> u32 {
+    let scale_percent = scale_percent.clamp(MIN_SCALE_PERCENT, MAX_SCALE_PERCENT);
+    (value.saturating_mul(scale_percent).saturating_add(50) / 100).max(1)
+}
+
+fn scaled_normal_pixels(value: u32, text_size: u32) -> u32 {
+    if text_size >= 18 {
+        value.saturating_mul(text_size).saturating_add(9) / 18
     } else {
-        1
+        value
     }
 }
 
 fn bar_height_for_text(text_size: u32) -> u32 {
     match text_size {
-        24.. => 8,
-        18.. => 6,
+        18.. => scaled_normal_pixels(6, text_size),
         _ => 5,
     }
 }
 
 fn vertical_padding_for_text(text_size: u32) -> u32 {
     match text_size {
-        24.. => 14,
-        18.. => 11,
+        18.. => scaled_normal_pixels(11, text_size),
         _ => 8,
     }
 }
 
 fn horizontal_padding_for_text(text_size: u32) -> u32 {
     match text_size {
-        24.. => 24,
-        18.. => 18,
+        18.. => scaled_normal_pixels(18, text_size),
         _ => 12,
     }
 }
@@ -625,8 +628,7 @@ fn control_size_for_text(text_size: u32, text_height: u32) -> u32 {
 
 fn control_gap_for_text(text_size: u32) -> u32 {
     match text_size {
-        24.. => 12,
-        18.. => 10,
+        18.. => scaled_normal_pixels(10, text_size),
         _ => 8,
     }
 }
@@ -652,8 +654,7 @@ fn time_column_template(duration: Option<Duration>) -> String {
 
 fn outer_padding_for_text(text_size: u32) -> u32 {
     match text_size {
-        24.. => 8,
-        18.. => 6,
+        18.. => scaled_normal_pixels(6, text_size),
         _ => 4,
     }
 }
@@ -881,6 +882,7 @@ fn rounded_rect_coverage(x: f64, y: f64, rect: RoundedRect) -> f64 {
     (0.5 - distance).clamp(0.0, 1.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_overlay_text(
     font: Option<&mut FontRenderer>,
     frame: &mut [u8],
@@ -910,6 +912,7 @@ fn draw_overlay_text(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_bitmap_text(
     frame: &mut [u8],
     width: u32,
@@ -931,6 +934,7 @@ fn draw_bitmap_text(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     frame: &mut [u8],
     width: u32,
@@ -962,6 +966,7 @@ fn draw_glyph(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fill_solid_rect(
     frame: &mut [u8],
     width: u32,
@@ -1126,6 +1131,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            100,
             OverlayState {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
@@ -1160,6 +1166,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            100,
             OverlayState {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
@@ -1195,6 +1202,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            100,
             OverlayState {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
@@ -1245,6 +1253,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            100,
             OverlayState {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
@@ -1273,6 +1282,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            100,
             OverlayState {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
@@ -1304,6 +1314,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            100,
             OverlayState {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
@@ -1361,12 +1372,38 @@ mod tests {
         assert!(small.bar_x > small.time_x);
         assert!(large.bar_x > large.time_x);
         assert_eq!(small.panel_height, 34);
+        assert_eq!(large.text_size, 18);
         assert!(large.panel_height <= 56);
     }
 
+    #[test]
+    fn overlay_large_canvas_uses_normal_text_size() {
+        let medium = test_metrics(640, 360);
+        let large = test_metrics(1920, 1080);
+
+        assert_eq!(medium.text_size, large.text_size);
+        assert_eq!(large.text_size, 18);
+    }
+
+    #[test]
+    fn overlay_high_density_scale_enlarges_controls() {
+        let normal = test_metrics(1920, 1200);
+        let high_density = test_metrics_with_scale(1920, 1200, 120);
+
+        assert_eq!(normal.text_size, 18);
+        assert_eq!(high_density.text_size, 22);
+        assert!(high_density.panel_height > normal.panel_height);
+        assert!(high_density.control_size > normal.control_size);
+        assert!(high_density.bar_height > normal.bar_height);
+    }
+
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {
-        let text_size = text_size(width, height);
-        let fallback_text_scale = fallback_text_scale(width, height);
+        test_metrics_with_scale(width, height, 100)
+    }
+
+    fn test_metrics_with_scale(width: u32, height: u32, scale_percent: u32) -> OverlayMetrics {
+        let text_size = text_size(width, height, scale_percent);
+        let fallback_text_scale = fallback_text_scale(width, height, scale_percent);
         let text_height = 7 * fallback_text_scale;
         let time_width =
             time_column_width(None, Some(Duration::from_secs(120)), fallback_text_scale);

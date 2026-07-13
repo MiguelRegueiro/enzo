@@ -6,26 +6,7 @@ pub(crate) struct ImageArea {
     pub(crate) rows: u16,
 }
 
-pub(crate) fn image_area_for_terminal(
-    source_width: u32,
-    source_height: u32,
-    cols: u16,
-    rows: u16,
-    pixel_width: u32,
-    pixel_height: u32,
-) -> ImageArea {
-    let cell_width = f64::from(pixel_width) / f64::from(cols.max(1));
-    let cell_height = f64::from(pixel_height) / f64::from(rows.max(1));
-    fit_image_area(
-        source_width,
-        source_height,
-        cols,
-        rows,
-        cell_width,
-        cell_height,
-    )
-}
-
+#[cfg(test)]
 fn fit_image_area(
     source_width: u32,
     source_height: u32,

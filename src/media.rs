@@ -337,6 +337,7 @@ impl Drop for VideoDecoder {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_video_decode_thread(
     mut native: NativeVideoDecoder,
     frame_len: usize,
