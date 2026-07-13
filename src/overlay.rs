@@ -354,7 +354,7 @@ fn draw_top_message(
     anchor: HorizontalAnchor,
 ) {
     let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
-    let inset_y = (height / 36).clamp(6, 24).min(height.saturating_sub(1));
+    let inset_y = top_message_y(height, text_size);
     let pad_x = (horizontal_padding_for_text(text_size) / 2).max(6);
     let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
     let text_width = font
@@ -403,6 +403,10 @@ fn draw_top_message(
         TEXT_COLOR,
         244,
     );
+}
+
+fn top_message_y(height: u32, text_size: u32) -> u32 {
+    outer_padding_for_text(text_size).min(height.saturating_sub(1))
 }
 
 fn overlay_metrics(
@@ -1397,6 +1401,21 @@ mod tests {
         assert!(high_density.bar_height > normal.bar_height);
     }
 
+    #[test]
+    fn top_message_gap_matches_bottom_overlay_gap() {
+        let normal = test_metrics(1920, 1080);
+        let high_density = test_metrics_with_scale(1920, 1200, 120);
+
+        assert_eq!(
+            top_message_y(1080, normal.text_size),
+            bottom_panel_gap(1080, normal)
+        );
+        assert_eq!(
+            top_message_y(1200, high_density.text_size),
+            bottom_panel_gap(1200, high_density)
+        );
+    }
+
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {
         test_metrics_with_scale(width, height, 100)
     }
@@ -1415,5 +1434,9 @@ mod tests {
             text_height,
             time_width,
         )
+    }
+
+    fn bottom_panel_gap(height: u32, metrics: OverlayMetrics) -> u32 {
+        height.saturating_sub(metrics.panel_y.saturating_add(metrics.panel_height))
     }
 }
