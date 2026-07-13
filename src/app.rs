@@ -12,6 +12,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::{
     input::{PlaybackInput, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
+    overlay::{OverlayState, PlaybackOverlay},
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
         clear_screen_and_images, enable_tmux_passthrough, inside_tmux, looks_like_kitty,
@@ -40,7 +41,7 @@ pub(crate) fn run() -> Result<()> {
             config.path.display()
         )
     })?;
-    let target = terminal_target(source.width, source.height);
+    let mut target = terminal_target(source.width, source.height);
 
     let mut decoder = VideoDecoder::spawn(&config.path, target.width, target.height, source.fps)?;
     let mut audio = if source.has_audio {
@@ -56,13 +57,16 @@ pub(crate) fn run() -> Result<()> {
     let mut out =
         BufWriter::with_capacity(target.frame_len() + target.frame_len() / 2, stdout.lock());
     let mut sequence = Vec::with_capacity(target.frame_len() + target.frame_len() / 2 + 4096);
+    let mut overlay = PlaybackOverlay::new();
     clear_screen_and_images(&mut out)?;
 
     let mut frame = vec![0_u8; target.frame_len()];
+    let mut composited_frame = vec![0_u8; target.frame_len()];
     let mut last_layout = None::<ImageArea>;
     let mut previous_image_id = None;
     let mut frame_serial = 0_u32;
     let mut have_frame = false;
+    let mut redraw_current_frame = false;
     let mut video_ended = false;
     let frame_interval = frame_interval(source.fps);
     let mut next_frame_at = playback_started_at;
@@ -83,27 +87,60 @@ pub(crate) fn run() -> Result<()> {
                 if !paused {
                     next_frame_at = Instant::now();
                 }
+                redraw_current_frame = have_frame;
             }
             PlaybackInput::SeekBy(seconds) => {
-                let target = seek_position(playback_position, seconds, source.duration);
-                if is_end_seek(target, source.duration) {
+                let seek_target = seek_position(playback_position, seconds, source.duration);
+                if is_end_seek(seek_target, source.duration) {
                     break;
                 }
-                decoder.seek(target);
+                decoder.seek(seek_target);
                 if source.has_audio {
                     if let Some(audio) = audio.as_mut() {
-                        audio.seek(target);
+                        audio.seek(seek_target);
                         audio.set_paused(paused);
                     } else {
-                        audio = Some(AudioPlayer::spawn_at(&config.path, target, paused)?);
+                        audio = Some(AudioPlayer::spawn_at(&config.path, seek_target, paused)?);
                     }
                     audio_done = false;
                 }
-                playback_position = target;
+                playback_position = seek_target;
                 video_ended = false;
                 next_frame_at = Instant::now();
             }
             PlaybackInput::None => {}
+        }
+
+        let current_target = terminal_target(source.width, source.height);
+        if current_target != target {
+            if !paused && let Some(audio) = audio.as_mut() {
+                audio.set_paused(true);
+            }
+
+            decoder.stop()?;
+            target = current_target;
+            frame.resize(target.frame_len(), 0);
+            composited_frame.resize(target.frame_len(), 0);
+            decoder = VideoDecoder::spawn_at(
+                &config.path,
+                target.width,
+                target.height,
+                source.fps,
+                playback_position,
+                paused,
+            )?;
+
+            if !paused && let Some(audio) = audio.as_mut() {
+                audio.set_paused(false);
+            }
+
+            clear_screen_and_images(&mut out)?;
+            last_layout = None;
+            previous_image_id = None;
+            have_frame = false;
+            redraw_current_frame = false;
+            video_ended = false;
+            next_frame_at = Instant::now();
         }
 
         let layout = terminal_image_area(target.width, target.height);
@@ -119,14 +156,44 @@ pub(crate) fn run() -> Result<()> {
                     &mut previous_image_id,
                     &mut frame_serial,
                     &frame,
+                    &mut composited_frame,
+                    &mut overlay,
+                    OverlayState {
+                        position: playback_position,
+                        duration: source.duration,
+                        paused,
+                    },
                     &mut sequence,
                 )?;
+                redraw_current_frame = false;
             }
+        }
+
+        if redraw_current_frame && have_frame {
+            draw_frame(
+                &mut out,
+                target,
+                layout,
+                &mut previous_image_id,
+                &mut frame_serial,
+                &frame,
+                &mut composited_frame,
+                &mut overlay,
+                OverlayState {
+                    position: playback_position,
+                    duration: source.duration,
+                    paused,
+                },
+                &mut sequence,
+            )?;
+            redraw_current_frame = false;
+            out.flush()?;
         }
 
         if paused {
             match decoder.read_latest_frame(&mut frame)? {
                 FrameStatus::NewFrame { pts } => {
+                    playback_position = pts;
                     draw_frame(
                         &mut out,
                         target,
@@ -134,10 +201,17 @@ pub(crate) fn run() -> Result<()> {
                         &mut previous_image_id,
                         &mut frame_serial,
                         &frame,
+                        &mut composited_frame,
+                        &mut overlay,
+                        OverlayState {
+                            position: playback_position,
+                            duration: source.duration,
+                            paused,
+                        },
                         &mut sequence,
                     )?;
                     have_frame = true;
-                    playback_position = pts;
+                    redraw_current_frame = false;
                 }
                 FrameStatus::NoFrame => {}
                 FrameStatus::Ended => {
@@ -158,6 +232,7 @@ pub(crate) fn run() -> Result<()> {
 
         match decoder.read_latest_frame(&mut frame)? {
             FrameStatus::NewFrame { pts } => {
+                playback_position = pts;
                 draw_frame(
                     &mut out,
                     target,
@@ -165,10 +240,17 @@ pub(crate) fn run() -> Result<()> {
                     &mut previous_image_id,
                     &mut frame_serial,
                     &frame,
+                    &mut composited_frame,
+                    &mut overlay,
+                    OverlayState {
+                        position: playback_position,
+                        duration: source.duration,
+                        paused,
+                    },
                     &mut sequence,
                 )?;
                 have_frame = true;
-                playback_position = pts;
+                redraw_current_frame = false;
                 out.flush()?;
                 advance_frame_clock(&mut next_frame_at, frame_interval);
             }
@@ -178,6 +260,28 @@ pub(crate) fn run() -> Result<()> {
             }
             FrameStatus::Ended => {
                 video_ended = true;
+                if let Some(duration) = source.duration {
+                    playback_position = duration;
+                }
+                if have_frame {
+                    draw_frame(
+                        &mut out,
+                        target,
+                        layout,
+                        &mut previous_image_id,
+                        &mut frame_serial,
+                        &frame,
+                        &mut composited_frame,
+                        &mut overlay,
+                        OverlayState {
+                            position: playback_position,
+                            duration: source.duration,
+                            paused,
+                        },
+                        &mut sequence,
+                    )?;
+                    redraw_current_frame = false;
+                }
                 out.flush()?;
                 thread::sleep(Duration::from_millis(10));
             }
@@ -202,8 +306,21 @@ fn draw_frame(
     previous_image_id: &mut Option<u32>,
     frame_serial: &mut u32,
     frame: &[u8],
+    composited_frame: &mut [u8],
+    overlay: &mut PlaybackOverlay,
+    overlay_state: OverlayState,
     sequence: &mut Vec<u8>,
 ) -> io::Result<()> {
+    if composited_frame.len() != frame.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "overlay scratch frame length does not match decoded frame length",
+        ));
+    }
+
+    composited_frame.copy_from_slice(frame);
+    overlay.render(composited_frame, target.width, target.height, overlay_state);
+
     let image_id = KITTY_IMAGE_IDS[(*frame_serial as usize) % KITTY_IMAGE_IDS.len()];
     write_kitty_rgb_frame(
         out,
@@ -216,7 +333,7 @@ fn draw_frame(
             height: target.height,
             area: layout,
         },
-        frame,
+        composited_frame,
         sequence,
     )?;
     *previous_image_id = Some(image_id);
@@ -331,7 +448,7 @@ Controls:
     );
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TargetFrame {
     width: u32,
     height: u32,

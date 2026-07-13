@@ -1,6 +1,8 @@
 mod app;
+mod font;
 mod input;
 mod media;
+mod overlay;
 mod terminal;
 
 fn main() {

@@ -10,6 +10,7 @@ It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resam
 - Kitty or another terminal that supports the Kitty graphics protocol
 - FFmpeg runtime/development libraries: `libavformat`, `libavcodec`, `libavutil`, `libswscale`, `libswresample`
 - PulseAudio runtime/development libraries: `libpulse`
+- FreeType runtime/development libraries: `libfreetype`
 - `cc` and `ar` to build the small native media shim
 
 ## Run
@@ -23,6 +24,8 @@ Controls:
 - Space or right click pauses/resumes playback.
 - Left/right arrows seek backward/forward by 5 seconds.
 - `q`, Esc, or Ctrl-C quits playback.
+
+Playback shows a bottom overlay with elapsed time, total duration, and progress.
 
 The first version intentionally accepts only a video path, plus `--force` for compatible terminals
 that do not advertise themselves as Kitty.

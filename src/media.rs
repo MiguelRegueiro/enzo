@@ -223,17 +223,30 @@ pub(crate) struct VideoDecoder {
 
 impl VideoDecoder {
     pub(crate) fn spawn(path: &Path, width: u32, height: u32, fps: f64) -> Result<Self> {
+        Self::spawn_at(path, width, height, fps, Duration::ZERO, false)
+    }
+
+    pub(crate) fn spawn_at(
+        path: &Path,
+        width: u32,
+        height: u32,
+        fps: f64,
+        position: Duration,
+        paused: bool,
+    ) -> Result<Self> {
         let native = NativeVideoDecoder::open(path, width, height, fps)?;
         let frame_len = frame_len(width, height)?;
         let latest_frame = Arc::new(Mutex::new(LatestFrame::default()));
         let frame_target = Arc::clone(&latest_frame);
         let stop = Arc::new(AtomicI32::new(0));
         let stop_thread = Arc::clone(&stop);
-        let pause = Arc::new(AtomicI32::new(0));
+        let pause = Arc::new(AtomicI32::new(i32::from(paused)));
         let pause_thread = Arc::clone(&pause);
-        let seek_generation = Arc::new(AtomicI32::new(0));
+        let seek_generation = Arc::new(AtomicI32::new(i32::from(
+            position > Duration::ZERO || paused,
+        )));
         let seek_generation_thread = Arc::clone(&seek_generation);
-        let seek_micros = Arc::new(AtomicI64::new(0));
+        let seek_micros = Arc::new(AtomicI64::new(duration_micros_i64(position)));
         let seek_micros_thread = Arc::clone(&seek_micros);
 
         let frame_thread = thread::spawn(move || {
@@ -337,7 +350,7 @@ fn run_video_decode_thread(
     let fallback_interval = 1.0 / fps.max(1.0);
     let mut fallback_pts = 0.0;
     let mut buffer = vec![0_u8; frame_len];
-    let mut seen_seek_generation = seek_generation.load(Ordering::Relaxed);
+    let mut seen_seek_generation = 0;
     let mut force_next_frame = false;
 
     loop {
