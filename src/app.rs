@@ -98,15 +98,8 @@ pub(crate) fn run() -> Result<()> {
         match input.command {
             PlaybackCommand::Quit => break,
             PlaybackCommand::TogglePause => {
-                paused = !paused;
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
-                decoder.set_paused(paused);
-                if let Some(audio) = audio.as_mut() {
-                    audio.set_paused(paused);
-                }
-                if !paused {
-                    next_frame_at = Instant::now();
-                }
+                toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
                 redraw_current_frame = have_frame;
             }
             PlaybackCommand::SeekBy(seconds) => {
@@ -202,26 +195,58 @@ pub(crate) fn run() -> Result<()> {
         for mouse in input.mouse_events {
             let seek_target = match mouse {
                 PlaybackMouse::LeftDown { column, row } => {
-                    scrub_position = mouse_video_position(column, row, layout, target)
-                        .and_then(|point| {
-                            overlay.progress_hit_test(target.width, target.height, point.x, point.y)
-                        })
-                        .and_then(|ratio| seek_from_progress_ratio(ratio, source.duration));
-                    if scrub_position.is_some() {
+                    let point = mouse_video_position(column, row, layout, target);
+                    if point.is_some_and(|point| {
+                        overlay.playback_button_hit_test(
+                            target.width,
+                            target.height,
+                            source.duration,
+                            point.x,
+                            point.y,
+                        )
+                    }) {
+                        scrub_position = None;
+                        overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                        toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
                         redraw_current_frame = have_frame;
+                    } else {
+                        scrub_position = point
+                            .and_then(|point| {
+                                overlay.progress_hit_test(
+                                    target.width,
+                                    target.height,
+                                    source.duration,
+                                    point.x,
+                                    point.y,
+                                )
+                            })
+                            .and_then(|ratio| seek_from_progress_ratio(ratio, source.duration));
+                        if scrub_position.is_some() {
+                            redraw_current_frame = have_frame;
+                        }
                     }
                     None
                 }
                 PlaybackMouse::LeftDrag { column } if scrub_position.is_some() => {
                     let x = mouse_video_x(column, layout, target);
-                    let ratio = overlay.progress_ratio_from_x(target.width, target.height, x);
+                    let ratio = overlay.progress_ratio_from_x(
+                        target.width,
+                        target.height,
+                        source.duration,
+                        x,
+                    );
                     scrub_position = seek_from_progress_ratio(ratio, source.duration);
                     redraw_current_frame = have_frame;
                     None
                 }
                 PlaybackMouse::LeftUp { column } if scrub_position.is_some() => {
                     let x = mouse_video_x(column, layout, target);
-                    let ratio = overlay.progress_ratio_from_x(target.width, target.height, x);
+                    let ratio = overlay.progress_ratio_from_x(
+                        target.width,
+                        target.height,
+                        source.duration,
+                        x,
+                    );
                     let target = seek_from_progress_ratio(ratio, source.duration);
                     scrub_position = None;
                     target
@@ -475,6 +500,22 @@ fn seek_playback(
         *audio_done = false;
     }
     Ok(())
+}
+
+fn toggle_pause(
+    paused: &mut bool,
+    decoder: &VideoDecoder,
+    audio: &mut Option<AudioPlayer>,
+    next_frame_at: &mut Instant,
+) {
+    *paused = !*paused;
+    decoder.set_paused(*paused);
+    if let Some(audio) = audio.as_mut() {
+        audio.set_paused(*paused);
+    }
+    if !*paused {
+        *next_frame_at = Instant::now();
+    }
 }
 
 fn overlay_state(

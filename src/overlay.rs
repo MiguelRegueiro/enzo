@@ -50,20 +50,39 @@ impl PlaybackOverlay {
         &mut self,
         width: u32,
         height: u32,
+        duration: Option<Duration>,
         x: u32,
         y: u32,
     ) -> Option<f64> {
-        let metrics = self.metrics(width, height);
+        let metrics = self.metrics(width, height, duration);
         progress_hit_ratio(metrics, x, y)
     }
 
-    pub(crate) fn progress_ratio_from_x(&mut self, width: u32, height: u32, x: u32) -> f64 {
-        let metrics = self.metrics(width, height);
+    pub(crate) fn progress_ratio_from_x(
+        &mut self,
+        width: u32,
+        height: u32,
+        duration: Option<Duration>,
+        x: u32,
+    ) -> f64 {
+        let metrics = self.metrics(width, height, duration);
         progress_ratio_for_x(metrics, x)
     }
 
-    fn metrics(&mut self, width: u32, height: u32) -> OverlayMetrics {
-        overlay_metrics(width, height, self.font.as_mut())
+    pub(crate) fn playback_button_hit_test(
+        &mut self,
+        width: u32,
+        height: u32,
+        duration: Option<Duration>,
+        x: u32,
+        y: u32,
+    ) -> bool {
+        let metrics = self.metrics(width, height, duration);
+        playback_button_hit(metrics, x, y)
+    }
+
+    fn metrics(&mut self, width: u32, height: u32, duration: Option<Duration>) -> OverlayMetrics {
+        overlay_metrics(width, height, duration, self.font.as_mut())
     }
 }
 
@@ -74,9 +93,13 @@ struct OverlayMetrics {
     inset_x: u32,
     inner_x: u32,
     text_y: u32,
+    bar_x: u32,
     bar_y: u32,
     bar_width: u32,
     bar_height: u32,
+    control_size: u32,
+    control_y: u32,
+    time_x: u32,
     text_size: u32,
     fallback_text_scale: u32,
 }
@@ -88,22 +111,20 @@ impl OverlayMetrics {
         text_size: u32,
         fallback_text_scale: u32,
         text_height: u32,
+        time_width: u32,
     ) -> Self {
         let bar_height = bar_height_for_text(text_size).min(video_height.max(1));
-        let text_gap = text_gap_for_text(text_size);
         let vertical_pad = vertical_padding_for_text(text_size);
         let outer_y = outer_padding_for_text(text_size);
+        let control_size = control_size_for_text(text_size, text_height);
+        let control_gap = control_gap_for_text(text_size);
         let handle_radius = progress_handle_radius(bar_height);
-        let bottom_pad = vertical_pad.max(
-            handle_radius
-                .saturating_sub(bar_height / 2)
-                .saturating_add(3),
-        );
+        let row_height = text_height
+            .max(control_size)
+            .max(handle_radius.saturating_mul(2).saturating_add(4));
         let panel_height = vertical_pad
-            .saturating_add(text_height)
-            .saturating_add(text_gap)
-            .saturating_add(bar_height)
-            .saturating_add(bottom_pad)
+            .saturating_add(row_height)
+            .saturating_add(vertical_pad)
             .max(1);
         let height = panel_height
             .saturating_add(outer_y.saturating_mul(2))
@@ -116,9 +137,20 @@ impl OverlayMetrics {
         let inner_x = inset_x
             .saturating_add(inner_pad)
             .min(width.saturating_sub(1));
-        let bar_width = width.saturating_sub(inner_x.saturating_mul(2)).max(1);
-        let text_y = panel_y.saturating_add(vertical_pad);
-        let bar_y = text_y.saturating_add(text_height).saturating_add(text_gap);
+        let row_y = panel_y.saturating_add(vertical_pad);
+        let control_y = row_y.saturating_add((row_height.saturating_sub(control_size)) / 2);
+        let text_y = row_y.saturating_add((row_height.saturating_sub(text_height)) / 2);
+        let time_x = inner_x
+            .saturating_add(control_size)
+            .saturating_add(control_gap)
+            .min(width.saturating_sub(1));
+        let content_right = width.saturating_sub(inner_x).max(inner_x.saturating_add(1));
+        let bar_x = time_x
+            .saturating_add(time_width)
+            .saturating_add(control_gap)
+            .min(content_right.saturating_sub(1));
+        let bar_width = content_right.saturating_sub(bar_x).max(1);
+        let bar_y = row_y.saturating_add((row_height.saturating_sub(bar_height)) / 2);
 
         Self {
             panel_y,
@@ -126,9 +158,13 @@ impl OverlayMetrics {
             inset_x,
             inner_x,
             text_y,
+            bar_x,
             bar_y,
             bar_width,
             bar_height,
+            control_size,
+            control_y,
+            time_x,
             text_size,
             fallback_text_scale,
         }
@@ -165,7 +201,19 @@ fn render_overlay_rgb(
         .as_ref()
         .map(|font| font.line_height())
         .unwrap_or(7 * fallback_text_scale);
-    let metrics = OverlayMetrics::new(width, height, text_size, fallback_text_scale, text_height);
+    let time_width = time_column_width(
+        font.as_mut().map(|font| &mut **font),
+        state.duration,
+        fallback_text_scale,
+    );
+    let metrics = OverlayMetrics::new(
+        width,
+        height,
+        text_size,
+        fallback_text_scale,
+        text_height,
+        time_width,
+    );
     let panel_width = width
         .saturating_sub(metrics.inset_x.saturating_mul(2))
         .max(1);
@@ -195,7 +243,7 @@ fn render_overlay_rgb(
         width,
         height,
         RoundedRect {
-            x: f64::from(metrics.inner_x),
+            x: f64::from(metrics.bar_x),
             y: f64::from(metrics.bar_y),
             width: f64::from(metrics.bar_width),
             height: f64::from(metrics.bar_height),
@@ -212,7 +260,7 @@ fn render_overlay_rgb(
             width,
             height,
             RoundedRect {
-                x: f64::from(metrics.inner_x),
+                x: f64::from(metrics.bar_x),
                 y: f64::from(metrics.bar_y),
                 width: f64::from(filled),
                 height: f64::from(metrics.bar_height),
@@ -235,47 +283,128 @@ fn render_overlay_rgb(
         scratch.push_str("--:--");
     }
 
+    draw_playback_control(frame, width, height, metrics, state.paused);
     draw_overlay_text(
         font.as_mut().map(|font| &mut **font),
         frame,
         width,
         height,
-        metrics.inner_x,
+        metrics.time_x,
         metrics.text_y,
         metrics.fallback_text_scale,
         scratch,
         TEXT_COLOR,
         238,
     );
+}
 
-    if state.paused {
-        let label = "PAUSED";
-        let label_width = overlay_text_width(font.as_mut().map(|font| &mut **font), label, metrics);
-        if metrics.bar_width > label_width + metrics.fallback_text_scale * 4 {
-            let label_x = metrics.inner_x + metrics.bar_width - label_width;
-            draw_overlay_text(
-                font,
-                frame,
-                width,
-                height,
-                label_x,
-                metrics.text_y,
-                metrics.fallback_text_scale,
-                label,
-                TEXT_COLOR,
-                220,
-            );
-        }
+fn overlay_metrics(
+    width: u32,
+    height: u32,
+    duration: Option<Duration>,
+    font: Option<&mut FontRenderer>,
+) -> OverlayMetrics {
+    let text_size = text_size(width, height);
+    let fallback_text_scale = fallback_text_scale(width, height);
+    let mut font = font;
+    let text_height = font
+        .as_mut()
+        .and_then(|font| font.set_pixel_size(text_size).then(|| font.line_height()))
+        .unwrap_or(7 * fallback_text_scale);
+    let time_width = time_column_width(
+        font.as_mut().map(|font| &mut **font),
+        duration,
+        fallback_text_scale,
+    );
+    OverlayMetrics::new(
+        width,
+        height,
+        text_size,
+        fallback_text_scale,
+        text_height,
+        time_width,
+    )
+}
+
+fn draw_playback_control(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    paused: bool,
+) {
+    let size = metrics.control_size;
+    if size == 0 {
+        return;
+    }
+
+    let x = metrics.inner_x;
+    let y = metrics.control_y;
+    if paused {
+        draw_play_icon(frame, width, height, x, y, size);
+    } else {
+        draw_pause_icon(frame, width, height, x, y, size);
     }
 }
 
-fn overlay_metrics(width: u32, height: u32, font: Option<&mut FontRenderer>) -> OverlayMetrics {
-    let text_size = text_size(width, height);
-    let fallback_text_scale = fallback_text_scale(width, height);
-    let text_height = font
-        .and_then(|font| font.set_pixel_size(text_size).then(|| font.line_height()))
-        .unwrap_or(7 * fallback_text_scale);
-    OverlayMetrics::new(width, height, text_size, fallback_text_scale, text_height)
+fn draw_play_icon(frame: &mut [u8], width: u32, height: u32, x: u32, y: u32, size: u32) {
+    let x = f64::from(x);
+    let y = f64::from(y);
+    let size = f64::from(size);
+    fill_triangle(
+        frame,
+        width,
+        height,
+        Triangle {
+            a: Point {
+                x: x + size * 0.30,
+                y: y + size * 0.21,
+            },
+            b: Point {
+                x: x + size * 0.30,
+                y: y + size * 0.79,
+            },
+            c: Point {
+                x: x + size * 0.77,
+                y: y + size * 0.50,
+            },
+        },
+        TEXT_COLOR,
+        245,
+    );
+}
+
+fn draw_pause_icon(frame: &mut [u8], width: u32, height: u32, x: u32, y: u32, size: u32) {
+    let bar_width = (size / 5).max(2);
+    let bar_height = (size * 3 / 5).max(5);
+    let gap = (size / 7).max(2);
+    let total_width = bar_width.saturating_mul(2).saturating_add(gap);
+    let start_x = x + size.saturating_sub(total_width) / 2;
+    let start_y = y + size.saturating_sub(bar_height) / 2;
+    let radius = rounded_radius(bar_width, bar_height, bar_width / 2);
+
+    for bar_x in [start_x, start_x + bar_width + gap] {
+        fill_rounded_rect(
+            frame,
+            width,
+            height,
+            RoundedRect {
+                x: f64::from(bar_x),
+                y: f64::from(start_y),
+                width: f64::from(bar_width),
+                height: f64::from(bar_height),
+                radius: f64::from(radius),
+            },
+            TEXT_COLOR,
+            245,
+        );
+    }
+}
+
+fn playback_button_hit(metrics: OverlayMetrics, x: u32, y: u32) -> bool {
+    let end_x = metrics.inner_x.saturating_add(metrics.control_size);
+    let end_y = metrics.control_y.saturating_add(metrics.control_size);
+    x >= metrics.inner_x && x <= end_x && y >= metrics.control_y && y <= end_y
 }
 
 fn draw_progress_handle(
@@ -286,7 +415,7 @@ fn draw_progress_handle(
     filled: u32,
 ) {
     let radius = progress_handle_radius(metrics.bar_height);
-    let center_x = f64::from(metrics.inner_x + filled.min(metrics.bar_width));
+    let center_x = f64::from(metrics.bar_x + filled.min(metrics.bar_width));
     let center_y = f64::from(metrics.bar_y) + f64::from(metrics.bar_height) / 2.0;
 
     fill_circle(
@@ -324,9 +453,9 @@ fn progress_hit_ratio(metrics: OverlayMetrics, x: u32, y: u32) -> Option<f64> {
         return None;
     }
 
-    let min_x = metrics.inner_x.saturating_sub(hit_radius);
+    let min_x = metrics.bar_x.saturating_sub(hit_radius);
     let max_x = metrics
-        .inner_x
+        .bar_x
         .saturating_add(metrics.bar_width)
         .saturating_add(hit_radius);
     if x < min_x || x > max_x {
@@ -337,9 +466,9 @@ fn progress_hit_ratio(metrics: OverlayMetrics, x: u32, y: u32) -> Option<f64> {
 }
 
 fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
-    let end_x = metrics.inner_x.saturating_add(metrics.bar_width);
-    let x = x.clamp(metrics.inner_x, end_x);
-    f64::from(x.saturating_sub(metrics.inner_x)) / f64::from(metrics.bar_width.max(1))
+    let end_x = metrics.bar_x.saturating_add(metrics.bar_width);
+    let x = x.clamp(metrics.bar_x, end_x);
+    f64::from(x.saturating_sub(metrics.bar_x)) / f64::from(metrics.bar_width.max(1))
 }
 
 fn text_size(width: u32, video_height: u32) -> u32 {
@@ -370,14 +499,6 @@ fn bar_height_for_text(text_size: u32) -> u32 {
     }
 }
 
-fn text_gap_for_text(text_size: u32) -> u32 {
-    match text_size {
-        24.. => 10,
-        18.. => 8,
-        _ => 6,
-    }
-}
-
 fn vertical_padding_for_text(text_size: u32) -> u32 {
     match text_size {
         24.. => 14,
@@ -391,6 +512,37 @@ fn horizontal_padding_for_text(text_size: u32) -> u32 {
         24.. => 24,
         18.. => 18,
         _ => 12,
+    }
+}
+
+fn control_size_for_text(text_size: u32, text_height: u32) -> u32 {
+    text_height.max(text_size).max(12)
+}
+
+fn control_gap_for_text(text_size: u32) -> u32 {
+    match text_size {
+        24.. => 12,
+        18.. => 10,
+        _ => 8,
+    }
+}
+
+fn time_column_width(
+    font: Option<&mut FontRenderer>,
+    duration: Option<Duration>,
+    fallback_scale: u32,
+) -> u32 {
+    let text = time_column_template(duration);
+    font.map(|font| font.text_width(&text))
+        .unwrap_or_else(|| bitmap_text_width(&text, fallback_scale))
+}
+
+fn time_column_template(duration: Option<Duration>) -> String {
+    if let Some(duration) = duration {
+        let text = format_timestamp(duration);
+        format!("{text} / {text}")
+    } else {
+        "0:00 / --:--".to_string()
     }
 }
 
@@ -445,6 +597,19 @@ struct Circle {
     x: f64,
     y: f64,
     radius: f64,
+}
+
+#[derive(Clone, Copy)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Copy)]
+struct Triangle {
+    a: Point,
+    b: Point,
+    c: Point,
 }
 
 fn fill_rounded_rect(
@@ -519,6 +684,84 @@ fn fill_circle(
     }
 }
 
+fn fill_triangle(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    triangle: Triangle,
+    color: [u8; 3],
+    alpha: u8,
+) {
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let min_x = triangle
+        .a
+        .x
+        .min(triangle.b.x)
+        .min(triangle.c.x)
+        .floor()
+        .max(0.0) as u32;
+    let max_x = triangle
+        .a
+        .x
+        .max(triangle.b.x)
+        .max(triangle.c.x)
+        .ceil()
+        .min(f64::from(width)) as u32;
+    let min_y = triangle
+        .a
+        .y
+        .min(triangle.b.y)
+        .min(triangle.c.y)
+        .floor()
+        .max(0.0) as u32;
+    let max_y = triangle
+        .a
+        .y
+        .max(triangle.b.y)
+        .max(triangle.c.y)
+        .ceil()
+        .min(f64::from(height)) as u32;
+
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let mut covered = 0_u32;
+            for sample_y in [0.25, 0.75] {
+                for sample_x in [0.25, 0.75] {
+                    if triangle_contains(
+                        triangle,
+                        Point {
+                            x: f64::from(x) + sample_x,
+                            y: f64::from(y) + sample_y,
+                        },
+                    ) {
+                        covered += 1;
+                    }
+                }
+            }
+            if covered > 0 {
+                let offset = rgb_offset(width, x, y);
+                blend_pixel(frame, offset, color, (u32::from(alpha) * covered / 4) as u8);
+            }
+        }
+    }
+}
+
+fn triangle_contains(triangle: Triangle, point: Point) -> bool {
+    let d1 = edge_sign(point, triangle.a, triangle.b);
+    let d2 = edge_sign(point, triangle.b, triangle.c);
+    let d3 = edge_sign(point, triangle.c, triangle.a);
+    let has_negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let has_positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(has_negative && has_positive)
+}
+
+fn edge_sign(point: Point, a: Point, b: Point) -> f64 {
+    (point.x - b.x) * (a.y - b.y) - (a.x - b.x) * (point.y - b.y)
+}
+
 fn rounded_rect_coverage(x: f64, y: f64, rect: RoundedRect) -> f64 {
     let half_width = rect.width / 2.0;
     let half_height = rect.height / 2.0;
@@ -561,11 +804,6 @@ fn draw_overlay_text(
             alpha,
         );
     }
-}
-
-fn overlay_text_width(font: Option<&mut FontRenderer>, text: &str, metrics: OverlayMetrics) -> u32 {
-    font.map(|font| font.text_width(text))
-        .unwrap_or_else(|| bitmap_text_width(text, metrics.fallback_text_scale))
 }
 
 fn draw_bitmap_text(
@@ -750,6 +988,70 @@ mod tests {
     }
 
     #[test]
+    fn paused_overlay_draws_play_button() {
+        let width = 320;
+        let height = 180;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+        let mut scratch = String::new();
+
+        render_overlay_rgb(
+            &mut frame,
+            width,
+            height,
+            OverlayState {
+                position: Duration::from_secs(30),
+                duration: Some(Duration::from_secs(120)),
+                paused: true,
+                visible: true,
+            },
+            &mut scratch,
+            None,
+        );
+
+        let metrics = test_metrics(width, height);
+        let offset = rgb_offset(
+            width,
+            metrics.inner_x + metrics.control_size / 2,
+            metrics.control_y + metrics.control_size / 2,
+        );
+        assert!(frame[offset] > 180);
+        assert!(frame[offset + 1] > 180);
+        assert!(frame[offset + 2] > 180);
+    }
+
+    #[test]
+    fn playing_overlay_draws_pause_button() {
+        let width = 320;
+        let height = 180;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+        let mut scratch = String::new();
+
+        render_overlay_rgb(
+            &mut frame,
+            width,
+            height,
+            OverlayState {
+                position: Duration::from_secs(30),
+                duration: Some(Duration::from_secs(120)),
+                paused: false,
+                visible: true,
+            },
+            &mut scratch,
+            None,
+        );
+
+        let metrics = test_metrics(width, height);
+        let offset = rgb_offset(
+            width,
+            metrics.inner_x + metrics.control_size / 3,
+            metrics.control_y + metrics.control_size / 2,
+        );
+        assert!(frame[offset] > 180);
+        assert!(frame[offset + 1] > 180);
+        assert!(frame[offset + 2] > 180);
+    }
+
+    #[test]
     fn rendered_overlay_changes_bottom_pixels_only() {
         let width = 320;
         let height = 180;
@@ -784,7 +1086,7 @@ mod tests {
             Duration::from_secs(30),
             Some(Duration::from_secs(120)),
         );
-        let handle_x = metrics.inner_x + filled;
+        let handle_x = metrics.bar_x + filled;
         let handle_y = metrics.bar_y + metrics.bar_height / 2;
         let offset = rgb_offset(width, handle_x, handle_y);
         assert!(frame[offset] > 200);
@@ -825,7 +1127,7 @@ mod tests {
     #[test]
     fn progress_hit_test_returns_ratio_on_bar() {
         let metrics = test_metrics(320, 180);
-        let x = metrics.inner_x + metrics.bar_width / 2;
+        let x = metrics.bar_x + metrics.bar_width / 2;
         let y = metrics.bar_y + metrics.bar_height / 2;
 
         let ratio = progress_hit_ratio(metrics, x, y).expect("bar should be hittable");
@@ -837,23 +1139,49 @@ mod tests {
     fn progress_hit_test_ignores_points_above_bar() {
         let metrics = test_metrics(320, 180);
 
-        assert_eq!(progress_hit_ratio(metrics, metrics.inner_x, 0), None);
+        assert_eq!(progress_hit_ratio(metrics, metrics.bar_x, 0), None);
     }
 
     #[test]
-    fn overlay_top_padding_stays_consistent_across_sizes() {
+    fn playback_button_hit_test_uses_control_bounds() {
+        let metrics = test_metrics(320, 180);
+
+        assert!(playback_button_hit(
+            metrics,
+            metrics.inner_x + metrics.control_size / 2,
+            metrics.control_y + metrics.control_size / 2
+        ));
+        assert!(!playback_button_hit(
+            metrics,
+            metrics.time_x,
+            metrics.control_y + metrics.control_size / 2
+        ));
+    }
+
+    #[test]
+    fn overlay_uses_single_compact_row_across_sizes() {
         let small = test_metrics(320, 180);
         let large = test_metrics(1920, 1080);
 
-        assert_eq!(small.text_y - small.panel_y, 8);
-        assert_eq!(large.text_y - large.panel_y, 14);
-        assert!(large.panel_height <= 76);
+        assert!(small.bar_x > small.time_x);
+        assert!(large.bar_x > large.time_x);
+        assert_eq!(small.panel_height, 34);
+        assert!(large.panel_height <= 56);
     }
 
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {
         let text_size = text_size(width, height);
         let fallback_text_scale = fallback_text_scale(width, height);
         let text_height = 7 * fallback_text_scale;
-        OverlayMetrics::new(width, height, text_size, fallback_text_scale, text_height)
+        let time_width =
+            time_column_width(None, Some(Duration::from_secs(120)), fallback_text_scale);
+        OverlayMetrics::new(
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            time_width,
+        )
     }
 }
