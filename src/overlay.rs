@@ -14,6 +14,7 @@ pub(crate) struct OverlayState {
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,
     pub(crate) visible: bool,
+    pub(crate) status_message: Option<&'static str>,
 }
 
 pub(crate) struct PlaybackOverlay {
@@ -182,7 +183,7 @@ fn render_overlay_rgb(
     if width == 0 || height == 0 || frame.len() < (width as usize * height as usize * 3) {
         return;
     }
-    if !state.visible {
+    if !state.visible && state.status_message.is_none() {
         return;
     }
 
@@ -201,6 +202,24 @@ fn render_overlay_rgb(
         .as_ref()
         .map(|font| font.line_height())
         .unwrap_or(7 * fallback_text_scale);
+
+    if let Some(message) = state.status_message {
+        draw_status_message(
+            font.as_mut().map(|font| &mut **font),
+            frame,
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            message,
+        );
+    }
+
+    if !state.visible {
+        return;
+    }
+
     let time_width = time_column_width(
         font.as_mut().map(|font| &mut **font),
         state.duration,
@@ -295,6 +314,61 @@ fn render_overlay_rgb(
         scratch,
         TEXT_COLOR,
         238,
+    );
+}
+
+fn draw_status_message(
+    mut font: Option<&mut FontRenderer>,
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    text_size: u32,
+    fallback_scale: u32,
+    text_height: u32,
+    text: &str,
+) {
+    let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
+    let inset_y = (height / 36).clamp(6, 24).min(height.saturating_sub(1));
+    let pad_x = (horizontal_padding_for_text(text_size) / 2).max(6);
+    let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
+    let text_width = font
+        .as_mut()
+        .map(|font| font.text_width(text))
+        .unwrap_or_else(|| bitmap_text_width(text, fallback_scale));
+    let panel_width = text_width
+        .saturating_add(pad_x.saturating_mul(2))
+        .min(width.saturating_sub(inset_x).max(1));
+    let panel_height = text_height
+        .saturating_add(pad_y.saturating_mul(2))
+        .min(height.saturating_sub(inset_y).max(1));
+    let panel_radius = rounded_radius(panel_width, panel_height, text_size / 3);
+
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(inset_x),
+            y: f64::from(inset_y),
+            width: f64::from(panel_width),
+            height: f64::from(panel_height),
+            radius: f64::from(panel_radius),
+        },
+        PANEL_COLOR,
+        202,
+    );
+
+    draw_overlay_text(
+        font,
+        frame,
+        width,
+        height,
+        inset_x.saturating_add(pad_x).min(width.saturating_sub(1)),
+        inset_y.saturating_add(pad_y).min(height.saturating_sub(1)),
+        fallback_scale,
+        text,
+        TEXT_COLOR,
+        244,
     );
 }
 
@@ -927,11 +1001,26 @@ fn glyph(ch: char) -> Option<[u8; 7]> {
         'E' => [
             0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
         ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
         'P' => [
             0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
         ],
         'S' => [
             0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
         ],
         'U' => [
             0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
@@ -1003,6 +1092,7 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
                 visible: true,
+                status_message: None,
             },
             &mut scratch,
             None,
@@ -1035,6 +1125,7 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: true,
+                status_message: None,
             },
             &mut scratch,
             None,
@@ -1068,6 +1159,7 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
                 visible: true,
+                status_message: None,
             },
             &mut scratch,
             None,
@@ -1116,12 +1208,44 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: false,
+                status_message: None,
             },
             &mut scratch,
             None,
         );
 
         assert_eq!(frame, before);
+    }
+
+    #[test]
+    fn status_message_can_render_without_playback_controls() {
+        let width = 320;
+        let height = 180;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+        let before_top = frame[..(width * 40 * 3) as usize].to_vec();
+        let before_bottom = frame[(width * 120 * 3) as usize..].to_vec();
+        let mut scratch = String::new();
+
+        render_overlay_rgb(
+            &mut frame,
+            width,
+            height,
+            OverlayState {
+                position: Duration::from_secs(30),
+                duration: Some(Duration::from_secs(120)),
+                paused: false,
+                visible: false,
+                status_message: Some("MUTE ON"),
+            },
+            &mut scratch,
+            None,
+        );
+
+        assert_ne!(&frame[..before_top.len()], before_top.as_slice());
+        assert_eq!(
+            &frame[(width * 120 * 3) as usize..],
+            before_bottom.as_slice()
+        );
     }
 
     #[test]

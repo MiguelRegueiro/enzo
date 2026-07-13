@@ -29,6 +29,7 @@ Controls:
 
 - Drop a file or URL on the launcher to play it.
 - Space or right click pauses/resumes playback.
+- `m` toggles mute.
 - Left/right arrows seek backward/forward by 5 seconds.
 - Click or drag the progress bar to seek.
 - `q` quits.

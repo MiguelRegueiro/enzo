@@ -65,6 +65,10 @@ static int pause_requested(const int *pause_flag) {
     return pause_flag != NULL && *((volatile const int *)pause_flag) != 0;
 }
 
+static int mute_requested(const int *mute_flag) {
+    return mute_flag != NULL && *((volatile const int *)mute_flag) != 0;
+}
+
 static int seek_generation_value(const int *seek_generation) {
     return seek_generation == NULL ? 0 : *((volatile const int *)seek_generation);
 }
@@ -956,6 +960,7 @@ static int write_converted_audio(
     RigPulseOutput *pulse,
     const int *stop_flag,
     const int *pause_flag,
+    const int *mute_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
     int *seen_seek_generation,
@@ -1013,6 +1018,9 @@ static int write_converted_audio(
     }
 
     if (bytes > 0) {
+        if (mute_requested(mute_flag)) {
+            memset(*out_buffer, 0, (size_t)bytes);
+        }
         int ret = pulse_output_write(
             pulse,
             *out_buffer,
@@ -1041,6 +1049,7 @@ int rig_play_audio(
     const char *path,
     const int *stop_flag,
     const int *pause_flag,
+    const int *mute_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
     char *err,
@@ -1232,6 +1241,7 @@ int rig_play_audio(
                     &pulse,
                     stop_flag,
                     pause_flag,
+                    mute_flag,
                     seek_generation,
                     seek_micros,
                     &seen_seek_generation,

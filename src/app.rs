@@ -24,6 +24,13 @@ use crate::{
 const MAX_DECODE_WIDTH: u32 = 1920;
 const MAX_DECODE_HEIGHT: u32 = 1080;
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
+const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
+
+#[derive(Clone, Copy)]
+struct StatusMessage {
+    text: &'static str,
+    visible_until: Instant,
+}
 
 pub(crate) fn run() -> Result<()> {
     let config = parse_args(env::args_os().skip(1))?;
@@ -81,8 +88,9 @@ fn play_media(path: PathBuf) -> Result<()> {
     let mut target = terminal_target(source.width, source.height);
 
     let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
+    let mut muted = false;
     let mut audio = if source.has_audio {
-        Some(AudioPlayer::spawn(&path)?)
+        Some(AudioPlayer::spawn(&path, muted)?)
     } else {
         None
     };
@@ -110,6 +118,8 @@ fn play_media(path: PathBuf) -> Result<()> {
     let mut paused = false;
     let mut overlay_visible_until = None::<Instant>;
     let mut last_drawn_overlay_visible = false;
+    let mut last_drawn_status_visible = false;
+    let mut status_message = None::<StatusMessage>;
     let mut scrub_position = None::<Duration>;
 
     loop {
@@ -137,6 +147,17 @@ fn play_media(path: PathBuf) -> Result<()> {
                 toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
                 redraw_current_frame = have_frame;
             }
+            PlaybackCommand::ToggleMute => {
+                muted = !muted;
+                if let Some(audio) = audio.as_mut() {
+                    audio.set_muted(muted);
+                }
+                status_message = Some(StatusMessage {
+                    text: if muted { "MUTE ON" } else { "MUTE OFF" },
+                    visible_until: input_at + STATUS_VISIBLE_FOR,
+                });
+                redraw_current_frame = have_frame;
+            }
             PlaybackCommand::SeekBy(seconds) => {
                 scrub_position = None;
                 let seek_target = seek_position(playback_position, seconds, source.duration);
@@ -152,6 +173,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                     &mut audio_done,
                     seek_target,
                     paused,
+                    muted,
                 )?;
                 playback_position = seek_target;
                 video_ended = false;
@@ -190,6 +212,7 @@ fn play_media(path: PathBuf) -> Result<()> {
             have_frame = false;
             redraw_current_frame = false;
             last_drawn_overlay_visible = false;
+            last_drawn_status_visible = false;
             scrub_position = None;
             video_ended = false;
             next_frame_at = Instant::now();
@@ -201,6 +224,7 @@ fn play_media(path: PathBuf) -> Result<()> {
             last_layout = Some(layout);
             previous_image_id = None;
             last_drawn_overlay_visible = false;
+            last_drawn_status_visible = false;
             if paused && have_frame {
                 let state = overlay_state(
                     playback_position,
@@ -208,6 +232,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                     source.duration,
                     paused,
                     overlay_visible_until,
+                    status_message,
                 );
                 draw_frame(
                     &mut out,
@@ -222,6 +247,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                     &mut sequence,
                 )?;
                 last_drawn_overlay_visible = state.visible;
+                last_drawn_status_visible = state.status_message.is_some();
                 redraw_current_frame = false;
             }
         }
@@ -310,6 +336,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                 &mut audio_done,
                 seek_target,
                 paused,
+                muted,
             )?;
             playback_position = seek_target;
             video_ended = false;
@@ -323,7 +350,11 @@ fn play_media(path: PathBuf) -> Result<()> {
             overlay_visible_until,
             Instant::now(),
         );
-        if have_frame && last_drawn_overlay_visible && !overlay_is_visible {
+        let status_is_visible = status_text(status_message, Instant::now()).is_some();
+        if have_frame
+            && ((last_drawn_overlay_visible && !overlay_is_visible)
+                || (last_drawn_status_visible && !status_is_visible))
+        {
             redraw_current_frame = true;
         }
 
@@ -334,6 +365,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                 source.duration,
                 paused,
                 overlay_visible_until,
+                status_message,
             );
             draw_frame(
                 &mut out,
@@ -348,6 +380,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                 &mut sequence,
             )?;
             last_drawn_overlay_visible = state.visible;
+            last_drawn_status_visible = state.status_message.is_some();
             redraw_current_frame = false;
             out.flush()?;
         }
@@ -362,6 +395,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                         source.duration,
                         paused,
                         overlay_visible_until,
+                        status_message,
                     );
                     draw_frame(
                         &mut out,
@@ -377,6 +411,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                     )?;
                     have_frame = true;
                     last_drawn_overlay_visible = state.visible;
+                    last_drawn_status_visible = state.status_message.is_some();
                     redraw_current_frame = false;
                 }
                 FrameStatus::NoFrame => {}
@@ -405,6 +440,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                     source.duration,
                     paused,
                     overlay_visible_until,
+                    status_message,
                 );
                 draw_frame(
                     &mut out,
@@ -420,6 +456,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                 )?;
                 have_frame = true;
                 last_drawn_overlay_visible = state.visible;
+                last_drawn_status_visible = state.status_message.is_some();
                 redraw_current_frame = false;
                 out.flush()?;
                 advance_frame_clock(&mut next_frame_at, frame_interval);
@@ -440,6 +477,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                         source.duration,
                         paused,
                         overlay_visible_until,
+                        status_message,
                     );
                     draw_frame(
                         &mut out,
@@ -454,6 +492,7 @@ fn play_media(path: PathBuf) -> Result<()> {
                         &mut sequence,
                     )?;
                     last_drawn_overlay_visible = state.visible;
+                    last_drawn_status_visible = state.status_message.is_some();
                     redraw_current_frame = false;
                 }
                 out.flush()?;
@@ -523,14 +562,16 @@ fn seek_playback(
     audio_done: &mut bool,
     position: Duration,
     paused: bool,
+    muted: bool,
 ) -> Result<()> {
     decoder.seek(position);
     if has_audio {
         if let Some(audio) = audio.as_mut() {
             audio.seek(position);
             audio.set_paused(paused);
+            audio.set_muted(muted);
         } else {
-            *audio = Some(AudioPlayer::spawn_at(path, position, paused)?);
+            *audio = Some(AudioPlayer::spawn_at(path, position, paused, muted)?);
         }
         *audio_done = false;
     }
@@ -559,18 +600,20 @@ fn overlay_state(
     duration: Option<Duration>,
     paused: bool,
     visible_until: Option<Instant>,
+    status_message: Option<StatusMessage>,
 ) -> OverlayState {
+    let now = Instant::now();
     OverlayState {
         position: scrub_position.unwrap_or(position),
         duration,
         paused,
-        visible: overlay_visible(
-            paused,
-            scrub_position.is_some(),
-            visible_until,
-            Instant::now(),
-        ),
+        visible: overlay_visible(paused, scrub_position.is_some(), visible_until, now),
+        status_message: status_text(status_message, now),
     }
+}
+
+fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
+    message.and_then(|message| (now < message.visible_until).then_some(message.text))
 }
 
 fn overlay_visible(
@@ -771,6 +814,7 @@ Usage:
 Controls:
   Drop file/URL      play from launcher
   Space, right click  pause/play
+  m                  mute/unmute
   Left, Right         seek 5 seconds
   q                  quit
 "
@@ -973,10 +1017,12 @@ mod tests {
             Some(Duration::from_secs(60)),
             false,
             None,
+            None,
         );
 
         assert_eq!(state.position, Duration::from_secs(30));
         assert!(state.visible);
+        assert_eq!(state.status_message, None);
     }
 
     #[test]

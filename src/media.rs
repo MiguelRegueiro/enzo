@@ -65,6 +65,7 @@ unsafe extern "C" {
         path: *const c_char,
         stop_flag: *const c_int,
         pause_flag: *const c_int,
+        mute_flag: *const c_int,
         seek_generation: *const c_int,
         seek_micros: *const i64,
         err: *mut c_char,
@@ -569,6 +570,7 @@ fn seek_video_thread(
 pub(crate) struct AudioPlayer {
     stop: Arc<AtomicI32>,
     pause: Arc<AtomicI32>,
+    mute: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
     handle: Option<thread::JoinHandle<Result<()>>>,
@@ -576,16 +578,23 @@ pub(crate) struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub(crate) fn spawn(path: &Path) -> Result<Self> {
-        Self::spawn_at(path, Duration::ZERO, false)
+    pub(crate) fn spawn(path: &Path, muted: bool) -> Result<Self> {
+        Self::spawn_at(path, Duration::ZERO, false, muted)
     }
 
-    pub(crate) fn spawn_at(path: &Path, position: Duration, paused: bool) -> Result<Self> {
+    pub(crate) fn spawn_at(
+        path: &Path,
+        position: Duration,
+        paused: bool,
+        muted: bool,
+    ) -> Result<Self> {
         let path = path_cstring(path)?;
         let stop = Arc::new(AtomicI32::new(0));
         let stop_thread = Arc::clone(&stop);
         let pause = Arc::new(AtomicI32::new(i32::from(paused)));
         let pause_thread = Arc::clone(&pause);
+        let mute = Arc::new(AtomicI32::new(i32::from(muted)));
+        let mute_thread = Arc::clone(&mute);
         let seek_generation = Arc::new(AtomicI32::new(i32::from(position > Duration::ZERO)));
         let seek_generation_thread = Arc::clone(&seek_generation);
         let seek_micros = Arc::new(AtomicI64::new(duration_micros_i64(position)));
@@ -597,6 +606,7 @@ impl AudioPlayer {
                     path.as_ptr(),
                     stop_thread.as_ptr(),
                     pause_thread.as_ptr(),
+                    mute_thread.as_ptr(),
                     seek_generation_thread.as_ptr(),
                     seek_micros_thread.as_ptr(),
                     error.as_mut_ptr(),
@@ -612,6 +622,7 @@ impl AudioPlayer {
         Ok(Self {
             stop,
             pause,
+            mute,
             seek_generation,
             seek_micros,
             handle: Some(handle),
@@ -652,6 +663,10 @@ impl AudioPlayer {
 
     pub(crate) fn set_paused(&self, paused: bool) {
         self.pause.store(i32::from(paused), Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_muted(&self, muted: bool) {
+        self.mute.store(i32::from(muted), Ordering::Relaxed);
     }
 
     pub(crate) fn seek(&self, position: Duration) {
