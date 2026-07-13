@@ -9,7 +9,7 @@ It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resam
 
 - Kitty or another terminal that supports the Kitty graphics protocol
 - FFmpeg runtime/development libraries: `libavformat`, `libavcodec`, `libavutil`, `libswscale`, `libswresample`
-- PulseAudio runtime/development libraries: `libpulse`, `libpulse-simple`
+- PulseAudio runtime/development libraries: `libpulse`
 - `cc` and `ar` to build the small native media shim
 
 ## Run

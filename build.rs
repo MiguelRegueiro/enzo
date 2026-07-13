@@ -42,6 +42,5 @@ fn main() {
     println!("cargo:rustc-link-lib=avutil");
     println!("cargo:rustc-link-lib=swscale");
     println!("cargo:rustc-link-lib=swresample");
-    println!("cargo:rustc-link-lib=pulse-simple");
     println!("cargo:rustc-link-lib=pulse");
 }

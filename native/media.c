@@ -9,9 +9,7 @@
 #include <libavutil/time.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
-#include <pulse/error.h>
-#include <pulse/sample.h>
-#include <pulse/simple.h>
+#include <pulse/pulseaudio.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +38,19 @@ typedef struct RigVideoDecoder {
     double fallback_interval;
 } RigVideoDecoder;
 
+typedef struct RigPulseOutput {
+    pa_threaded_mainloop *mainloop;
+    pa_context *context;
+    pa_stream *stream;
+    int started;
+} RigPulseOutput;
+
+typedef struct PulseOperationWait {
+    pa_threaded_mainloop *mainloop;
+    int done;
+    int success;
+} PulseOperationWait;
+
 void rig_video_decoder_close(RigVideoDecoder *decoder);
 
 static int stop_requested(const int *stop_flag) {
@@ -48,16 +59,6 @@ static int stop_requested(const int *stop_flag) {
 
 static int pause_requested(const int *pause_flag) {
     return pause_flag != NULL && *((volatile const int *)pause_flag) != 0;
-}
-
-static int wait_while_paused(const int *stop_flag, const int *pause_flag) {
-    while (pause_requested(pause_flag)) {
-        if (stop_requested(stop_flag)) {
-            return -1;
-        }
-        av_usleep(10000);
-    }
-    return 0;
 }
 
 static void set_error(char *err, size_t err_len, const char *fmt, ...) {
@@ -75,6 +76,335 @@ static void set_ffmpeg_error(char *err, size_t err_len, const char *prefix, int 
     char detail[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(code, detail, sizeof(detail));
     set_error(err, err_len, "%s: %s", prefix, detail);
+}
+
+static void pulse_context_state_callback(pa_context *context, void *userdata) {
+    (void)context;
+    RigPulseOutput *output = userdata;
+    pa_threaded_mainloop_signal(output->mainloop, 0);
+}
+
+static void pulse_stream_state_callback(pa_stream *stream, void *userdata) {
+    (void)stream;
+    RigPulseOutput *output = userdata;
+    pa_threaded_mainloop_signal(output->mainloop, 0);
+}
+
+static void pulse_stream_success_callback(pa_stream *stream, int success, void *userdata) {
+    (void)stream;
+    PulseOperationWait *wait = userdata;
+    wait->success = success;
+    wait->done = 1;
+    pa_threaded_mainloop_signal(wait->mainloop, 0);
+}
+
+static const char *pulse_output_error(RigPulseOutput *output) {
+    if (output->context == NULL) {
+        return "unknown PulseAudio error";
+    }
+    return pa_strerror(pa_context_errno(output->context));
+}
+
+static int wait_for_context_ready_locked(
+    RigPulseOutput *output,
+    char *err,
+    size_t err_len
+) {
+    for (;;) {
+        pa_context_state_t state = pa_context_get_state(output->context);
+        if (state == PA_CONTEXT_READY) {
+            return 0;
+        }
+        if (!PA_CONTEXT_IS_GOOD(state)) {
+            set_error(err, err_len, "failed to connect PulseAudio: %s", pulse_output_error(output));
+            return -1;
+        }
+        pa_threaded_mainloop_wait(output->mainloop);
+    }
+}
+
+static int wait_for_stream_ready_locked(RigPulseOutput *output, char *err, size_t err_len) {
+    for (;;) {
+        pa_stream_state_t state = pa_stream_get_state(output->stream);
+        if (state == PA_STREAM_READY) {
+            return 0;
+        }
+        if (!PA_STREAM_IS_GOOD(state)) {
+            set_error(
+                err,
+                err_len,
+                "failed to create PulseAudio stream: %s",
+                pulse_output_error(output)
+            );
+            return -1;
+        }
+        pa_threaded_mainloop_wait(output->mainloop);
+    }
+}
+
+static int wait_for_pulse_operation_locked(
+    RigPulseOutput *output,
+    pa_operation *operation,
+    PulseOperationWait *wait,
+    const char *action,
+    char *err,
+    size_t err_len
+) {
+    if (operation == NULL) {
+        set_error(err, err_len, "%s: %s", action, pulse_output_error(output));
+        return -1;
+    }
+
+    while (pa_operation_get_state(operation) == PA_OPERATION_RUNNING && !wait->done) {
+        pa_threaded_mainloop_wait(output->mainloop);
+    }
+    pa_operation_unref(operation);
+
+    if (!wait->done || !wait->success) {
+        set_error(err, err_len, "%s: %s", action, pulse_output_error(output));
+        return -1;
+    }
+    return 0;
+}
+
+static void pulse_output_close(RigPulseOutput *output) {
+    if (output == NULL || output->mainloop == NULL) {
+        return;
+    }
+
+    pa_threaded_mainloop_lock(output->mainloop);
+    if (output->stream != NULL) {
+        pa_stream_disconnect(output->stream);
+        pa_stream_unref(output->stream);
+        output->stream = NULL;
+    }
+    if (output->context != NULL) {
+        pa_context_disconnect(output->context);
+        pa_context_unref(output->context);
+        output->context = NULL;
+    }
+    pa_threaded_mainloop_unlock(output->mainloop);
+
+    if (output->started) {
+        pa_threaded_mainloop_stop(output->mainloop);
+        output->started = 0;
+    }
+    pa_threaded_mainloop_free(output->mainloop);
+    output->mainloop = NULL;
+}
+
+static int pulse_output_open(RigPulseOutput *output, char *err, size_t err_len) {
+    memset(output, 0, sizeof(*output));
+    output->mainloop = pa_threaded_mainloop_new();
+    if (output->mainloop == NULL) {
+        set_error(err, err_len, "failed to allocate PulseAudio mainloop");
+        return -1;
+    }
+
+    pa_mainloop_api *api = pa_threaded_mainloop_get_api(output->mainloop);
+    output->context = pa_context_new(api, "rigoberto");
+    if (output->context == NULL) {
+        set_error(err, err_len, "failed to allocate PulseAudio context");
+        pulse_output_close(output);
+        return -1;
+    }
+    pa_context_set_state_callback(output->context, pulse_context_state_callback, output);
+
+    if (pa_threaded_mainloop_start(output->mainloop) < 0) {
+        set_error(err, err_len, "failed to start PulseAudio mainloop");
+        pulse_output_close(output);
+        return -1;
+    }
+    output->started = 1;
+
+    pa_threaded_mainloop_lock(output->mainloop);
+    if (pa_context_connect(output->context, NULL, PA_CONTEXT_NOFLAGS, NULL) < 0) {
+        set_error(err, err_len, "failed to connect PulseAudio: %s", pulse_output_error(output));
+        pa_threaded_mainloop_unlock(output->mainloop);
+        pulse_output_close(output);
+        return -1;
+    }
+    if (wait_for_context_ready_locked(output, err, err_len) < 0) {
+        pa_threaded_mainloop_unlock(output->mainloop);
+        pulse_output_close(output);
+        return -1;
+    }
+
+    pa_sample_spec sample_spec = {
+        .format = PA_SAMPLE_S16LE,
+        .rate = 48000,
+        .channels = 2,
+    };
+    output->stream = pa_stream_new(output->context, "playback", &sample_spec, NULL);
+    if (output->stream == NULL) {
+        set_error(err, err_len, "failed to allocate PulseAudio stream: %s", pulse_output_error(output));
+        pa_threaded_mainloop_unlock(output->mainloop);
+        pulse_output_close(output);
+        return -1;
+    }
+    pa_stream_set_state_callback(output->stream, pulse_stream_state_callback, output);
+
+    pa_buffer_attr buffer_attr = {
+        .maxlength = (uint32_t)-1,
+        .tlength = 48000 / 50 * 2 * 2,
+        .prebuf = 0,
+        .minreq = 48000 / 100 * 2 * 2,
+        .fragsize = (uint32_t)-1,
+    };
+    pa_stream_flags_t flags =
+        PA_STREAM_ADJUST_LATENCY | PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_AUTO_TIMING_UPDATE;
+    if (pa_stream_connect_playback(output->stream, NULL, &buffer_attr, flags, NULL, NULL) < 0) {
+        set_error(err, err_len, "failed to connect PulseAudio stream: %s", pulse_output_error(output));
+        pa_threaded_mainloop_unlock(output->mainloop);
+        pulse_output_close(output);
+        return -1;
+    }
+    if (wait_for_stream_ready_locked(output, err, err_len) < 0) {
+        pa_threaded_mainloop_unlock(output->mainloop);
+        pulse_output_close(output);
+        return -1;
+    }
+    pa_threaded_mainloop_unlock(output->mainloop);
+    return 0;
+}
+
+static int pulse_output_set_corked_locked(
+    RigPulseOutput *output,
+    int corked,
+    char *err,
+    size_t err_len
+) {
+    PulseOperationWait wait = {
+        .mainloop = output->mainloop,
+        .done = 0,
+        .success = 0,
+    };
+    pa_operation *operation =
+        pa_stream_cork(output->stream, corked, pulse_stream_success_callback, &wait);
+    return wait_for_pulse_operation_locked(
+        output,
+        operation,
+        &wait,
+        corked ? "failed to pause audio" : "failed to resume audio",
+        err,
+        err_len
+    );
+}
+
+static int sync_pulse_pause(
+    RigPulseOutput *output,
+    const int *stop_flag,
+    const int *pause_flag,
+    int *corked,
+    char *err,
+    size_t err_len
+) {
+    if (pause_requested(pause_flag) && !*corked) {
+        pa_threaded_mainloop_lock(output->mainloop);
+        int ret = pulse_output_set_corked_locked(output, 1, err, err_len);
+        pa_threaded_mainloop_unlock(output->mainloop);
+        if (ret < 0) {
+            return -1;
+        }
+        *corked = 1;
+    }
+
+    while (pause_requested(pause_flag)) {
+        if (stop_requested(stop_flag)) {
+            return 1;
+        }
+        av_usleep(1000);
+    }
+
+    if (*corked) {
+        pa_threaded_mainloop_lock(output->mainloop);
+        int ret = pulse_output_set_corked_locked(output, 0, err, err_len);
+        pa_threaded_mainloop_unlock(output->mainloop);
+        if (ret < 0) {
+            return -1;
+        }
+        *corked = 0;
+    }
+    return 0;
+}
+
+static int pulse_output_write(
+    RigPulseOutput *output,
+    const uint8_t *data,
+    int bytes,
+    const int *stop_flag,
+    const int *pause_flag,
+    int *corked,
+    char *err,
+    size_t err_len
+) {
+    const size_t max_chunk = 48000 / 100 * 2 * 2;
+    int offset = 0;
+
+    while (offset < bytes) {
+        if (stop_requested(stop_flag)) {
+            return 0;
+        }
+
+        int pause_status =
+            sync_pulse_pause(output, stop_flag, pause_flag, corked, err, err_len);
+        if (pause_status < 0) {
+            return -1;
+        }
+        if (pause_status > 0 || stop_requested(stop_flag)) {
+            return 0;
+        }
+
+        pa_threaded_mainloop_lock(output->mainloop);
+        size_t writable = pa_stream_writable_size(output->stream);
+        if (writable == (size_t)-1) {
+            set_error(err, err_len, "failed to query PulseAudio stream: %s", pulse_output_error(output));
+            pa_threaded_mainloop_unlock(output->mainloop);
+            return -1;
+        }
+        if (writable == 0) {
+            pa_threaded_mainloop_unlock(output->mainloop);
+            av_usleep(1000);
+            continue;
+        }
+
+        size_t remaining = (size_t)(bytes - offset);
+        size_t chunk = remaining < writable ? remaining : writable;
+        if (chunk > max_chunk) {
+            chunk = max_chunk;
+        }
+        if (pa_stream_write(output->stream, data + offset, chunk, NULL, 0, PA_SEEK_RELATIVE)
+            < 0) {
+            set_error(err, err_len, "failed to write audio: %s", pulse_output_error(output));
+            pa_threaded_mainloop_unlock(output->mainloop);
+            return -1;
+        }
+        pa_threaded_mainloop_unlock(output->mainloop);
+        offset += (int)chunk;
+    }
+
+    return 0;
+}
+
+static int pulse_output_drain(RigPulseOutput *output, char *err, size_t err_len) {
+    pa_threaded_mainloop_lock(output->mainloop);
+    PulseOperationWait wait = {
+        .mainloop = output->mainloop,
+        .done = 0,
+        .success = 0,
+    };
+    pa_operation *operation =
+        pa_stream_drain(output->stream, pulse_stream_success_callback, &wait);
+    int ret = wait_for_pulse_operation_locked(
+        output,
+        operation,
+        &wait,
+        "failed to drain audio",
+        err,
+        err_len
+    );
+    pa_threaded_mainloop_unlock(output->mainloop);
+    return ret;
 }
 
 static double rational_to_fps(AVRational value) {
@@ -429,7 +759,10 @@ static int write_converted_audio(
     SwrContext *swr,
     AVCodecContext *codec,
     AVFrame *frame,
-    pa_simple *pulse,
+    RigPulseOutput *pulse,
+    const int *stop_flag,
+    const int *pause_flag,
+    int *corked,
     uint8_t **out_buffer,
     int *out_capacity,
     char *err,
@@ -482,9 +815,18 @@ static int write_converted_audio(
         return -1;
     }
 
-    int pulse_error = 0;
-    if (bytes > 0 && pa_simple_write(pulse, *out_buffer, (size_t)bytes, &pulse_error) < 0) {
-        set_error(err, err_len, "failed to write audio: %s", pa_strerror(pulse_error));
+    if (bytes > 0
+        && pulse_output_write(
+               pulse,
+               *out_buffer,
+               bytes,
+               stop_flag,
+               pause_flag,
+               corked,
+               err,
+               err_len
+           )
+               < 0) {
         return -1;
     }
 
@@ -555,32 +897,8 @@ int rig_play_audio(
         return -1;
     }
 
-    pa_sample_spec sample_spec = {
-        .format = PA_SAMPLE_S16LE,
-        .rate = 48000,
-        .channels = 2,
-    };
-    pa_buffer_attr buffer_attr = {
-        .maxlength = (uint32_t)-1,
-        .tlength = 48000 / 20 * 2 * 2,
-        .prebuf = 0,
-        .minreq = (uint32_t)-1,
-        .fragsize = (uint32_t)-1,
-    };
-    int pulse_error = 0;
-    pa_simple *pulse = pa_simple_new(
-        NULL,
-        "rigoberto",
-        PA_STREAM_PLAYBACK,
-        NULL,
-        "playback",
-        &sample_spec,
-        NULL,
-        &buffer_attr,
-        &pulse_error
-    );
-    if (pulse == NULL) {
-        set_error(err, err_len, "failed to open PulseAudio: %s", pa_strerror(pulse_error));
+    RigPulseOutput pulse;
+    if (pulse_output_open(&pulse, err, err_len) < 0) {
         swr_free(&swr);
         av_channel_layout_uninit(&src_layout);
         av_channel_layout_uninit(&dst_layout);
@@ -595,6 +913,7 @@ int rig_play_audio(
     int out_capacity = 0;
     int failed = 0;
     int flushing = 0;
+    int corked = 0;
 
     if (packet == NULL || frame == NULL) {
         set_error(err, err_len, "failed to allocate audio packet/frame");
@@ -602,13 +921,25 @@ int rig_play_audio(
     }
 
     while (!failed && !stop_requested(stop_flag)) {
-        if (wait_while_paused(stop_flag, pause_flag) < 0) {
+        int pause_status =
+            sync_pulse_pause(&pulse, stop_flag, pause_flag, &corked, err, err_len);
+        if (pause_status < 0) {
+            failed = 1;
+            break;
+        }
+        if (pause_status > 0) {
             break;
         }
 
         ret = avcodec_receive_frame(codec, frame);
         if (ret == 0) {
-            if (wait_while_paused(stop_flag, pause_flag) < 0) {
+            pause_status = sync_pulse_pause(&pulse, stop_flag, pause_flag, &corked, err, err_len);
+            if (pause_status < 0) {
+                failed = 1;
+                av_frame_unref(frame);
+                break;
+            }
+            if (pause_status > 0) {
                 av_frame_unref(frame);
                 break;
             }
@@ -616,7 +947,10 @@ int rig_play_audio(
                     swr,
                     codec,
                     frame,
-                    pulse,
+                    &pulse,
+                    stop_flag,
+                    pause_flag,
+                    &corked,
                     &out_buffer,
                     &out_capacity,
                     err,
@@ -670,9 +1004,7 @@ int rig_play_audio(
     }
 
     if (!failed && !stop_requested(stop_flag)) {
-        pulse_error = 0;
-        if (pa_simple_drain(pulse, &pulse_error) < 0) {
-            set_error(err, err_len, "failed to drain audio: %s", pa_strerror(pulse_error));
+        if (pulse_output_drain(&pulse, err, err_len) < 0) {
             failed = 1;
         }
     }
@@ -684,7 +1016,7 @@ int rig_play_audio(
     if (packet != NULL) {
         av_packet_free(&packet);
     }
-    pa_simple_free(pulse);
+    pulse_output_close(&pulse);
     swr_free(&swr);
     av_channel_layout_uninit(&src_layout);
     av_channel_layout_uninit(&dst_layout);
