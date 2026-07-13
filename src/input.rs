@@ -6,15 +6,24 @@ use crossterm::event::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PlaybackInput {
+pub(crate) enum PlaybackCommand {
     None,
     Quit,
     TogglePause,
     SeekBy(i32),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlaybackInput {
+    pub(crate) command: PlaybackCommand,
+    pub(crate) mouse_activity: bool,
+}
+
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
-    let mut command = PlaybackInput::None;
+    let mut input = PlaybackInput {
+        command: PlaybackCommand::None,
+        mouse_activity: false,
+    };
     while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
         match event::read().context("failed to read terminal input")? {
             Event::Key(key) => {
@@ -25,26 +34,28 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     || (matches!(key.code, KeyCode::Char('c'))
                         && key.modifiers.contains(KeyModifiers::CONTROL))
                 {
-                    return Ok(PlaybackInput::Quit);
+                    input.command = PlaybackCommand::Quit;
+                    return Ok(input);
                 }
                 if matches!(key.code, KeyCode::Char(' ')) {
-                    command = PlaybackInput::TogglePause;
+                    input.command = PlaybackCommand::TogglePause;
                 }
                 if matches!(key.code, KeyCode::Right) {
-                    command = PlaybackInput::SeekBy(5);
+                    input.command = PlaybackCommand::SeekBy(5);
                 }
                 if matches!(key.code, KeyCode::Left) {
-                    command = PlaybackInput::SeekBy(-5);
+                    input.command = PlaybackCommand::SeekBy(-5);
                 }
             }
             Event::Mouse(mouse) => {
+                input.mouse_activity = true;
                 if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-                    command = PlaybackInput::TogglePause;
+                    input.command = PlaybackCommand::TogglePause;
                 }
             }
             _ => {}
         }
     }
 
-    Ok(command)
+    Ok(input)
 }

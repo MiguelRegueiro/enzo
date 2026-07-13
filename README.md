@@ -25,7 +25,7 @@ Controls:
 - Left/right arrows seek backward/forward by 5 seconds.
 - `q`, Esc, or Ctrl-C quits playback.
 
-Playback shows a bottom overlay with elapsed time, total duration, and progress.
+The playback overlay appears while paused, after seeking, and on mouse activity.
 
 The first version intentionally accepts only a video path, plus `--force` for compatible terminals
 that do not advertise themselves as Kitty.

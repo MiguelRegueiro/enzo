@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
-    input::{PlaybackInput, read_input_events},
+    input::{PlaybackCommand, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
     overlay::{OverlayState, PlaybackOverlay},
     terminal::{
@@ -22,6 +22,7 @@ use crate::{
 
 const MAX_DECODE_WIDTH: u32 = 1920;
 const MAX_DECODE_HEIGHT: u32 = 1080;
+const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 
 pub(crate) fn run() -> Result<()> {
     let config = parse_args(env::args_os().skip(1))?;
@@ -72,14 +73,27 @@ pub(crate) fn run() -> Result<()> {
     let mut next_frame_at = playback_started_at;
     let mut playback_position = Duration::ZERO;
     let mut paused = false;
+    let mut overlay_visible_until = None::<Instant>;
+    let mut last_drawn_overlay_visible = false;
 
     loop {
         poll_audio(&mut audio, &mut audio_done)?;
 
-        match read_input_events()? {
-            PlaybackInput::Quit => break,
-            PlaybackInput::TogglePause => {
+        let input = read_input_events()?;
+        let input_at = Instant::now();
+        let was_overlay_visible = overlay_visible(paused, overlay_visible_until, input_at);
+        if input.mouse_activity {
+            overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+            if have_frame && !was_overlay_visible {
+                redraw_current_frame = true;
+            }
+        }
+
+        match input.command {
+            PlaybackCommand::Quit => break,
+            PlaybackCommand::TogglePause => {
                 paused = !paused;
+                overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                 decoder.set_paused(paused);
                 if let Some(audio) = audio.as_mut() {
                     audio.set_paused(paused);
@@ -89,11 +103,12 @@ pub(crate) fn run() -> Result<()> {
                 }
                 redraw_current_frame = have_frame;
             }
-            PlaybackInput::SeekBy(seconds) => {
+            PlaybackCommand::SeekBy(seconds) => {
                 let seek_target = seek_position(playback_position, seconds, source.duration);
                 if is_end_seek(seek_target, source.duration) {
                     break;
                 }
+                overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                 decoder.seek(seek_target);
                 if source.has_audio {
                     if let Some(audio) = audio.as_mut() {
@@ -107,8 +122,9 @@ pub(crate) fn run() -> Result<()> {
                 playback_position = seek_target;
                 video_ended = false;
                 next_frame_at = Instant::now();
+                redraw_current_frame = have_frame;
             }
-            PlaybackInput::None => {}
+            PlaybackCommand::None => {}
         }
 
         let current_target = terminal_target(source.width, source.height);
@@ -139,6 +155,7 @@ pub(crate) fn run() -> Result<()> {
             previous_image_id = None;
             have_frame = false;
             redraw_current_frame = false;
+            last_drawn_overlay_visible = false;
             video_ended = false;
             next_frame_at = Instant::now();
         }
@@ -148,7 +165,14 @@ pub(crate) fn run() -> Result<()> {
             clear_screen_and_images(&mut out)?;
             last_layout = Some(layout);
             previous_image_id = None;
+            last_drawn_overlay_visible = false;
             if paused && have_frame {
+                let state = overlay_state(
+                    playback_position,
+                    source.duration,
+                    paused,
+                    overlay_visible_until,
+                );
                 draw_frame(
                     &mut out,
                     target,
@@ -158,18 +182,26 @@ pub(crate) fn run() -> Result<()> {
                     &frame,
                     &mut composited_frame,
                     &mut overlay,
-                    OverlayState {
-                        position: playback_position,
-                        duration: source.duration,
-                        paused,
-                    },
+                    state,
                     &mut sequence,
                 )?;
+                last_drawn_overlay_visible = state.visible;
                 redraw_current_frame = false;
             }
         }
 
+        let overlay_is_visible = overlay_visible(paused, overlay_visible_until, Instant::now());
+        if have_frame && last_drawn_overlay_visible && !overlay_is_visible {
+            redraw_current_frame = true;
+        }
+
         if redraw_current_frame && have_frame {
+            let state = overlay_state(
+                playback_position,
+                source.duration,
+                paused,
+                overlay_visible_until,
+            );
             draw_frame(
                 &mut out,
                 target,
@@ -179,13 +211,10 @@ pub(crate) fn run() -> Result<()> {
                 &frame,
                 &mut composited_frame,
                 &mut overlay,
-                OverlayState {
-                    position: playback_position,
-                    duration: source.duration,
-                    paused,
-                },
+                state,
                 &mut sequence,
             )?;
+            last_drawn_overlay_visible = state.visible;
             redraw_current_frame = false;
             out.flush()?;
         }
@@ -194,6 +223,12 @@ pub(crate) fn run() -> Result<()> {
             match decoder.read_latest_frame(&mut frame)? {
                 FrameStatus::NewFrame { pts } => {
                     playback_position = pts;
+                    let state = overlay_state(
+                        playback_position,
+                        source.duration,
+                        paused,
+                        overlay_visible_until,
+                    );
                     draw_frame(
                         &mut out,
                         target,
@@ -203,14 +238,11 @@ pub(crate) fn run() -> Result<()> {
                         &frame,
                         &mut composited_frame,
                         &mut overlay,
-                        OverlayState {
-                            position: playback_position,
-                            duration: source.duration,
-                            paused,
-                        },
+                        state,
                         &mut sequence,
                     )?;
                     have_frame = true;
+                    last_drawn_overlay_visible = state.visible;
                     redraw_current_frame = false;
                 }
                 FrameStatus::NoFrame => {}
@@ -233,6 +265,12 @@ pub(crate) fn run() -> Result<()> {
         match decoder.read_latest_frame(&mut frame)? {
             FrameStatus::NewFrame { pts } => {
                 playback_position = pts;
+                let state = overlay_state(
+                    playback_position,
+                    source.duration,
+                    paused,
+                    overlay_visible_until,
+                );
                 draw_frame(
                     &mut out,
                     target,
@@ -242,14 +280,11 @@ pub(crate) fn run() -> Result<()> {
                     &frame,
                     &mut composited_frame,
                     &mut overlay,
-                    OverlayState {
-                        position: playback_position,
-                        duration: source.duration,
-                        paused,
-                    },
+                    state,
                     &mut sequence,
                 )?;
                 have_frame = true;
+                last_drawn_overlay_visible = state.visible;
                 redraw_current_frame = false;
                 out.flush()?;
                 advance_frame_clock(&mut next_frame_at, frame_interval);
@@ -264,6 +299,12 @@ pub(crate) fn run() -> Result<()> {
                     playback_position = duration;
                 }
                 if have_frame {
+                    let state = overlay_state(
+                        playback_position,
+                        source.duration,
+                        paused,
+                        overlay_visible_until,
+                    );
                     draw_frame(
                         &mut out,
                         target,
@@ -273,13 +314,10 @@ pub(crate) fn run() -> Result<()> {
                         &frame,
                         &mut composited_frame,
                         &mut overlay,
-                        OverlayState {
-                            position: playback_position,
-                            duration: source.duration,
-                            paused,
-                        },
+                        state,
                         &mut sequence,
                     )?;
+                    last_drawn_overlay_visible = state.visible;
                     redraw_current_frame = false;
                 }
                 out.flush()?;
@@ -339,6 +377,24 @@ fn draw_frame(
     *previous_image_id = Some(image_id);
     *frame_serial = frame_serial.wrapping_add(1);
     Ok(())
+}
+
+fn overlay_state(
+    position: Duration,
+    duration: Option<Duration>,
+    paused: bool,
+    visible_until: Option<Instant>,
+) -> OverlayState {
+    OverlayState {
+        position,
+        duration,
+        paused,
+        visible: overlay_visible(paused, visible_until, Instant::now()),
+    }
+}
+
+fn overlay_visible(paused: bool, visible_until: Option<Instant>, now: Instant) -> bool {
+    paused || visible_until.is_some_and(|until| now < until)
 }
 
 fn frame_interval(fps: f64) -> Duration {
@@ -582,6 +638,29 @@ mod tests {
         assert!(!is_end_seek(
             Duration::from_secs(19),
             Some(Duration::from_secs(20))
+        ));
+    }
+
+    #[test]
+    fn overlay_is_visible_while_paused() {
+        let now = Instant::now();
+
+        assert!(overlay_visible(true, None, now));
+    }
+
+    #[test]
+    fn overlay_visibility_expires_when_playing() {
+        let now = Instant::now();
+
+        assert!(overlay_visible(
+            false,
+            Some(now + Duration::from_secs(1)),
+            now
+        ));
+        assert!(!overlay_visible(
+            false,
+            Some(now - Duration::from_secs(1)),
+            now
         ));
     }
 }

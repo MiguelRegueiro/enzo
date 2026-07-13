@@ -13,6 +13,7 @@ pub(crate) struct OverlayState {
     pub(crate) position: Duration,
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,
+    pub(crate) visible: bool,
 }
 
 pub(crate) struct PlaybackOverlay {
@@ -123,6 +124,9 @@ fn render_overlay_rgb(
     font: Option<&mut FontRenderer>,
 ) {
     if width == 0 || height == 0 || frame.len() < (width as usize * height as usize * 3) {
+        return;
+    }
+    if !state.visible {
         return;
     }
 
@@ -705,6 +709,7 @@ mod tests {
                 position: Duration::from_secs(30),
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
+                visible: true,
             },
             &mut scratch,
             None,
@@ -734,6 +739,31 @@ mod tests {
     #[test]
     fn text_width_counts_spacing_between_glyphs_only() {
         assert_eq!(bitmap_text_width("12", 2), 22);
+    }
+
+    #[test]
+    fn hidden_overlay_leaves_frame_unchanged() {
+        let width = 320;
+        let height = 180;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+        let before = frame.clone();
+        let mut scratch = String::new();
+
+        render_overlay_rgb(
+            &mut frame,
+            width,
+            height,
+            OverlayState {
+                position: Duration::from_secs(30),
+                duration: Some(Duration::from_secs(120)),
+                paused: false,
+                visible: false,
+            },
+            &mut scratch,
+            None,
+        );
+
+        assert_eq!(frame, before);
     }
 
     #[test]
