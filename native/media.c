@@ -17,6 +17,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define RIG_AUDIO_OUTPUT_RATE 48000
+#define RIG_AUDIO_OUTPUT_CHANNELS 2
+#define RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE 2
+
 typedef struct RigVideoInfo {
     uint32_t width;
     uint32_t height;
@@ -48,6 +52,16 @@ typedef struct RigPulseOutput {
     pa_stream *stream;
     int started;
 } RigPulseOutput;
+
+typedef struct RigAudioConverter {
+    SwrContext *swr;
+    AVChannelLayout src_layout;
+    enum AVSampleFormat src_format;
+    int src_rate;
+    uint8_t *out_buffer;
+    int out_capacity;
+    int configured;
+} RigAudioConverter;
 
 typedef struct PulseOperationWait {
     pa_threaded_mainloop *mainloop;
@@ -267,8 +281,8 @@ static int pulse_output_open(RigPulseOutput *output, char *err, size_t err_len) 
 
     pa_sample_spec sample_spec = {
         .format = PA_SAMPLE_S16LE,
-        .rate = 48000,
-        .channels = 2,
+        .rate = RIG_AUDIO_OUTPUT_RATE,
+        .channels = RIG_AUDIO_OUTPUT_CHANNELS,
     };
     output->stream = pa_stream_new(output->context, "playback", &sample_spec, NULL);
     if (output->stream == NULL) {
@@ -281,9 +295,11 @@ static int pulse_output_open(RigPulseOutput *output, char *err, size_t err_len) 
 
     pa_buffer_attr buffer_attr = {
         .maxlength = (uint32_t)-1,
-        .tlength = 48000 / 50 * 2 * 2,
+        .tlength = RIG_AUDIO_OUTPUT_RATE / 50 * RIG_AUDIO_OUTPUT_CHANNELS *
+                   RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE,
         .prebuf = 0,
-        .minreq = 48000 / 100 * 2 * 2,
+        .minreq = RIG_AUDIO_OUTPUT_RATE / 100 * RIG_AUDIO_OUTPUT_CHANNELS *
+                  RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE,
         .fragsize = (uint32_t)-1,
     };
     pa_stream_flags_t flags =
@@ -400,7 +416,8 @@ static int pulse_output_write(
     char *err,
     size_t err_len
 ) {
-    const size_t max_chunk = 48000 / 100 * 2 * 2;
+    const size_t max_chunk = RIG_AUDIO_OUTPUT_RATE / 100 * RIG_AUDIO_OUTPUT_CHANNELS *
+                             RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
     int offset = 0;
 
     while (offset < bytes) {
@@ -877,10 +894,146 @@ static int open_audio_decoder(
     return 1;
 }
 
+static void audio_converter_init(RigAudioConverter *converter) {
+    memset(converter, 0, sizeof(*converter));
+    converter->src_format = AV_SAMPLE_FMT_NONE;
+}
+
+static void audio_converter_reset(RigAudioConverter *converter) {
+    if (converter == NULL) {
+        return;
+    }
+    swr_free(&converter->swr);
+    if (converter->src_layout.nb_channels > 0) {
+        av_channel_layout_uninit(&converter->src_layout);
+    }
+    memset(&converter->src_layout, 0, sizeof(converter->src_layout));
+    converter->src_format = AV_SAMPLE_FMT_NONE;
+    converter->src_rate = 0;
+    converter->configured = 0;
+}
+
+static void audio_converter_close(RigAudioConverter *converter) {
+    if (converter == NULL) {
+        return;
+    }
+    audio_converter_reset(converter);
+    av_freep(&converter->out_buffer);
+    converter->out_capacity = 0;
+}
+
+static int copy_audio_frame_layout(
+    const AVCodecContext *codec,
+    const AVFrame *frame,
+    AVChannelLayout *layout,
+    char *err,
+    size_t err_len
+) {
+    memset(layout, 0, sizeof(*layout));
+    if (frame != NULL && frame->ch_layout.nb_channels > 0) {
+        int ret = av_channel_layout_copy(layout, &frame->ch_layout);
+        if (ret < 0) {
+            set_ffmpeg_error(err, err_len, "failed to copy audio frame layout", ret);
+            return -1;
+        }
+        return 0;
+    }
+    if (codec != NULL && codec->ch_layout.nb_channels > 0) {
+        int ret = av_channel_layout_copy(layout, &codec->ch_layout);
+        if (ret < 0) {
+            set_ffmpeg_error(err, err_len, "failed to copy audio codec layout", ret);
+            return -1;
+        }
+        return 0;
+    }
+
+    av_channel_layout_default(layout, RIG_AUDIO_OUTPUT_CHANNELS);
+    return 0;
+}
+
+static int audio_converter_configure(
+    RigAudioConverter *converter,
+    const AVCodecContext *codec,
+    const AVFrame *frame,
+    char *err,
+    size_t err_len
+) {
+    int src_rate = frame->sample_rate > 0 ? frame->sample_rate : codec->sample_rate;
+    if (src_rate <= 0) {
+        set_error(err, err_len, "invalid audio sample rate");
+        return -1;
+    }
+
+    enum AVSampleFormat src_format = (enum AVSampleFormat)frame->format;
+    if (src_format == AV_SAMPLE_FMT_NONE) {
+        src_format = codec->sample_fmt;
+    }
+    if (src_format == AV_SAMPLE_FMT_NONE) {
+        set_error(err, err_len, "invalid audio sample format");
+        return -1;
+    }
+
+    AVChannelLayout src_layout;
+    if (copy_audio_frame_layout(codec, frame, &src_layout, err, err_len) < 0) {
+        return -1;
+    }
+
+    if (converter->configured && converter->src_rate == src_rate &&
+        converter->src_format == src_format &&
+        av_channel_layout_compare(&converter->src_layout, &src_layout) == 0) {
+        av_channel_layout_uninit(&src_layout);
+        return 0;
+    }
+
+    AVChannelLayout dst_layout;
+    av_channel_layout_default(&dst_layout, RIG_AUDIO_OUTPUT_CHANNELS);
+
+    SwrContext *swr = NULL;
+    int ret = swr_alloc_set_opts2(
+        &swr,
+        &dst_layout,
+        AV_SAMPLE_FMT_S16,
+        RIG_AUDIO_OUTPUT_RATE,
+        &src_layout,
+        src_format,
+        src_rate,
+        0,
+        NULL
+    );
+    av_channel_layout_uninit(&dst_layout);
+
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to allocate audio resampler", ret);
+        av_channel_layout_uninit(&src_layout);
+        swr_free(&swr);
+        return -1;
+    }
+    if (swr == NULL) {
+        set_error(err, err_len, "failed to allocate audio resampler");
+        av_channel_layout_uninit(&src_layout);
+        return -1;
+    }
+
+    ret = swr_init(swr);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to initialize audio resampler", ret);
+        av_channel_layout_uninit(&src_layout);
+        swr_free(&swr);
+        return -1;
+    }
+
+    audio_converter_reset(converter);
+    converter->swr = swr;
+    converter->src_layout = src_layout;
+    converter->src_format = src_format;
+    converter->src_rate = src_rate;
+    converter->configured = 1;
+    return 0;
+}
+
 static int seek_audio_decoder(
     AVFormatContext *format,
     AVCodecContext *codec,
-    SwrContext *swr,
     int stream_index,
     int64_t micros,
     char *err,
@@ -896,12 +1049,6 @@ static int seek_audio_decoder(
     }
 
     avcodec_flush_buffers(codec);
-    swr_close(swr);
-    ret = swr_init(swr);
-    if (ret < 0) {
-        set_ffmpeg_error(err, err_len, "failed to reset audio resampler", ret);
-        return -1;
-    }
     return 0;
 }
 
@@ -909,7 +1056,7 @@ static int sync_audio_seek(
     RigPulseOutput *pulse,
     AVFormatContext *format,
     AVCodecContext *codec,
-    SwrContext *swr,
+    RigAudioConverter *converter,
     int stream_index,
     AVPacket *packet,
     AVFrame *frame,
@@ -946,15 +1093,16 @@ static int sync_audio_seek(
     if (frame != NULL) {
         av_frame_unref(frame);
     }
-    if (seek_audio_decoder(format, codec, swr, stream_index, micros, err, err_len) < 0) {
+    if (seek_audio_decoder(format, codec, stream_index, micros, err, err_len) < 0) {
         return -1;
     }
+    audio_converter_reset(converter);
     *flushing = 0;
     return 1;
 }
 
 static int write_converted_audio(
-    SwrContext *swr,
+    RigAudioConverter *converter,
     AVCodecContext *codec,
     AVFrame *frame,
     RigPulseOutput *pulse,
@@ -965,28 +1113,30 @@ static int write_converted_audio(
     const int64_t *seek_micros,
     int *seen_seek_generation,
     int *corked,
-    uint8_t **out_buffer,
-    int *out_capacity,
     char *err,
     size_t err_len
 ) {
+    if (audio_converter_configure(converter, codec, frame, err, err_len) < 0) {
+        return -1;
+    }
+
     int out_samples = (int)av_rescale_rnd(
-        swr_get_delay(swr, codec->sample_rate) + frame->nb_samples,
-        48000,
-        codec->sample_rate,
+        swr_get_delay(converter->swr, converter->src_rate) + frame->nb_samples,
+        RIG_AUDIO_OUTPUT_RATE,
+        converter->src_rate,
         AV_ROUND_UP
     );
     if (out_samples <= 0) {
         return 0;
     }
 
-    if (out_samples > *out_capacity) {
-        av_freep(out_buffer);
+    if (out_samples > converter->out_capacity) {
+        av_freep(&converter->out_buffer);
         int line_size = 0;
         int ret = av_samples_alloc(
-            out_buffer,
+            &converter->out_buffer,
             &line_size,
-            2,
+            RIG_AUDIO_OUTPUT_CHANNELS,
             out_samples,
             AV_SAMPLE_FMT_S16,
             0
@@ -995,12 +1145,12 @@ static int write_converted_audio(
             set_ffmpeg_error(err, err_len, "failed to allocate audio buffer", ret);
             return -1;
         }
-        *out_capacity = out_samples;
+        converter->out_capacity = out_samples;
     }
 
-    uint8_t *output_planes[1] = {*out_buffer};
+    uint8_t *output_planes[1] = {converter->out_buffer};
     int converted = swr_convert(
-        swr,
+        converter->swr,
         output_planes,
         out_samples,
         (const uint8_t **)frame->extended_data,
@@ -1011,7 +1161,13 @@ static int write_converted_audio(
         return -1;
     }
 
-    int bytes = av_samples_get_buffer_size(NULL, 2, converted, AV_SAMPLE_FMT_S16, 1);
+    int bytes = av_samples_get_buffer_size(
+        NULL,
+        RIG_AUDIO_OUTPUT_CHANNELS,
+        converted,
+        AV_SAMPLE_FMT_S16,
+        1
+    );
     if (bytes < 0) {
         set_ffmpeg_error(err, err_len, "failed to size audio buffer", bytes);
         return -1;
@@ -1019,11 +1175,11 @@ static int write_converted_audio(
 
     if (bytes > 0) {
         if (mute_requested(mute_flag)) {
-            memset(*out_buffer, 0, (size_t)bytes);
+            memset(converter->out_buffer, 0, (size_t)bytes);
         }
         int ret = pulse_output_write(
             pulse,
-            *out_buffer,
+            converter->out_buffer,
             bytes,
             stop_flag,
             pause_flag,
@@ -1068,55 +1224,11 @@ int rig_play_audio(
         return opened;
     }
 
-    AVChannelLayout src_layout;
-    if (codec->ch_layout.nb_channels > 0) {
-        av_channel_layout_copy(&src_layout, &codec->ch_layout);
-    } else {
-        av_channel_layout_default(&src_layout, codec->ch_layout.nb_channels > 0
-                                                   ? codec->ch_layout.nb_channels
-                                                   : 2);
-    }
-
-    AVChannelLayout dst_layout;
-    av_channel_layout_default(&dst_layout, 2);
-
-    SwrContext *swr = NULL;
-    int ret = swr_alloc_set_opts2(
-        &swr,
-        &dst_layout,
-        AV_SAMPLE_FMT_S16,
-        48000,
-        &src_layout,
-        codec->sample_fmt,
-        codec->sample_rate,
-        0,
-        NULL
-    );
-    if (ret < 0 || swr == NULL) {
-        set_ffmpeg_error(err, err_len, "failed to allocate audio resampler", ret);
-        av_channel_layout_uninit(&src_layout);
-        av_channel_layout_uninit(&dst_layout);
-        avcodec_free_context(&codec);
-        avformat_close_input(&format);
-        return -1;
-    }
-
-    ret = swr_init(swr);
-    if (ret < 0) {
-        set_ffmpeg_error(err, err_len, "failed to initialize audio resampler", ret);
-        swr_free(&swr);
-        av_channel_layout_uninit(&src_layout);
-        av_channel_layout_uninit(&dst_layout);
-        avcodec_free_context(&codec);
-        avformat_close_input(&format);
-        return -1;
-    }
+    RigAudioConverter converter;
+    audio_converter_init(&converter);
 
     RigPulseOutput pulse;
     if (pulse_output_open(&pulse, err, err_len) < 0) {
-        swr_free(&swr);
-        av_channel_layout_uninit(&src_layout);
-        av_channel_layout_uninit(&dst_layout);
         avcodec_free_context(&codec);
         avformat_close_input(&format);
         return -1;
@@ -1124,8 +1236,7 @@ int rig_play_audio(
 
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
-    uint8_t *out_buffer = NULL;
-    int out_capacity = 0;
+    int ret = 0;
     int failed = 0;
     int flushing = 0;
     int corked = 0;
@@ -1141,7 +1252,7 @@ int rig_play_audio(
             &pulse,
             format,
             codec,
-            swr,
+            &converter,
             stream_index,
             packet,
             frame,
@@ -1189,7 +1300,7 @@ int rig_play_audio(
                 &pulse,
                 format,
                 codec,
-                swr,
+                &converter,
                 stream_index,
                 packet,
                 frame,
@@ -1235,22 +1346,20 @@ int rig_play_audio(
                 break;
             }
             int write_status = write_converted_audio(
-                    swr,
-                    codec,
-                    frame,
-                    &pulse,
-                    stop_flag,
-                    pause_flag,
-                    mute_flag,
-                    seek_generation,
-                    seek_micros,
-                    &seen_seek_generation,
-                    &corked,
-                    &out_buffer,
-                    &out_capacity,
-                    err,
-                    err_len
-                );
+                &converter,
+                codec,
+                frame,
+                &pulse,
+                stop_flag,
+                pause_flag,
+                mute_flag,
+                seek_generation,
+                seek_micros,
+                &seen_seek_generation,
+                &corked,
+                err,
+                err_len
+            );
             if (write_status < 0) {
                 failed = 1;
             } else if (write_status > 0) {
@@ -1308,7 +1417,7 @@ int rig_play_audio(
         }
     }
 
-    av_freep(&out_buffer);
+    audio_converter_close(&converter);
     if (frame != NULL) {
         av_frame_free(&frame);
     }
@@ -1316,9 +1425,6 @@ int rig_play_audio(
         av_packet_free(&packet);
     }
     pulse_output_close(&pulse);
-    swr_free(&swr);
-    av_channel_layout_uninit(&src_layout);
-    av_channel_layout_uninit(&dst_layout);
     avcodec_free_context(&codec);
     avformat_close_input(&format);
 
