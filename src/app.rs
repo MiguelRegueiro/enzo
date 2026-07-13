@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::OsString,
     io::{self, BufWriter, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
-    input::{PlaybackCommand, read_input_events},
+    input::{PlaybackCommand, PlaybackMouse, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
     overlay::{OverlayState, PlaybackOverlay},
     terminal::{
@@ -75,13 +75,19 @@ pub(crate) fn run() -> Result<()> {
     let mut paused = false;
     let mut overlay_visible_until = None::<Instant>;
     let mut last_drawn_overlay_visible = false;
+    let mut scrub_position = None::<Duration>;
 
     loop {
         poll_audio(&mut audio, &mut audio_done)?;
 
         let input = read_input_events()?;
         let input_at = Instant::now();
-        let was_overlay_visible = overlay_visible(paused, overlay_visible_until, input_at);
+        let was_overlay_visible = overlay_visible(
+            paused,
+            scrub_position.is_some(),
+            overlay_visible_until,
+            input_at,
+        );
         if input.mouse_activity {
             overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
             if have_frame && !was_overlay_visible {
@@ -104,25 +110,25 @@ pub(crate) fn run() -> Result<()> {
                 redraw_current_frame = have_frame;
             }
             PlaybackCommand::SeekBy(seconds) => {
+                scrub_position = None;
                 let seek_target = seek_position(playback_position, seconds, source.duration);
                 if is_end_seek(seek_target, source.duration) {
                     break;
                 }
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
-                decoder.seek(seek_target);
-                if source.has_audio {
-                    if let Some(audio) = audio.as_mut() {
-                        audio.seek(seek_target);
-                        audio.set_paused(paused);
-                    } else {
-                        audio = Some(AudioPlayer::spawn_at(&config.path, seek_target, paused)?);
-                    }
-                    audio_done = false;
-                }
+                seek_playback(
+                    &config.path,
+                    source.has_audio,
+                    &mut decoder,
+                    &mut audio,
+                    &mut audio_done,
+                    seek_target,
+                    paused,
+                )?;
                 playback_position = seek_target;
                 video_ended = false;
                 next_frame_at = Instant::now();
-                redraw_current_frame = have_frame;
+                redraw_current_frame = false;
             }
             PlaybackCommand::None => {}
         }
@@ -156,6 +162,7 @@ pub(crate) fn run() -> Result<()> {
             have_frame = false;
             redraw_current_frame = false;
             last_drawn_overlay_visible = false;
+            scrub_position = None;
             video_ended = false;
             next_frame_at = Instant::now();
         }
@@ -169,6 +176,7 @@ pub(crate) fn run() -> Result<()> {
             if paused && have_frame {
                 let state = overlay_state(
                     playback_position,
+                    scrub_position,
                     source.duration,
                     paused,
                     overlay_visible_until,
@@ -190,7 +198,66 @@ pub(crate) fn run() -> Result<()> {
             }
         }
 
-        let overlay_is_visible = overlay_visible(paused, overlay_visible_until, Instant::now());
+        if let Some(mouse) = input.mouse {
+            let seek_target = match mouse {
+                PlaybackMouse::LeftDown { column, row } => {
+                    scrub_position = mouse_video_position(column, row, layout, target)
+                        .and_then(|point| {
+                            overlay.progress_hit_test(target.width, target.height, point.x, point.y)
+                        })
+                        .and_then(|ratio| seek_from_progress_ratio(ratio, source.duration));
+                    if scrub_position.is_some() {
+                        redraw_current_frame = have_frame;
+                    }
+                    None
+                }
+                PlaybackMouse::LeftDrag { column } if scrub_position.is_some() => {
+                    let x = mouse_video_x(column, layout, target);
+                    let ratio = overlay.progress_ratio_from_x(target.width, target.height, x);
+                    scrub_position = seek_from_progress_ratio(ratio, source.duration);
+                    redraw_current_frame = have_frame;
+                    None
+                }
+                PlaybackMouse::LeftUp { column } if scrub_position.is_some() => {
+                    let x = mouse_video_x(column, layout, target);
+                    let ratio = overlay.progress_ratio_from_x(target.width, target.height, x);
+                    let target = seek_from_progress_ratio(ratio, source.duration);
+                    scrub_position = None;
+                    target
+                }
+                PlaybackMouse::LeftUp { .. } => {
+                    scrub_position = None;
+                    None
+                }
+                _ => None,
+            };
+
+            if let Some(seek_target) = seek_target {
+                if is_end_seek(seek_target, source.duration) {
+                    break;
+                }
+                seek_playback(
+                    &config.path,
+                    source.has_audio,
+                    &mut decoder,
+                    &mut audio,
+                    &mut audio_done,
+                    seek_target,
+                    paused,
+                )?;
+                playback_position = seek_target;
+                video_ended = false;
+                next_frame_at = Instant::now();
+                redraw_current_frame = false;
+            }
+        }
+
+        let overlay_is_visible = overlay_visible(
+            paused,
+            scrub_position.is_some(),
+            overlay_visible_until,
+            Instant::now(),
+        );
         if have_frame && last_drawn_overlay_visible && !overlay_is_visible {
             redraw_current_frame = true;
         }
@@ -198,6 +265,7 @@ pub(crate) fn run() -> Result<()> {
         if redraw_current_frame && have_frame {
             let state = overlay_state(
                 playback_position,
+                scrub_position,
                 source.duration,
                 paused,
                 overlay_visible_until,
@@ -225,6 +293,7 @@ pub(crate) fn run() -> Result<()> {
                     playback_position = pts;
                     let state = overlay_state(
                         playback_position,
+                        scrub_position,
                         source.duration,
                         paused,
                         overlay_visible_until,
@@ -267,6 +336,7 @@ pub(crate) fn run() -> Result<()> {
                 playback_position = pts;
                 let state = overlay_state(
                     playback_position,
+                    scrub_position,
                     source.duration,
                     paused,
                     overlay_visible_until,
@@ -301,6 +371,7 @@ pub(crate) fn run() -> Result<()> {
                 if have_frame {
                     let state = overlay_state(
                         playback_position,
+                        scrub_position,
                         source.duration,
                         paused,
                         overlay_visible_until,
@@ -379,22 +450,102 @@ fn draw_frame(
     Ok(())
 }
 
+fn seek_playback(
+    path: &Path,
+    has_audio: bool,
+    decoder: &mut VideoDecoder,
+    audio: &mut Option<AudioPlayer>,
+    audio_done: &mut bool,
+    position: Duration,
+    paused: bool,
+) -> Result<()> {
+    decoder.seek(position);
+    if has_audio {
+        if let Some(audio) = audio.as_mut() {
+            audio.seek(position);
+            audio.set_paused(paused);
+        } else {
+            *audio = Some(AudioPlayer::spawn_at(path, position, paused)?);
+        }
+        *audio_done = false;
+    }
+    Ok(())
+}
+
 fn overlay_state(
     position: Duration,
+    scrub_position: Option<Duration>,
     duration: Option<Duration>,
     paused: bool,
     visible_until: Option<Instant>,
 ) -> OverlayState {
     OverlayState {
-        position,
+        position: scrub_position.unwrap_or(position),
         duration,
         paused,
-        visible: overlay_visible(paused, visible_until, Instant::now()),
+        visible: overlay_visible(
+            paused,
+            scrub_position.is_some(),
+            visible_until,
+            Instant::now(),
+        ),
     }
 }
 
-fn overlay_visible(paused: bool, visible_until: Option<Instant>, now: Instant) -> bool {
-    paused || visible_until.is_some_and(|until| now < until)
+fn overlay_visible(
+    paused: bool,
+    scrubbing: bool,
+    visible_until: Option<Instant>,
+    now: Instant,
+) -> bool {
+    paused || scrubbing || visible_until.is_some_and(|until| now < until)
+}
+
+fn seek_from_progress_ratio(ratio: f64, duration: Option<Duration>) -> Option<Duration> {
+    duration.map(|duration| Duration::from_secs_f64(duration.as_secs_f64() * ratio.clamp(0.0, 1.0)))
+}
+
+#[derive(Clone, Copy)]
+struct VideoPoint {
+    x: u32,
+    y: u32,
+}
+
+fn mouse_video_position(
+    column: u16,
+    row: u16,
+    layout: ImageArea,
+    target: TargetFrame,
+) -> Option<VideoPoint> {
+    let end_col = layout.x.saturating_add(layout.cols);
+    let end_row = layout.y.saturating_add(layout.rows);
+    if column < layout.x || column >= end_col || row < layout.y || row >= end_row {
+        return None;
+    }
+
+    Some(VideoPoint {
+        x: cell_to_video_pixel(column - layout.x, layout.cols, target.width),
+        y: cell_to_video_pixel(row - layout.y, layout.rows, target.height),
+    })
+}
+
+fn mouse_video_x(column: u16, layout: ImageArea, target: TargetFrame) -> u32 {
+    let rel = if column <= layout.x {
+        0
+    } else {
+        column
+            .saturating_sub(layout.x)
+            .min(layout.cols.saturating_sub(1))
+    };
+    cell_to_video_pixel(rel, layout.cols, target.width)
+}
+
+fn cell_to_video_pixel(cell: u16, cells: u16, pixels: u32) -> u32 {
+    let cells = f64::from(cells.max(1));
+    let pixels = pixels.max(1);
+    (((f64::from(cell) + 0.5) * f64::from(pixels)) / cells)
+        .floor()
+        .min(f64::from(pixels - 1)) as u32
 }
 
 fn frame_interval(fps: f64) -> Duration {
@@ -645,7 +796,7 @@ mod tests {
     fn overlay_is_visible_while_paused() {
         let now = Instant::now();
 
-        assert!(overlay_visible(true, None, now));
+        assert!(overlay_visible(true, false, None, now));
     }
 
     #[test]
@@ -654,13 +805,63 @@ mod tests {
 
         assert!(overlay_visible(
             false,
+            false,
             Some(now + Duration::from_secs(1)),
             now
         ));
         assert!(!overlay_visible(
             false,
+            false,
             Some(now - Duration::from_secs(1)),
             now
         ));
+    }
+
+    #[test]
+    fn overlay_is_visible_while_scrubbing() {
+        let now = Instant::now();
+
+        assert!(overlay_visible(false, true, None, now));
+    }
+
+    #[test]
+    fn overlay_state_uses_scrub_position() {
+        let state = overlay_state(
+            Duration::from_secs(10),
+            Some(Duration::from_secs(30)),
+            Some(Duration::from_secs(60)),
+            false,
+            None,
+        );
+
+        assert_eq!(state.position, Duration::from_secs(30));
+        assert!(state.visible);
+    }
+
+    #[test]
+    fn mouse_position_maps_terminal_cell_to_video_pixel() {
+        let layout = ImageArea {
+            x: 10,
+            y: 5,
+            cols: 20,
+            rows: 10,
+        };
+        let target = TargetFrame {
+            width: 200,
+            height: 100,
+        };
+
+        let point = mouse_video_position(20, 10, layout, target).expect("point should be inside");
+
+        assert_eq!(point.x, 105);
+        assert_eq!(point.y, 55);
+    }
+
+    #[test]
+    fn progress_ratio_seek_uses_duration() {
+        assert_eq!(
+            seek_from_progress_ratio(0.25, Some(Duration::from_secs(80))),
+            Some(Duration::from_secs(20))
+        );
     }
 }

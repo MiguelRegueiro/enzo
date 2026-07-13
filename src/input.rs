@@ -17,12 +17,22 @@ pub(crate) enum PlaybackCommand {
 pub(crate) struct PlaybackInput {
     pub(crate) command: PlaybackCommand,
     pub(crate) mouse_activity: bool,
+    pub(crate) mouse: Option<PlaybackMouse>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PlaybackMouse {
+    Move,
+    LeftDown { column: u16, row: u16 },
+    LeftDrag { column: u16 },
+    LeftUp { column: u16 },
 }
 
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
         mouse_activity: false,
+        mouse: None,
     };
     while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
         match event::read().context("failed to read terminal input")? {
@@ -49,8 +59,30 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
             }
             Event::Mouse(mouse) => {
                 input.mouse_activity = true;
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Right)) {
-                    input.command = PlaybackCommand::TogglePause;
+                match mouse.kind {
+                    MouseEventKind::Moved => {
+                        input.mouse = Some(PlaybackMouse::Move);
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        input.mouse = Some(PlaybackMouse::LeftDown {
+                            column: mouse.column,
+                            row: mouse.row,
+                        });
+                    }
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        input.mouse = Some(PlaybackMouse::LeftDrag {
+                            column: mouse.column,
+                        });
+                    }
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        input.mouse = Some(PlaybackMouse::LeftUp {
+                            column: mouse.column,
+                        });
+                    }
+                    MouseEventKind::Down(MouseButton::Right) => {
+                        input.command = PlaybackCommand::TogglePause;
+                    }
+                    _ => {}
                 }
             }
             _ => {}

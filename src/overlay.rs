@@ -45,6 +45,26 @@ impl PlaybackOverlay {
             self.font.as_mut(),
         );
     }
+
+    pub(crate) fn progress_hit_test(
+        &mut self,
+        width: u32,
+        height: u32,
+        x: u32,
+        y: u32,
+    ) -> Option<f64> {
+        let metrics = self.metrics(width, height);
+        progress_hit_ratio(metrics, x, y)
+    }
+
+    pub(crate) fn progress_ratio_from_x(&mut self, width: u32, height: u32, x: u32) -> f64 {
+        let metrics = self.metrics(width, height);
+        progress_ratio_for_x(metrics, x)
+    }
+
+    fn metrics(&mut self, width: u32, height: u32) -> OverlayMetrics {
+        overlay_metrics(width, height, self.font.as_mut())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -249,6 +269,15 @@ fn render_overlay_rgb(
     }
 }
 
+fn overlay_metrics(width: u32, height: u32, font: Option<&mut FontRenderer>) -> OverlayMetrics {
+    let text_size = text_size(width, height);
+    let fallback_text_scale = fallback_text_scale(width, height);
+    let text_height = font
+        .and_then(|font| font.set_pixel_size(text_size).then(|| font.line_height()))
+        .unwrap_or(7 * fallback_text_scale);
+    OverlayMetrics::new(width, height, text_size, fallback_text_scale, text_height)
+}
+
 fn draw_progress_handle(
     frame: &mut [u8],
     width: u32,
@@ -284,6 +313,33 @@ fn draw_progress_handle(
         ACCENT_COLOR,
         255,
     );
+}
+
+fn progress_hit_ratio(metrics: OverlayMetrics, x: u32, y: u32) -> Option<f64> {
+    let hit_radius = progress_handle_radius(metrics.bar_height).max(8) + 5;
+    let center_y = metrics.bar_y + metrics.bar_height / 2;
+    let min_y = center_y.saturating_sub(hit_radius);
+    let max_y = center_y.saturating_add(hit_radius);
+    if y < min_y || y > max_y {
+        return None;
+    }
+
+    let min_x = metrics.inner_x.saturating_sub(hit_radius);
+    let max_x = metrics
+        .inner_x
+        .saturating_add(metrics.bar_width)
+        .saturating_add(hit_radius);
+    if x < min_x || x > max_x {
+        return None;
+    }
+
+    Some(progress_ratio_for_x(metrics, x))
+}
+
+fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
+    let end_x = metrics.inner_x.saturating_add(metrics.bar_width);
+    let x = x.clamp(metrics.inner_x, end_x);
+    f64::from(x.saturating_sub(metrics.inner_x)) / f64::from(metrics.bar_width.max(1))
 }
 
 fn text_size(width: u32, video_height: u32) -> u32 {
@@ -764,6 +820,24 @@ mod tests {
         );
 
         assert_eq!(frame, before);
+    }
+
+    #[test]
+    fn progress_hit_test_returns_ratio_on_bar() {
+        let metrics = test_metrics(320, 180);
+        let x = metrics.inner_x + metrics.bar_width / 2;
+        let y = metrics.bar_y + metrics.bar_height / 2;
+
+        let ratio = progress_hit_ratio(metrics, x, y).expect("bar should be hittable");
+
+        assert!((ratio - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn progress_hit_test_ignores_points_above_bar() {
+        let metrics = test_metrics(320, 180);
+
+        assert_eq!(progress_hit_ratio(metrics, metrics.inner_x, 0), None);
     }
 
     #[test]

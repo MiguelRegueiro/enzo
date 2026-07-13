@@ -23,6 +23,7 @@ Controls:
 
 - Space or right click pauses/resumes playback.
 - Left/right arrows seek backward/forward by 5 seconds.
+- Click or drag the progress bar to seek.
 - `q`, Esc, or Ctrl-C quits playback.
 
 The playback overlay appears while paused, after seeking, and on mouse activity.

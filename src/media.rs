@@ -477,7 +477,31 @@ fn run_video_decode_thread(
             }
         }
 
-        buffer = store_latest_frame(&latest_frame, buffer, frame_len, pts_duration);
+        if let Some(position) =
+            take_seek_request(&seek_generation, &seek_micros, &mut seen_seek_generation)
+        {
+            if let Err(error) = seek_video_thread(
+                &mut native,
+                &latest_frame,
+                position,
+                &mut started_at,
+                &mut fallback_pts,
+            ) {
+                mark_error(&latest_frame, error.to_string());
+                break;
+            }
+            force_next_frame = true;
+            continue;
+        }
+
+        buffer = store_latest_frame(
+            &latest_frame,
+            buffer,
+            frame_len,
+            pts_duration,
+            &seek_generation,
+            seen_seek_generation,
+        );
         force_next_frame = false;
     }
 }
@@ -701,16 +725,24 @@ fn store_latest_frame(
     frame: Vec<u8>,
     frame_len: usize,
     pts: Duration,
+    seek_generation: &AtomicI32,
+    seen_seek_generation: i32,
 ) -> Vec<u8> {
-    let old_frame = if let Ok(mut state) = state.lock() {
-        let old_frame = state.frame.replace(frame);
-        state.pts = pts;
-        state.ended = false;
-        state.serial = state.serial.wrapping_add(1);
-        old_frame
-    } else {
-        None
+    if seek_generation.load(Ordering::Relaxed) != seen_seek_generation {
+        return frame;
+    }
+
+    let Ok(mut state) = state.lock() else {
+        return frame;
     };
+    if seek_generation.load(Ordering::Relaxed) != seen_seek_generation {
+        return frame;
+    }
+
+    let old_frame = state.frame.replace(frame);
+    state.pts = pts;
+    state.ended = false;
+    state.serial = state.serial.wrapping_add(1);
     old_frame.unwrap_or_else(|| vec![0_u8; frame_len])
 }
 
@@ -745,5 +777,26 @@ mod tests {
         let error = ErrorBuffer::new();
 
         assert_eq!(error.message("fallback"), "fallback");
+    }
+
+    #[test]
+    fn stale_frame_is_not_published_after_seek_request() {
+        let state = Arc::new(Mutex::new(LatestFrame::default()));
+        let seek_generation = AtomicI32::new(2);
+        let frame = vec![7, 8, 9];
+
+        let buffer = store_latest_frame(
+            &state,
+            frame,
+            3,
+            Duration::from_secs(1),
+            &seek_generation,
+            1,
+        );
+
+        assert_eq!(buffer, vec![7, 8, 9]);
+        let state = state.lock().expect("frame state should not be poisoned");
+        assert!(state.frame.is_none());
+        assert_eq!(state.serial, 0);
     }
 }
