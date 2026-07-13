@@ -15,6 +15,7 @@ pub(crate) struct OverlayState {
     pub(crate) paused: bool,
     pub(crate) visible: bool,
     pub(crate) status_message: Option<&'static str>,
+    pub(crate) media_title: Option<&'static str>,
 }
 
 pub(crate) struct PlaybackOverlay {
@@ -204,7 +205,7 @@ fn render_overlay_rgb(
         .unwrap_or(7 * fallback_text_scale);
 
     if let Some(message) = state.status_message {
-        draw_status_message(
+        draw_top_message(
             font.as_mut().map(|font| &mut **font),
             frame,
             width,
@@ -213,11 +214,26 @@ fn render_overlay_rgb(
             fallback_text_scale,
             text_height,
             message,
+            HorizontalAnchor::Right,
         );
     }
 
     if !state.visible {
         return;
+    }
+
+    if let Some(title) = state.media_title {
+        draw_top_message(
+            font.as_mut().map(|font| &mut **font),
+            frame,
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            title,
+            HorizontalAnchor::Left,
+        );
     }
 
     let time_width = time_column_width(
@@ -317,7 +333,13 @@ fn render_overlay_rgb(
     );
 }
 
-fn draw_status_message(
+#[derive(Clone, Copy)]
+enum HorizontalAnchor {
+    Left,
+    Right,
+}
+
+fn draw_top_message(
     mut font: Option<&mut FontRenderer>,
     frame: &mut [u8],
     width: u32,
@@ -326,6 +348,7 @@ fn draw_status_message(
     fallback_scale: u32,
     text_height: u32,
     text: &str,
+    anchor: HorizontalAnchor,
 ) {
     let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
     let inset_y = (height / 36).clamp(6, 24).min(height.saturating_sub(1));
@@ -341,6 +364,13 @@ fn draw_status_message(
     let panel_height = text_height
         .saturating_add(pad_y.saturating_mul(2))
         .min(height.saturating_sub(inset_y).max(1));
+    let panel_x = match anchor {
+        HorizontalAnchor::Left => inset_x,
+        HorizontalAnchor::Right => width
+            .saturating_sub(inset_x)
+            .saturating_sub(panel_width)
+            .max(inset_x.min(width.saturating_sub(1))),
+    };
     let panel_radius = rounded_radius(panel_width, panel_height, text_size / 3);
 
     fill_rounded_rect(
@@ -348,7 +378,7 @@ fn draw_status_message(
         width,
         height,
         RoundedRect {
-            x: f64::from(inset_x),
+            x: f64::from(panel_x),
             y: f64::from(inset_y),
             width: f64::from(panel_width),
             height: f64::from(panel_height),
@@ -363,7 +393,7 @@ fn draw_status_message(
         frame,
         width,
         height,
-        inset_x.saturating_add(pad_x).min(width.saturating_sub(1)),
+        panel_x.saturating_add(pad_x).min(width.saturating_sub(1)),
         inset_y.saturating_add(pad_y).min(height.saturating_sub(1)),
         fallback_scale,
         text,
@@ -1102,6 +1132,7 @@ mod tests {
                 paused: true,
                 visible: true,
                 status_message: None,
+                media_title: None,
             },
             &mut scratch,
             None,
@@ -1135,6 +1166,7 @@ mod tests {
                 paused: false,
                 visible: true,
                 status_message: None,
+                media_title: None,
             },
             &mut scratch,
             None,
@@ -1169,6 +1201,7 @@ mod tests {
                 paused: true,
                 visible: true,
                 status_message: None,
+                media_title: None,
             },
             &mut scratch,
             None,
@@ -1218,6 +1251,7 @@ mod tests {
                 paused: false,
                 visible: false,
                 status_message: None,
+                media_title: None,
             },
             &mut scratch,
             None,
@@ -1245,6 +1279,7 @@ mod tests {
                 paused: false,
                 visible: false,
                 status_message: Some("MUTE ON"),
+                media_title: None,
             },
             &mut scratch,
             None,
@@ -1255,6 +1290,33 @@ mod tests {
             &frame[(width * 120 * 3) as usize..],
             before_bottom.as_slice()
         );
+    }
+
+    #[test]
+    fn media_title_renders_with_playback_controls() {
+        let width = 320;
+        let height = 180;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+        let before_top = frame[..(width * 40 * 3) as usize].to_vec();
+        let mut scratch = String::new();
+
+        render_overlay_rgb(
+            &mut frame,
+            width,
+            height,
+            OverlayState {
+                position: Duration::from_secs(30),
+                duration: Some(Duration::from_secs(120)),
+                paused: false,
+                visible: true,
+                status_message: None,
+                media_title: Some("movie.mkv"),
+            },
+            &mut scratch,
+            None,
+        );
+
+        assert_ne!(&frame[..before_top.len()], before_top.as_slice());
     }
 
     #[test]

@@ -88,6 +88,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
     let subtitle_track = load_subtitle_track(&path, sub_file)?;
     let mut subtitles_visible = subtitle_track.is_some();
+    let media_title = media_title(&path);
     let mut target = terminal_target(source.width, source.height);
 
     let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
@@ -256,6 +257,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     paused,
                     overlay_visible_until,
                     status_message,
+                    media_title,
                 );
                 draw_frame(
                     &mut out,
@@ -393,6 +395,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                 paused,
                 overlay_visible_until,
                 status_message,
+                media_title,
             );
             draw_frame(
                 &mut out,
@@ -427,6 +430,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                         paused,
                         overlay_visible_until,
                         status_message,
+                        media_title,
                     );
                     draw_frame(
                         &mut out,
@@ -476,6 +480,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     paused,
                     overlay_visible_until,
                     status_message,
+                    media_title,
                 );
                 draw_frame(
                     &mut out,
@@ -517,6 +522,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                         paused,
                         overlay_visible_until,
                         status_message,
+                        media_title,
                     );
                     draw_frame(
                         &mut out,
@@ -658,6 +664,7 @@ fn overlay_state(
     paused: bool,
     visible_until: Option<Instant>,
     status_message: Option<StatusMessage>,
+    media_title: &'static str,
 ) -> OverlayState {
     let now = Instant::now();
     OverlayState {
@@ -666,7 +673,18 @@ fn overlay_state(
         paused,
         visible: overlay_visible(paused, scrub_position.is_some(), visible_until, now),
         status_message: status_text(status_message, now),
+        media_title: Some(media_title),
     }
+}
+
+fn media_title(path: &Path) -> &'static str {
+    let text = path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| path.as_os_str())
+        .to_string_lossy()
+        .into_owned();
+    Box::leak(text.into_boxed_str())
 }
 
 fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
@@ -1164,11 +1182,13 @@ mod tests {
             false,
             None,
             None,
+            "movie.mp4",
         );
 
         assert_eq!(state.position, Duration::from_secs(30));
         assert!(state.visible);
         assert_eq!(state.status_message, None);
+        assert_eq!(state.media_title, Some("movie.mp4"));
     }
 
     #[test]
