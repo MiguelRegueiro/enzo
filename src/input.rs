@@ -23,8 +23,8 @@ pub(crate) struct PlaybackInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlaybackMouse {
     Down { column: u16, row: u16 },
-    Drag { column: u16 },
-    Up { column: u16 },
+    Drag { column: u16, row: u16 },
+    Up { column: u16, row: u16 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,11 +83,13 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     MouseEventKind::Drag(MouseButton::Left) => {
                         input.mouse_events.push(PlaybackMouse::Drag {
                             column: mouse.column,
+                            row: mouse.row,
                         });
                     }
                     MouseEventKind::Up(MouseButton::Left) => {
                         input.mouse_events.push(PlaybackMouse::Up {
                             column: mouse.column,
+                            row: mouse.row,
                         });
                     }
                     MouseEventKind::Down(MouseButton::Right) => {

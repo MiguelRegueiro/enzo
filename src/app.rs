@@ -13,7 +13,7 @@ use crate::{
     drop_target::{draw_drop_target, is_remote_url_text, media_candidates_from_text},
     input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
-    overlay::{OverlayState, PlaybackOverlay},
+    overlay::{HitboxRect, OverlayHitContext, OverlayHitPoint, OverlayState, PlaybackOverlay},
     subtitle::{SubtitleRenderer, SubtitleTrack, sidecar_subtitle_path},
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
@@ -284,36 +284,26 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
         }
 
         let mut pointer_seek_target = None;
+        let hit_context = OverlayHitContext {
+            width: canvas.width,
+            height: canvas.height,
+            scale_percent: canvas.overlay_scale_percent,
+            duration: source.duration,
+        };
         for mouse in input.mouse_events {
             let seek_target = match mouse {
                 PlaybackMouse::Down { column, row } => {
                     let point = mouse_canvas_position(column, row, canvas);
-                    if point.is_some_and(|point| {
-                        overlay.playback_button_hit_test(
-                            canvas.width,
-                            canvas.height,
-                            canvas.overlay_scale_percent,
-                            source.duration,
-                            point.x,
-                            point.y,
-                        )
-                    }) {
+                    if point
+                        .is_some_and(|point| overlay.playback_button_hit_test(hit_context, point))
+                    {
                         scrub_position = None;
                         overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                         toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
                         redraw_current_frame = have_frame;
                     } else {
                         scrub_position = point
-                            .and_then(|point| {
-                                overlay.progress_hit_test(
-                                    canvas.width,
-                                    canvas.height,
-                                    canvas.overlay_scale_percent,
-                                    source.duration,
-                                    point.x,
-                                    point.y,
-                                )
-                            })
+                            .and_then(|point| overlay.progress_hit_test(hit_context, point))
                             .and_then(|ratio| seek_from_progress_ratio(ratio, source.duration));
                         if scrub_position.is_some() {
                             redraw_current_frame = have_frame;
@@ -321,8 +311,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     }
                     None
                 }
-                PlaybackMouse::Drag { column } if scrub_position.is_some() => {
-                    let x = mouse_canvas_x(column, canvas);
+                PlaybackMouse::Drag { column, row } if scrub_position.is_some() => {
+                    let x = mouse_canvas_x(column, row, canvas);
                     let ratio = overlay.progress_ratio_from_x(
                         canvas.width,
                         canvas.height,
@@ -334,8 +324,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
                     redraw_current_frame = have_frame;
                     None
                 }
-                PlaybackMouse::Up { column } if scrub_position.is_some() => {
-                    let x = mouse_canvas_x(column, canvas);
+                PlaybackMouse::Up { column, row } if scrub_position.is_some() => {
+                    let x = mouse_canvas_x(column, row, canvas);
                     let ratio = overlay.progress_ratio_from_x(
                         canvas.width,
                         canvas.height,
@@ -779,26 +769,48 @@ fn seek_from_progress_ratio(ratio: f64, duration: Option<Duration>) -> Option<Du
     duration.map(|duration| Duration::from_secs_f64(duration.as_secs_f64() * ratio.clamp(0.0, 1.0)))
 }
 
-#[derive(Clone, Copy)]
-struct VideoPoint {
-    x: u32,
-    y: u32,
-}
+fn mouse_canvas_position(column: u16, row: u16, canvas: CanvasFrame) -> Option<OverlayHitPoint> {
+    if mouse_coordinates_are_pixels(column, row, canvas) {
+        let x = pixel_to_canvas(u32::from(column), canvas.terminal_width, canvas.width);
+        let y = pixel_to_canvas(u32::from(row), canvas.terminal_height, canvas.height);
+        return Some(OverlayHitPoint {
+            x,
+            cell: HitboxRect {
+                left: x,
+                top: y,
+                right: x,
+                bottom: y,
+            },
+        });
+    }
 
-fn mouse_canvas_position(column: u16, row: u16, canvas: CanvasFrame) -> Option<VideoPoint> {
     let end_col = canvas.area.x.saturating_add(canvas.area.cols);
     let end_row = canvas.area.y.saturating_add(canvas.area.rows);
     if column < canvas.area.x || column >= end_col || row < canvas.area.y || row >= end_row {
         return None;
     }
 
-    Some(VideoPoint {
-        x: cell_to_pixel(column - canvas.area.x, canvas.area.cols, canvas.width),
-        y: cell_to_pixel(row - canvas.area.y, canvas.area.rows, canvas.height),
+    let rel_col = column - canvas.area.x;
+    let rel_row = row - canvas.area.y;
+    let x = cell_to_pixel(rel_col, canvas.area.cols, canvas.width);
+    let y = cell_to_pixel(rel_row, canvas.area.rows, canvas.height);
+
+    Some(OverlayHitPoint {
+        x,
+        cell: HitboxRect {
+            left: x,
+            top: y,
+            right: x,
+            bottom: y,
+        },
     })
 }
 
-fn mouse_canvas_x(column: u16, canvas: CanvasFrame) -> u32 {
+fn mouse_canvas_x(column: u16, row: u16, canvas: CanvasFrame) -> u32 {
+    if mouse_coordinates_are_pixels(column, row, canvas) {
+        return pixel_to_canvas(u32::from(column), canvas.terminal_width, canvas.width);
+    }
+
     let rel = if column <= canvas.area.x {
         0
     } else {
@@ -809,12 +821,24 @@ fn mouse_canvas_x(column: u16, canvas: CanvasFrame) -> u32 {
     cell_to_pixel(rel, canvas.area.cols, canvas.width)
 }
 
+fn mouse_coordinates_are_pixels(column: u16, row: u16, canvas: CanvasFrame) -> bool {
+    column >= canvas.area.cols || row >= canvas.area.rows
+}
+
 fn cell_to_pixel(cell: u16, cells: u16, pixels: u32) -> u32 {
     let cells = f64::from(cells.max(1));
     let pixels = pixels.max(1);
     (((f64::from(cell) + 0.5) * f64::from(pixels)) / cells)
         .floor()
         .min(f64::from(pixels - 1)) as u32
+}
+
+fn pixel_to_canvas(pixel: u32, terminal_pixels: u32, canvas_pixels: u32) -> u32 {
+    let terminal_pixels = terminal_pixels.max(1);
+    let canvas_pixels = canvas_pixels.max(1);
+    (u64::from(pixel.min(terminal_pixels.saturating_sub(1))) * u64::from(canvas_pixels)
+        / u64::from(terminal_pixels))
+    .min(u64::from(canvas_pixels - 1)) as u32
 }
 
 fn frame_interval(fps: f64) -> Duration {
@@ -1031,6 +1055,8 @@ impl TargetFrame {
 struct CanvasFrame {
     width: u32,
     height: u32,
+    terminal_width: u32,
+    terminal_height: u32,
     video_x: u32,
     video_y: u32,
     video_width: u32,
@@ -1085,6 +1111,8 @@ fn canvas_for_terminal(
     CanvasFrame {
         width: canvas.width,
         height: canvas.height,
+        terminal_width: pixel_width.max(1),
+        terminal_height: pixel_height.max(1),
         video_x,
         video_y,
         video_width: video.width,
@@ -1353,6 +1381,8 @@ mod tests {
             CanvasFrame {
                 width: 1920,
                 height: 1080,
+                terminal_width: 1920,
+                terminal_height: 1080,
                 video_x: 0,
                 video_y: 138,
                 video_width: 1920,
@@ -1377,6 +1407,8 @@ mod tests {
             CanvasFrame {
                 width: 1920,
                 height: 1200,
+                terminal_width: 2880,
+                terminal_height: 1800,
                 video_x: 0,
                 video_y: 198,
                 video_width: 1920,
@@ -1397,6 +1429,8 @@ mod tests {
         let canvas = CanvasFrame {
             width: 1920,
             height: 1080,
+            terminal_width: 1920,
+            terminal_height: 1080,
             video_x: 0,
             video_y: 138,
             video_width: 1920,
@@ -1413,7 +1447,39 @@ mod tests {
         let point = mouse_canvas_position(40, 20, canvas).expect("point should be inside");
 
         assert_eq!(point.x, 972);
-        assert_eq!(point.y, 922);
+        assert_eq!(point.cell.left, point.x);
+        assert_eq!(point.cell.right, point.x);
+        assert_eq!(point.cell.top, 922);
+        assert_eq!(point.cell.bottom, 922);
+    }
+
+    #[test]
+    fn mouse_position_maps_pixel_mouse_to_canvas_pixel() {
+        let canvas = CanvasFrame {
+            width: 1920,
+            height: 1200,
+            terminal_width: 2880,
+            terminal_height: 1800,
+            video_x: 0,
+            video_y: 198,
+            video_width: 1920,
+            video_height: 804,
+            overlay_scale_percent: 120,
+            area: ImageArea {
+                x: 0,
+                y: 0,
+                cols: 120,
+                rows: 40,
+            },
+        };
+
+        let point = mouse_canvas_position(1440, 1500, canvas).expect("point should be inside");
+
+        assert_eq!(point.x, 960);
+        assert_eq!(point.cell.left, 960);
+        assert_eq!(point.cell.top, 1000);
+        assert_eq!(point.cell.right, 960);
+        assert_eq!(point.cell.bottom, 1000);
     }
 
     #[test]
@@ -1425,6 +1491,8 @@ mod tests {
         let canvas = CanvasFrame {
             width: 4,
             height: 4,
+            terminal_width: 4,
+            terminal_height: 4,
             video_x: 1,
             video_y: 1,
             video_width: 2,
@@ -1466,6 +1534,8 @@ mod tests {
         let canvas = CanvasFrame {
             width: 4,
             height: 2,
+            terminal_width: 4,
+            terminal_height: 2,
             video_x: 0,
             video_y: 0,
             video_width: 4,

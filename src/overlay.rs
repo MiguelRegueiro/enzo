@@ -25,6 +25,28 @@ pub(crate) struct PlaybackOverlay {
     font: Option<FontRenderer>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct OverlayHitContext {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) scale_percent: u32,
+    pub(crate) duration: Option<Duration>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct OverlayHitPoint {
+    pub(crate) x: u32,
+    pub(crate) cell: HitboxRect,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct HitboxRect {
+    pub(crate) left: u32,
+    pub(crate) top: u32,
+    pub(crate) right: u32,
+    pub(crate) bottom: u32,
+}
+
 impl PlaybackOverlay {
     pub(crate) fn new() -> Self {
         Self {
@@ -54,15 +76,16 @@ impl PlaybackOverlay {
 
     pub(crate) fn progress_hit_test(
         &mut self,
-        width: u32,
-        height: u32,
-        scale_percent: u32,
-        duration: Option<Duration>,
-        x: u32,
-        y: u32,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
     ) -> Option<f64> {
-        let metrics = self.metrics(width, height, scale_percent, duration);
-        progress_hit_ratio(metrics, x, y)
+        let metrics = self.metrics(
+            context.width,
+            context.height,
+            context.scale_percent,
+            context.duration,
+        );
+        progress_hit_ratio(metrics, point)
     }
 
     pub(crate) fn progress_ratio_from_x(
@@ -79,15 +102,16 @@ impl PlaybackOverlay {
 
     pub(crate) fn playback_button_hit_test(
         &mut self,
-        width: u32,
-        height: u32,
-        scale_percent: u32,
-        duration: Option<Duration>,
-        x: u32,
-        y: u32,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
     ) -> bool {
-        let metrics = self.metrics(width, height, scale_percent, duration);
-        playback_button_hit(metrics, x, y)
+        let metrics = self.metrics(
+            context.width,
+            context.height,
+            context.scale_percent,
+            context.duration,
+        );
+        playback_button_hit(metrics, point)
     }
 
     fn metrics(
@@ -509,10 +533,16 @@ fn draw_pause_icon(frame: &mut [u8], width: u32, height: u32, x: u32, y: u32, si
     }
 }
 
-fn playback_button_hit(metrics: OverlayMetrics, x: u32, y: u32) -> bool {
-    let end_x = metrics.inner_x.saturating_add(metrics.control_size);
-    let end_y = metrics.control_y.saturating_add(metrics.control_size);
-    x >= metrics.inner_x && x <= end_x && y >= metrics.control_y && y <= end_y
+fn playback_button_hit(metrics: OverlayMetrics, point: OverlayHitPoint) -> bool {
+    hitbox_intersects(
+        point.cell,
+        HitboxRect {
+            left: metrics.inner_x,
+            top: metrics.control_y,
+            right: metrics.inner_x.saturating_add(metrics.control_size),
+            bottom: metrics.control_y.saturating_add(metrics.control_size),
+        },
+    )
 }
 
 fn draw_progress_handle(
@@ -552,25 +582,30 @@ fn draw_progress_handle(
     );
 }
 
-fn progress_hit_ratio(metrics: OverlayMetrics, x: u32, y: u32) -> Option<f64> {
+fn progress_hit_ratio(metrics: OverlayMetrics, point: OverlayHitPoint) -> Option<f64> {
     let hit_radius = progress_handle_radius(metrics.bar_height).max(8) + 5;
-    let center_y = metrics.bar_y + metrics.bar_height / 2;
-    let min_y = center_y.saturating_sub(hit_radius);
-    let max_y = center_y.saturating_add(hit_radius);
-    if y < min_y || y > max_y {
+    let bar_rect = HitboxRect {
+        left: metrics.bar_x.saturating_sub(hit_radius),
+        top: progress_handle_center_y(metrics).saturating_sub(hit_radius),
+        right: metrics
+            .bar_x
+            .saturating_add(metrics.bar_width)
+            .saturating_add(hit_radius),
+        bottom: progress_handle_center_y(metrics).saturating_add(hit_radius),
+    };
+    if !hitbox_intersects(point.cell, bar_rect) {
         return None;
     }
 
-    let min_x = metrics.bar_x.saturating_sub(hit_radius);
-    let max_x = metrics
-        .bar_x
-        .saturating_add(metrics.bar_width)
-        .saturating_add(hit_radius);
-    if x < min_x || x > max_x {
-        return None;
-    }
+    Some(progress_ratio_for_x(metrics, point.x))
+}
 
-    Some(progress_ratio_for_x(metrics, x))
+fn progress_handle_center_y(metrics: OverlayMetrics) -> u32 {
+    metrics.bar_y.saturating_add(metrics.bar_height / 2)
+}
+
+fn hitbox_intersects(a: HitboxRect, b: HitboxRect) -> bool {
+    a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
 
 fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
@@ -1340,7 +1375,7 @@ mod tests {
         let x = metrics.bar_x + metrics.bar_width / 2;
         let y = metrics.bar_y + metrics.bar_height / 2;
 
-        let ratio = progress_hit_ratio(metrics, x, y).expect("bar should be hittable");
+        let ratio = progress_hit_ratio(metrics, hit_point(x, y)).expect("bar should be hittable");
 
         assert!((ratio - 0.5).abs() < 0.01);
     }
@@ -1349,7 +1384,77 @@ mod tests {
     fn progress_hit_test_ignores_points_above_bar() {
         let metrics = test_metrics(320, 180);
 
-        assert_eq!(progress_hit_ratio(metrics, metrics.bar_x, 0), None);
+        assert_eq!(
+            progress_hit_ratio(metrics, hit_point(metrics.bar_x, 0)),
+            None
+        );
+    }
+
+    #[test]
+    fn progress_hit_test_uses_clicked_cell_overlap() {
+        let metrics = test_metrics_with_scale(1920, 1200, 120);
+        let x = metrics.bar_x + metrics.bar_width / 2;
+        let handle_radius = progress_handle_radius(metrics.bar_height).max(8) + 5;
+        let handle_center_y = progress_handle_center_y(metrics);
+        let cell_overlapping_from_below = hit_point_with_cell(
+            x,
+            HitboxRect {
+                left: x,
+                top: handle_center_y + handle_radius,
+                right: x,
+                bottom: handle_center_y + handle_radius,
+            },
+        );
+
+        let ratio = progress_hit_ratio(metrics, cell_overlapping_from_below)
+            .expect("overlapping cell should be hittable");
+
+        assert!((ratio - 0.5).abs() < 0.01);
+        assert_eq!(
+            progress_hit_ratio(
+                metrics,
+                hit_point_with_cell(
+                    x,
+                    HitboxRect {
+                        left: x,
+                        top: handle_center_y.saturating_sub(handle_radius + 20),
+                        right: x,
+                        bottom: handle_center_y.saturating_sub(handle_radius + 1),
+                    },
+                ),
+            ),
+            None
+        );
+        assert_eq!(
+            progress_hit_ratio(
+                metrics,
+                hit_point_with_cell(
+                    x,
+                    HitboxRect {
+                        left: x,
+                        top: handle_center_y + handle_radius + 1,
+                        right: x,
+                        bottom: metrics.panel_y + metrics.panel_height,
+                    },
+                ),
+            ),
+            None
+        );
+        assert_eq!(
+            progress_hit_ratio(
+                metrics,
+                hit_point_with_cell(
+                    x,
+                    HitboxRect {
+                        left: x,
+                        top: metrics.panel_y + metrics.panel_height,
+                        right: x,
+                        bottom: metrics.panel_y + metrics.panel_height,
+                    },
+                ),
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1358,13 +1463,36 @@ mod tests {
 
         assert!(playback_button_hit(
             metrics,
-            metrics.inner_x + metrics.control_size / 2,
-            metrics.control_y + metrics.control_size / 2
+            hit_point(
+                metrics.inner_x + metrics.control_size / 2,
+                metrics.control_y + metrics.control_size / 2
+            )
         ));
         assert!(!playback_button_hit(
             metrics,
-            metrics.time_x,
-            metrics.control_y + metrics.control_size / 2
+            hit_point(metrics.time_x, metrics.control_y + metrics.control_size / 2)
+        ));
+    }
+
+    #[test]
+    fn playback_button_hit_test_uses_clicked_cell_overlap() {
+        let metrics = test_metrics_with_scale(1920, 1200, 120);
+
+        assert!(playback_button_hit(
+            metrics,
+            hit_point_with_cell(
+                metrics.inner_x + metrics.control_size / 2,
+                HitboxRect {
+                    left: metrics.inner_x,
+                    top: metrics.control_y + metrics.control_size - 1,
+                    right: metrics.inner_x + metrics.control_size,
+                    bottom: metrics.control_y + metrics.control_size + 20,
+                },
+            )
+        ));
+        assert!(!playback_button_hit(
+            metrics,
+            hit_point(metrics.time_x, metrics.control_y + metrics.control_size / 2)
         ));
     }
 
@@ -1418,6 +1546,22 @@ mod tests {
 
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {
         test_metrics_with_scale(width, height, 100)
+    }
+
+    fn hit_point(x: u32, y: u32) -> OverlayHitPoint {
+        hit_point_with_cell(
+            x,
+            HitboxRect {
+                left: x,
+                top: y,
+                right: x,
+                bottom: y,
+            },
+        )
+    }
+
+    fn hit_point_with_cell(x: u32, cell: HitboxRect) -> OverlayHitPoint {
+        OverlayHitPoint { x, cell }
     }
 
     fn test_metrics_with_scale(width: u32, height: u32, scale_percent: u32) -> OverlayMetrics {

@@ -28,6 +28,10 @@ impl TerminalGuard {
             EnableMouseCapture
         )
         .context("failed to enter terminal playback mode")?;
+        stdout
+            .write_all(b"\x1b[?1016h")
+            .context("failed to enable pixel mouse mode")?;
+        stdout.flush().context("failed to flush terminal setup")?;
         Ok(Self)
     }
 }
@@ -36,6 +40,7 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
         let _ = clear_all_kitty_images(&mut stdout);
+        let _ = stdout.write_all(b"\x1b[?1016l");
         let _ = execute!(
             stdout,
             DisableMouseCapture,
