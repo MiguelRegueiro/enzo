@@ -20,6 +20,7 @@ cargo run --release -- /path/to/video.mp4
 
 Controls:
 
+- Space or right click pauses/resumes playback.
 - `q`, Esc, or Ctrl-C quits playback.
 
 The first version intentionally accepts only a video path, plus `--force` for compatible terminals

@@ -8,9 +8,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 
 use crate::{
+    input::{PlaybackInput, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
@@ -62,13 +62,26 @@ pub(crate) fn run() -> Result<()> {
     let mut last_layout = None::<ImageArea>;
     let mut previous_image_id = None;
     let mut frame_serial = 0_u32;
+    let mut have_frame = false;
     let mut video_ended = false;
     let frame_interval = frame_interval(source.fps);
     let mut next_frame_at = playback_started_at;
+    let mut paused = false;
 
     loop {
-        if should_quit()? {
-            break;
+        match read_input_events()? {
+            PlaybackInput::Quit => break,
+            PlaybackInput::TogglePause => {
+                paused = !paused;
+                decoder.set_paused(paused);
+                if let Some(audio) = audio.as_mut() {
+                    audio.set_paused(paused);
+                }
+                if !paused {
+                    next_frame_at = Instant::now();
+                }
+            }
+            PlaybackInput::None => {}
         }
         poll_audio(&mut audio, &mut audio_done)?;
 
@@ -77,6 +90,23 @@ pub(crate) fn run() -> Result<()> {
             clear_screen_and_images(&mut out)?;
             last_layout = Some(layout);
             previous_image_id = None;
+            if paused && have_frame {
+                draw_frame(
+                    &mut out,
+                    target,
+                    layout,
+                    &mut previous_image_id,
+                    &mut frame_serial,
+                    &frame,
+                    &mut sequence,
+                )?;
+            }
+        }
+
+        if paused {
+            out.flush()?;
+            thread::sleep(Duration::from_millis(15));
+            continue;
         }
 
         let now = Instant::now();
@@ -88,23 +118,16 @@ pub(crate) fn run() -> Result<()> {
 
         match decoder.read_latest_frame(&mut frame)? {
             FrameStatus::NewFrame => {
-                let image_id = KITTY_IMAGE_IDS[(frame_serial as usize) % KITTY_IMAGE_IDS.len()];
-                write_kitty_rgb_frame(
+                draw_frame(
                     &mut out,
-                    KittyFramePlacement {
-                        image_id,
-                        placement_id: KITTY_PLACEMENT_ID,
-                        z_index: 0,
-                        previous_image_id,
-                        width: target.width,
-                        height: target.height,
-                        area: layout,
-                    },
+                    target,
+                    layout,
+                    &mut previous_image_id,
+                    &mut frame_serial,
                     &frame,
                     &mut sequence,
                 )?;
-                previous_image_id = Some(image_id);
-                frame_serial = frame_serial.wrapping_add(1);
+                have_frame = true;
                 out.flush()?;
                 advance_frame_clock(&mut next_frame_at, frame_interval);
             }
@@ -128,6 +151,35 @@ pub(crate) fn run() -> Result<()> {
     if let Some(audio) = audio.as_mut() {
         audio.stop()?;
     }
+    Ok(())
+}
+
+fn draw_frame(
+    out: &mut impl Write,
+    target: TargetFrame,
+    layout: ImageArea,
+    previous_image_id: &mut Option<u32>,
+    frame_serial: &mut u32,
+    frame: &[u8],
+    sequence: &mut Vec<u8>,
+) -> io::Result<()> {
+    let image_id = KITTY_IMAGE_IDS[(*frame_serial as usize) % KITTY_IMAGE_IDS.len()];
+    write_kitty_rgb_frame(
+        out,
+        KittyFramePlacement {
+            image_id,
+            placement_id: KITTY_PLACEMENT_ID,
+            z_index: 0,
+            previous_image_id: *previous_image_id,
+            width: target.width,
+            height: target.height,
+            area: layout,
+        },
+        frame,
+        sequence,
+    )?;
+    *previous_image_id = Some(image_id);
+    *frame_serial = frame_serial.wrapping_add(1);
     Ok(())
 }
 
@@ -216,6 +268,7 @@ Usage:
   rigoberto [--force] <video>
 
 Controls:
+  Space, right click  pause/play
   q, Esc, Ctrl-C    quit playback
 "
     );
@@ -284,21 +337,6 @@ fn fit_pixels(source_width: u32, source_height: u32, max_width: u32, max_height:
         width: width.max(1),
         height: height.max(1),
     }
-}
-
-fn should_quit() -> Result<bool> {
-    while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
-        if let Event::Key(key) = event::read().context("failed to read terminal input")? {
-            if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                || (matches!(key.code, KeyCode::Char('c'))
-                    && key.modifiers.contains(KeyModifiers::CONTROL))
-            {
-                return Ok(true);
-            }
-        }
-    }
-
-    Ok(false)
 }
 
 #[cfg(test)]

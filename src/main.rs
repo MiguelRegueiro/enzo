@@ -1,4 +1,5 @@
 mod app;
+mod input;
 mod media;
 mod terminal;
 

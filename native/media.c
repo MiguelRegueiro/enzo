@@ -6,6 +6,7 @@
 #include <libavutil/imgutils.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
+#include <libavutil/time.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 #include <pulse/error.h>
@@ -43,6 +44,20 @@ void rig_video_decoder_close(RigVideoDecoder *decoder);
 
 static int stop_requested(const int *stop_flag) {
     return stop_flag != NULL && *((volatile const int *)stop_flag) != 0;
+}
+
+static int pause_requested(const int *pause_flag) {
+    return pause_flag != NULL && *((volatile const int *)pause_flag) != 0;
+}
+
+static int wait_while_paused(const int *stop_flag, const int *pause_flag) {
+    while (pause_requested(pause_flag)) {
+        if (stop_requested(stop_flag)) {
+            return -1;
+        }
+        av_usleep(10000);
+    }
+    return 0;
 }
 
 static void set_error(char *err, size_t err_len, const char *fmt, ...) {
@@ -476,7 +491,13 @@ static int write_converted_audio(
     return 0;
 }
 
-int rig_play_audio(const char *path, const int *stop_flag, char *err, size_t err_len) {
+int rig_play_audio(
+    const char *path,
+    const int *stop_flag,
+    const int *pause_flag,
+    char *err,
+    size_t err_len
+) {
     if (path == NULL) {
         set_error(err, err_len, "invalid audio path");
         return -1;
@@ -539,6 +560,13 @@ int rig_play_audio(const char *path, const int *stop_flag, char *err, size_t err
         .rate = 48000,
         .channels = 2,
     };
+    pa_buffer_attr buffer_attr = {
+        .maxlength = (uint32_t)-1,
+        .tlength = 48000 / 20 * 2 * 2,
+        .prebuf = 0,
+        .minreq = (uint32_t)-1,
+        .fragsize = (uint32_t)-1,
+    };
     int pulse_error = 0;
     pa_simple *pulse = pa_simple_new(
         NULL,
@@ -548,7 +576,7 @@ int rig_play_audio(const char *path, const int *stop_flag, char *err, size_t err
         "playback",
         &sample_spec,
         NULL,
-        NULL,
+        &buffer_attr,
         &pulse_error
     );
     if (pulse == NULL) {
@@ -574,8 +602,16 @@ int rig_play_audio(const char *path, const int *stop_flag, char *err, size_t err
     }
 
     while (!failed && !stop_requested(stop_flag)) {
+        if (wait_while_paused(stop_flag, pause_flag) < 0) {
+            break;
+        }
+
         ret = avcodec_receive_frame(codec, frame);
         if (ret == 0) {
+            if (wait_while_paused(stop_flag, pause_flag) < 0) {
+                av_frame_unref(frame);
+                break;
+            }
             if (write_converted_audio(
                     swr,
                     codec,

@@ -57,6 +57,7 @@ unsafe extern "C" {
     fn rig_play_audio(
         path: *const c_char,
         stop_flag: *const c_int,
+        pause_flag: *const c_int,
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
@@ -180,6 +181,7 @@ pub(crate) struct VideoDecoder {
     latest_frame: Arc<Mutex<LatestFrame>>,
     delivered_serial: u64,
     stop: Arc<AtomicI32>,
+    pause: Arc<AtomicI32>,
     frame_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -191,15 +193,25 @@ impl VideoDecoder {
         let frame_target = Arc::clone(&latest_frame);
         let stop = Arc::new(AtomicI32::new(0));
         let stop_thread = Arc::clone(&stop);
+        let pause = Arc::new(AtomicI32::new(0));
+        let pause_thread = Arc::clone(&pause);
 
         let frame_thread = thread::spawn(move || {
-            run_video_decode_thread(native, frame_len, fps, frame_target, stop_thread);
+            run_video_decode_thread(
+                native,
+                frame_len,
+                fps,
+                frame_target,
+                stop_thread,
+                pause_thread,
+            );
         });
 
         Ok(Self {
             latest_frame,
             delivered_serial: 0,
             stop,
+            pause,
             frame_thread: Some(frame_thread),
         })
     }
@@ -242,6 +254,10 @@ impl VideoDecoder {
         }
         Ok(())
     }
+
+    pub(crate) fn set_paused(&self, paused: bool) {
+        self.pause.store(i32::from(paused), Ordering::Relaxed);
+    }
 }
 
 impl Drop for VideoDecoder {
@@ -256,8 +272,9 @@ fn run_video_decode_thread(
     fps: f64,
     latest_frame: Arc<Mutex<LatestFrame>>,
     stop: Arc<AtomicI32>,
+    pause: Arc<AtomicI32>,
 ) {
-    let started_at = Instant::now();
+    let mut started_at = Instant::now();
     let fallback_interval = 1.0 / fps.max(1.0);
     let mut fallback_pts = 0.0;
     let mut buffer = vec![0_u8; frame_len];
@@ -267,6 +284,11 @@ fn run_video_decode_thread(
             mark_ended(&latest_frame);
             break;
         }
+        let Some(paused_for) = wait_while_paused(&stop, &pause) else {
+            mark_ended(&latest_frame);
+            break;
+        };
+        started_at += paused_for;
 
         let pts = match native.next_frame(&mut buffer, &stop) {
             Ok(Some(pts)) => pts,
@@ -287,18 +309,48 @@ fn run_video_decode_thread(
             fallback_pts += fallback_interval;
             pts
         };
-        let due_at = started_at + Duration::from_secs_f64(pts);
-        let now = Instant::now();
-        if due_at > now {
-            thread::sleep((due_at - now).min(Duration::from_millis(50)));
+        let mut due_at = started_at + Duration::from_secs_f64(pts);
+        loop {
+            if stop.load(Ordering::Relaxed) != 0 {
+                mark_ended(&latest_frame);
+                return;
+            }
+            let Some(paused_for) = wait_while_paused(&stop, &pause) else {
+                mark_ended(&latest_frame);
+                return;
+            };
+            started_at += paused_for;
+            due_at += paused_for;
+
+            let now = Instant::now();
+            if due_at <= now {
+                break;
+            }
+            thread::sleep((due_at - now).min(Duration::from_millis(10)));
         }
 
         buffer = store_latest_frame(&latest_frame, buffer, frame_len);
     }
 }
 
+fn wait_while_paused(stop: &AtomicI32, pause: &AtomicI32) -> Option<Duration> {
+    if pause.load(Ordering::Relaxed) == 0 {
+        return Some(Duration::ZERO);
+    }
+
+    let paused_at = Instant::now();
+    while pause.load(Ordering::Relaxed) != 0 {
+        if stop.load(Ordering::Relaxed) != 0 {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Some(paused_at.elapsed())
+}
+
 pub(crate) struct AudioPlayer {
     stop: Arc<AtomicI32>,
+    pause: Arc<AtomicI32>,
     handle: Option<thread::JoinHandle<Result<()>>>,
     finished: bool,
 }
@@ -308,12 +360,15 @@ impl AudioPlayer {
         let path = path_cstring(path)?;
         let stop = Arc::new(AtomicI32::new(0));
         let stop_thread = Arc::clone(&stop);
+        let pause = Arc::new(AtomicI32::new(0));
+        let pause_thread = Arc::clone(&pause);
         let handle = thread::spawn(move || {
             let mut error = ErrorBuffer::new();
             let status = unsafe {
                 rig_play_audio(
                     path.as_ptr(),
                     stop_thread.as_ptr(),
+                    pause_thread.as_ptr(),
                     error.as_mut_ptr(),
                     error.len(),
                 )
@@ -326,6 +381,7 @@ impl AudioPlayer {
 
         Ok(Self {
             stop,
+            pause,
             handle: Some(handle),
             finished: false,
         })
@@ -360,6 +416,10 @@ impl AudioPlayer {
                 .unwrap_or_else(|_| Err(anyhow!("audio playback thread panicked")))?;
         }
         Ok(())
+    }
+
+    pub(crate) fn set_paused(&self, paused: bool) {
+        self.pause.store(i32::from(paused), Ordering::Relaxed);
     }
 }
 
