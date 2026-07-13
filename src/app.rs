@@ -19,8 +19,8 @@ use crate::{
     },
 };
 
-const MAX_DECODE_WIDTH: u32 = 1280;
-const MAX_DECODE_HEIGHT: u32 = 720;
+const MAX_DECODE_WIDTH: u32 = 1920;
+const MAX_DECODE_HEIGHT: u32 = 1080;
 
 pub(crate) fn run() -> Result<()> {
     let config = parse_args(env::args_os().skip(1))?;
@@ -236,18 +236,21 @@ impl TargetFrame {
 fn terminal_target(source_width: u32, source_height: u32) -> TargetFrame {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let (pixel_width, pixel_height) = crate::terminal::terminal_pixel_size(cols, rows);
-    let display = fit_pixels(
-        source_width,
-        source_height,
-        pixel_width.max(1),
-        pixel_height.max(1),
-    );
-    let capped = fit_pixels(
-        source_width,
-        source_height,
-        display.width.min(MAX_DECODE_WIDTH).max(1),
-        display.height.min(MAX_DECODE_HEIGHT).max(1),
-    );
+    target_for_bounds(source_width, source_height, pixel_width, pixel_height)
+}
+
+fn target_for_bounds(
+    source_width: u32,
+    source_height: u32,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> TargetFrame {
+    let max_width = pixel_width.min(MAX_DECODE_WIDTH).min(source_width).max(1);
+    let max_height = pixel_height
+        .min(MAX_DECODE_HEIGHT)
+        .min(source_height)
+        .max(1);
+    let capped = fit_pixels(source_width, source_height, max_width, max_height);
 
     TargetFrame {
         width: capped.width.max(1),
@@ -312,5 +315,29 @@ mod tests {
         .expect("path should be reconstructed");
 
         assert_eq!(path, PathBuf::from("/tmp/La fascinante historia.mp4"));
+    }
+
+    #[test]
+    fn target_caps_large_sources_at_1080p() {
+        let target = target_for_bounds(3840, 2160, 3840, 2160);
+
+        assert_eq!(target.width, 1920);
+        assert_eq!(target.height, 1080);
+    }
+
+    #[test]
+    fn target_does_not_upscale_small_sources() {
+        let target = target_for_bounds(1280, 720, 3840, 2160);
+
+        assert_eq!(target.width, 1280);
+        assert_eq!(target.height, 720);
+    }
+
+    #[test]
+    fn target_preserves_aspect_inside_1080p_cap() {
+        let target = target_for_bounds(2560, 1080, 3840, 2160);
+
+        assert_eq!(target.width, 1920);
+        assert_eq!(target.height, 810);
     }
 }
