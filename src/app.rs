@@ -772,7 +772,7 @@ Controls:
   Drop file/URL      play from launcher
   Space, right click  pause/play
   Left, Right         seek 5 seconds
-  q, Esc, Ctrl-C    quit playback
+  q                  quit
 "
     );
 }

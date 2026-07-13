@@ -1,9 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlaybackCommand {
@@ -51,10 +49,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                    || (matches!(key.code, KeyCode::Char('c'))
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
+                if matches!(key.code, KeyCode::Char('q')) {
                     input.command = PlaybackCommand::Quit;
                     return Ok(input);
                 }
@@ -115,10 +110,7 @@ pub(crate) fn read_drop_events() -> Result<DropInput> {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     // Ignore key releases/repeats in the launcher.
-                } else if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                    || (matches!(key.code, KeyCode::Char('c'))
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
+                } else if matches!(key.code, KeyCode::Char('q')) {
                     input.command = DropCommand::Quit;
                     return Ok(input);
                 }

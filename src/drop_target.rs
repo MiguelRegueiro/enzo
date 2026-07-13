@@ -21,7 +21,7 @@ pub(crate) fn draw_drop_target(out: &mut impl Write, status: Option<&str>) -> io
         "Drop files or URLs to play",
         true,
     )?;
-    write_centered(out, cols, rows.saturating_div(2), "q / Esc to quit", false)?;
+    write_centered(out, cols, rows.saturating_div(2), "q to quit", false)?;
     if let Some(status) = status.filter(|status| !status.is_empty()) {
         write_centered(
             out,
