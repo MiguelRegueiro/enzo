@@ -5,7 +5,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicI32, AtomicI64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -21,6 +21,7 @@ struct RigVideoInfo {
     width: u32,
     height: u32,
     fps: c_double,
+    duration: c_double,
     has_audio: c_int,
 }
 
@@ -53,11 +54,19 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn rig_video_decoder_seek(
+        decoder: *mut RigVideoDecoderOpaque,
+        seconds: c_double,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
     fn rig_video_decoder_close(decoder: *mut RigVideoDecoderOpaque);
     fn rig_play_audio(
         path: *const c_char,
         stop_flag: *const c_int,
         pause_flag: *const c_int,
+        seek_generation: *const c_int,
+        seek_micros: *const i64,
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
@@ -68,6 +77,7 @@ pub(crate) struct VideoInfo {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) fps: f64,
+    pub(crate) duration: Option<Duration>,
     pub(crate) has_audio: bool,
 }
 
@@ -77,6 +87,7 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
         width: 0,
         height: 0,
         fps: 0.0,
+        duration: 0.0,
         has_audio: 0,
     };
     let mut error = ErrorBuffer::new();
@@ -97,13 +108,19 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
             .filter(|fps| *fps > 0.0)
             .unwrap_or(30.0)
             .min(MAX_PLAYBACK_FPS),
+        duration: info
+            .duration
+            .is_finite()
+            .then_some(info.duration)
+            .filter(|duration| *duration > 0.0)
+            .map(Duration::from_secs_f64),
         has_audio: info.has_audio != 0,
     })
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum FrameStatus {
-    NewFrame,
+    NewFrame { pts: Duration },
     NoFrame,
     Ended,
 }
@@ -156,6 +173,22 @@ impl NativeVideoDecoder {
             _ => bail!("{}", error.message("failed to decode video frame")),
         }
     }
+
+    fn seek(&mut self, position: Duration) -> Result<()> {
+        let mut error = ErrorBuffer::new();
+        let status = unsafe {
+            rig_video_decoder_seek(
+                self.0,
+                position.as_secs_f64(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        if status < 0 {
+            bail!("{}", error.message("failed to seek video"));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for NativeVideoDecoder {
@@ -172,6 +205,7 @@ impl Drop for NativeVideoDecoder {
 #[derive(Default)]
 struct LatestFrame {
     frame: Option<Vec<u8>>,
+    pts: Duration,
     ended: bool,
     error: Option<String>,
     serial: u64,
@@ -182,6 +216,8 @@ pub(crate) struct VideoDecoder {
     delivered_serial: u64,
     stop: Arc<AtomicI32>,
     pause: Arc<AtomicI32>,
+    seek_generation: Arc<AtomicI32>,
+    seek_micros: Arc<AtomicI64>,
     frame_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -195,6 +231,10 @@ impl VideoDecoder {
         let stop_thread = Arc::clone(&stop);
         let pause = Arc::new(AtomicI32::new(0));
         let pause_thread = Arc::clone(&pause);
+        let seek_generation = Arc::new(AtomicI32::new(0));
+        let seek_generation_thread = Arc::clone(&seek_generation);
+        let seek_micros = Arc::new(AtomicI64::new(0));
+        let seek_micros_thread = Arc::clone(&seek_micros);
 
         let frame_thread = thread::spawn(move || {
             run_video_decode_thread(
@@ -204,6 +244,8 @@ impl VideoDecoder {
                 frame_target,
                 stop_thread,
                 pause_thread,
+                seek_generation_thread,
+                seek_micros_thread,
             );
         });
 
@@ -212,6 +254,8 @@ impl VideoDecoder {
             delivered_serial: 0,
             stop,
             pause,
+            seek_generation,
+            seek_micros,
             frame_thread: Some(frame_thread),
         })
     }
@@ -237,7 +281,7 @@ impl VideoDecoder {
             }
             frame.copy_from_slice(latest_frame);
             self.delivered_serial = state.serial;
-            Ok(FrameStatus::NewFrame)
+            Ok(FrameStatus::NewFrame { pts: state.pts })
         } else if let Some(error) = state.error.take() {
             Err(io::Error::other(error))
         } else if state.ended {
@@ -258,6 +302,19 @@ impl VideoDecoder {
     pub(crate) fn set_paused(&self, paused: bool) {
         self.pause.store(i32::from(paused), Ordering::Relaxed);
     }
+
+    pub(crate) fn seek(&mut self, position: Duration) {
+        self.seek_micros
+            .store(duration_micros_i64(position), Ordering::Relaxed);
+        self.seek_generation.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut state) = self.latest_frame.lock() {
+            state.frame = None;
+            state.error = None;
+            state.ended = false;
+            state.serial = state.serial.wrapping_add(1);
+            self.delivered_serial = state.serial;
+        }
+    }
 }
 
 impl Drop for VideoDecoder {
@@ -273,22 +330,69 @@ fn run_video_decode_thread(
     latest_frame: Arc<Mutex<LatestFrame>>,
     stop: Arc<AtomicI32>,
     pause: Arc<AtomicI32>,
+    seek_generation: Arc<AtomicI32>,
+    seek_micros: Arc<AtomicI64>,
 ) {
     let mut started_at = Instant::now();
     let fallback_interval = 1.0 / fps.max(1.0);
     let mut fallback_pts = 0.0;
     let mut buffer = vec![0_u8; frame_len];
+    let mut seen_seek_generation = seek_generation.load(Ordering::Relaxed);
+    let mut force_next_frame = false;
 
     loop {
         if stop.load(Ordering::Relaxed) != 0 {
             mark_ended(&latest_frame);
             break;
         }
-        let Some(paused_for) = wait_while_paused(&stop, &pause) else {
-            mark_ended(&latest_frame);
-            break;
-        };
-        started_at += paused_for;
+
+        if let Some(position) =
+            take_seek_request(&seek_generation, &seek_micros, &mut seen_seek_generation)
+        {
+            if let Err(error) = seek_video_thread(
+                &mut native,
+                &latest_frame,
+                position,
+                &mut started_at,
+                &mut fallback_pts,
+            ) {
+                mark_error(&latest_frame, error.to_string());
+                break;
+            }
+            force_next_frame = true;
+        }
+
+        if !force_next_frame {
+            match wait_while_paused(
+                &stop,
+                &pause,
+                &seek_generation,
+                &seek_micros,
+                &mut seen_seek_generation,
+            ) {
+                PauseWait::Ready(paused_for) => {
+                    started_at += paused_for;
+                }
+                PauseWait::Seek(position, paused_for) => {
+                    started_at += paused_for;
+                    if let Err(error) = seek_video_thread(
+                        &mut native,
+                        &latest_frame,
+                        position,
+                        &mut started_at,
+                        &mut fallback_pts,
+                    ) {
+                        mark_error(&latest_frame, error.to_string());
+                        break;
+                    }
+                    force_next_frame = true;
+                }
+                PauseWait::Stopped => {
+                    mark_ended(&latest_frame);
+                    break;
+                }
+            }
+        }
 
         let pts = match native.next_frame(&mut buffer, &stop) {
             Ok(Some(pts)) => pts,
@@ -309,59 +413,146 @@ fn run_video_decode_thread(
             fallback_pts += fallback_interval;
             pts
         };
-        let mut due_at = started_at + Duration::from_secs_f64(pts);
-        loop {
-            if stop.load(Ordering::Relaxed) != 0 {
-                mark_ended(&latest_frame);
-                return;
-            }
-            let Some(paused_for) = wait_while_paused(&stop, &pause) else {
-                mark_ended(&latest_frame);
-                return;
-            };
-            started_at += paused_for;
-            due_at += paused_for;
+        let pts_duration = Duration::from_secs_f64(pts);
+        if !force_next_frame {
+            let mut due_at = started_at + pts_duration;
+            loop {
+                if stop.load(Ordering::Relaxed) != 0 {
+                    mark_ended(&latest_frame);
+                    return;
+                }
+                match wait_while_paused(
+                    &stop,
+                    &pause,
+                    &seek_generation,
+                    &seek_micros,
+                    &mut seen_seek_generation,
+                ) {
+                    PauseWait::Ready(paused_for) => {
+                        started_at += paused_for;
+                        due_at += paused_for;
+                    }
+                    PauseWait::Seek(position, paused_for) => {
+                        started_at += paused_for;
+                        if let Err(error) = seek_video_thread(
+                            &mut native,
+                            &latest_frame,
+                            position,
+                            &mut started_at,
+                            &mut fallback_pts,
+                        ) {
+                            mark_error(&latest_frame, error.to_string());
+                            return;
+                        }
+                        force_next_frame = true;
+                        break;
+                    }
+                    PauseWait::Stopped => {
+                        mark_ended(&latest_frame);
+                        return;
+                    }
+                }
 
-            let now = Instant::now();
-            if due_at <= now {
-                break;
+                let now = Instant::now();
+                if due_at <= now {
+                    break;
+                }
+                thread::sleep((due_at - now).min(Duration::from_millis(10)));
             }
-            thread::sleep((due_at - now).min(Duration::from_millis(10)));
+            if force_next_frame {
+                continue;
+            }
         }
 
-        buffer = store_latest_frame(&latest_frame, buffer, frame_len);
+        buffer = store_latest_frame(&latest_frame, buffer, frame_len, pts_duration);
+        force_next_frame = false;
     }
 }
 
-fn wait_while_paused(stop: &AtomicI32, pause: &AtomicI32) -> Option<Duration> {
+enum PauseWait {
+    Ready(Duration),
+    Seek(Duration, Duration),
+    Stopped,
+}
+
+fn wait_while_paused(
+    stop: &AtomicI32,
+    pause: &AtomicI32,
+    seek_generation: &AtomicI32,
+    seek_micros: &AtomicI64,
+    seen_seek_generation: &mut i32,
+) -> PauseWait {
     if pause.load(Ordering::Relaxed) == 0 {
-        return Some(Duration::ZERO);
+        return PauseWait::Ready(Duration::ZERO);
     }
 
     let paused_at = Instant::now();
     while pause.load(Ordering::Relaxed) != 0 {
         if stop.load(Ordering::Relaxed) != 0 {
-            return None;
+            return PauseWait::Stopped;
         }
-        thread::sleep(Duration::from_millis(10));
+        if let Some(position) =
+            take_seek_request(seek_generation, seek_micros, seen_seek_generation)
+        {
+            return PauseWait::Seek(position, paused_at.elapsed());
+        }
+        thread::sleep(Duration::from_millis(5));
     }
-    Some(paused_at.elapsed())
+    PauseWait::Ready(paused_at.elapsed())
+}
+
+fn take_seek_request(
+    seek_generation: &AtomicI32,
+    seek_micros: &AtomicI64,
+    seen_seek_generation: &mut i32,
+) -> Option<Duration> {
+    let generation = seek_generation.load(Ordering::Relaxed);
+    if generation == *seen_seek_generation {
+        return None;
+    }
+    *seen_seek_generation = generation;
+    let micros = seek_micros.load(Ordering::Relaxed).max(0) as u64;
+    Some(Duration::from_micros(micros))
+}
+
+fn seek_video_thread(
+    native: &mut NativeVideoDecoder,
+    latest_frame: &Arc<Mutex<LatestFrame>>,
+    position: Duration,
+    started_at: &mut Instant,
+    fallback_pts: &mut f64,
+) -> Result<()> {
+    native.seek(position)?;
+    reset_frame_state(latest_frame);
+    *started_at = Instant::now() - position;
+    *fallback_pts = position.as_secs_f64();
+    Ok(())
 }
 
 pub(crate) struct AudioPlayer {
     stop: Arc<AtomicI32>,
     pause: Arc<AtomicI32>,
+    seek_generation: Arc<AtomicI32>,
+    seek_micros: Arc<AtomicI64>,
     handle: Option<thread::JoinHandle<Result<()>>>,
     finished: bool,
 }
 
 impl AudioPlayer {
     pub(crate) fn spawn(path: &Path) -> Result<Self> {
+        Self::spawn_at(path, Duration::ZERO, false)
+    }
+
+    pub(crate) fn spawn_at(path: &Path, position: Duration, paused: bool) -> Result<Self> {
         let path = path_cstring(path)?;
         let stop = Arc::new(AtomicI32::new(0));
         let stop_thread = Arc::clone(&stop);
-        let pause = Arc::new(AtomicI32::new(0));
+        let pause = Arc::new(AtomicI32::new(i32::from(paused)));
         let pause_thread = Arc::clone(&pause);
+        let seek_generation = Arc::new(AtomicI32::new(i32::from(position > Duration::ZERO)));
+        let seek_generation_thread = Arc::clone(&seek_generation);
+        let seek_micros = Arc::new(AtomicI64::new(duration_micros_i64(position)));
+        let seek_micros_thread = Arc::clone(&seek_micros);
         let handle = thread::spawn(move || {
             let mut error = ErrorBuffer::new();
             let status = unsafe {
@@ -369,6 +560,8 @@ impl AudioPlayer {
                     path.as_ptr(),
                     stop_thread.as_ptr(),
                     pause_thread.as_ptr(),
+                    seek_generation_thread.as_ptr(),
+                    seek_micros_thread.as_ptr(),
                     error.as_mut_ptr(),
                     error.len(),
                 )
@@ -382,6 +575,8 @@ impl AudioPlayer {
         Ok(Self {
             stop,
             pause,
+            seek_generation,
+            seek_micros,
             handle: Some(handle),
             finished: false,
         })
@@ -420,6 +615,12 @@ impl AudioPlayer {
 
     pub(crate) fn set_paused(&self, paused: bool) {
         self.pause.store(i32::from(paused), Ordering::Relaxed);
+    }
+
+    pub(crate) fn seek(&self, position: Duration) {
+        self.seek_micros
+            .store(duration_micros_i64(position), Ordering::Relaxed);
+        self.seek_generation.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -478,19 +679,35 @@ fn frame_len(width: u32, height: u32) -> Result<usize> {
         .ok_or_else(|| anyhow!("frame buffer is too large"))
 }
 
+fn duration_micros_i64(duration: Duration) -> i64 {
+    duration.as_micros().min(i64::MAX as u128) as i64
+}
+
 fn store_latest_frame(
     state: &Arc<Mutex<LatestFrame>>,
     frame: Vec<u8>,
     frame_len: usize,
+    pts: Duration,
 ) -> Vec<u8> {
     let old_frame = if let Ok(mut state) = state.lock() {
         let old_frame = state.frame.replace(frame);
+        state.pts = pts;
+        state.ended = false;
         state.serial = state.serial.wrapping_add(1);
         old_frame
     } else {
         None
     };
     old_frame.unwrap_or_else(|| vec![0_u8; frame_len])
+}
+
+fn reset_frame_state(state: &Arc<Mutex<LatestFrame>>) {
+    if let Ok(mut state) = state.lock() {
+        state.frame = None;
+        state.error = None;
+        state.ended = false;
+        state.serial = state.serial.wrapping_add(1);
+    }
 }
 
 fn mark_ended(state: &Arc<Mutex<LatestFrame>>) {

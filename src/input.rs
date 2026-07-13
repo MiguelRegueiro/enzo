@@ -10,6 +10,7 @@ pub(crate) enum PlaybackInput {
     None,
     Quit,
     TogglePause,
+    SeekBy(i32),
 }
 
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
@@ -28,6 +29,12 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 }
                 if matches!(key.code, KeyCode::Char(' ')) {
                     command = PlaybackInput::TogglePause;
+                }
+                if matches!(key.code, KeyCode::Right) {
+                    command = PlaybackInput::SeekBy(5);
+                }
+                if matches!(key.code, KeyCode::Left) {
+                    command = PlaybackInput::SeekBy(-5);
                 }
             }
             Event::Mouse(mouse) => {

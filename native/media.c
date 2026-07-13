@@ -10,6 +10,7 @@
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 #include <pulse/pulseaudio.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@ typedef struct RigVideoInfo {
     uint32_t width;
     uint32_t height;
     double fps;
+    double duration;
     int has_audio;
 } RigVideoInfo;
 
@@ -36,6 +38,8 @@ typedef struct RigVideoDecoder {
     int flushing;
     int64_t frame_index;
     double fallback_interval;
+    int has_seek_target;
+    double seek_target;
 } RigVideoDecoder;
 
 typedef struct RigPulseOutput {
@@ -59,6 +63,33 @@ static int stop_requested(const int *stop_flag) {
 
 static int pause_requested(const int *pause_flag) {
     return pause_flag != NULL && *((volatile const int *)pause_flag) != 0;
+}
+
+static int seek_generation_value(const int *seek_generation) {
+    return seek_generation == NULL ? 0 : *((volatile const int *)seek_generation);
+}
+
+static int64_t seek_micros_value(const int64_t *seek_micros) {
+    if (seek_micros == NULL) {
+        return 0;
+    }
+    int64_t value = *((volatile const int64_t *)seek_micros);
+    return value < 0 ? 0 : value;
+}
+
+static int take_seek_request(
+    const int *seek_generation,
+    const int64_t *seek_micros,
+    int *seen_generation,
+    int64_t *micros_out
+) {
+    int generation = seek_generation_value(seek_generation);
+    if (generation == *seen_generation) {
+        return 0;
+    }
+    *seen_generation = generation;
+    *micros_out = seek_micros_value(seek_micros);
+    return 1;
 }
 
 static void set_error(char *err, size_t err_len, const char *fmt, ...) {
@@ -291,10 +322,31 @@ static int pulse_output_set_corked_locked(
     );
 }
 
+static int pulse_output_flush_locked(RigPulseOutput *output, char *err, size_t err_len) {
+    PulseOperationWait wait = {
+        .mainloop = output->mainloop,
+        .done = 0,
+        .success = 0,
+    };
+    pa_operation *operation =
+        pa_stream_flush(output->stream, pulse_stream_success_callback, &wait);
+    return wait_for_pulse_operation_locked(
+        output,
+        operation,
+        &wait,
+        "failed to flush audio",
+        err,
+        err_len
+    );
+}
+
 static int sync_pulse_pause(
     RigPulseOutput *output,
     const int *stop_flag,
     const int *pause_flag,
+    const int *seek_generation,
+    const int64_t *seek_micros,
+    int *seen_seek_generation,
     int *corked,
     char *err,
     size_t err_len
@@ -312,6 +364,9 @@ static int sync_pulse_pause(
     while (pause_requested(pause_flag)) {
         if (stop_requested(stop_flag)) {
             return 1;
+        }
+        if (seek_generation_value(seek_generation) != *seen_seek_generation) {
+            return 2;
         }
         av_usleep(1000);
     }
@@ -334,6 +389,9 @@ static int pulse_output_write(
     int bytes,
     const int *stop_flag,
     const int *pause_flag,
+    const int *seek_generation,
+    const int64_t *seek_micros,
+    int *seen_seek_generation,
     int *corked,
     char *err,
     size_t err_len
@@ -345,14 +403,26 @@ static int pulse_output_write(
         if (stop_requested(stop_flag)) {
             return 0;
         }
+        if (seek_generation_value(seek_generation) != *seen_seek_generation) {
+            return 1;
+        }
 
-        int pause_status =
-            sync_pulse_pause(output, stop_flag, pause_flag, corked, err, err_len);
+        int pause_status = sync_pulse_pause(
+            output,
+            stop_flag,
+            pause_flag,
+            seek_generation,
+            seek_micros,
+            seen_seek_generation,
+            corked,
+            err,
+            err_len
+        );
         if (pause_status < 0) {
             return -1;
         }
         if (pause_status > 0 || stop_requested(stop_flag)) {
-            return 0;
+            return pause_status == 2 ? 1 : 0;
         }
 
         pa_threaded_mainloop_lock(output->mainloop);
@@ -459,6 +529,7 @@ int rig_probe_video(const char *path, RigVideoInfo *out, char *err, size_t err_l
     out->width = (uint32_t)video->codecpar->width;
     out->height = (uint32_t)video->codecpar->height;
     out->fps = stream_fps(video);
+    out->duration = format->duration > 0 ? (double)format->duration / (double)AV_TIME_BASE : 0.0;
     out->has_audio =
         av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0) >= 0;
 
@@ -581,6 +652,20 @@ static int receive_video_frame(
 ) {
     int ret = avcodec_receive_frame(decoder->codec, decoder->frame);
     if (ret == 0) {
+        int64_t timestamp = decoder->frame->best_effort_timestamp;
+        if (timestamp != AV_NOPTS_VALUE) {
+            *pts_out = (double)timestamp * av_q2d(decoder->time_base);
+        } else {
+            *pts_out = (double)decoder->frame_index * decoder->fallback_interval;
+        }
+        decoder->frame_index++;
+
+        if (decoder->has_seek_target && *pts_out + 0.050 < decoder->seek_target) {
+            av_frame_unref(decoder->frame);
+            return 2;
+        }
+        decoder->has_seek_target = 0;
+
         uint8_t *dst_data[4] = {rgb_out, NULL, NULL, NULL};
         int dst_linesize[4] = {decoder->out_width * 3, 0, 0, 0};
         sws_scale(
@@ -593,13 +678,6 @@ static int receive_video_frame(
             dst_linesize
         );
 
-        int64_t timestamp = decoder->frame->best_effort_timestamp;
-        if (timestamp != AV_NOPTS_VALUE) {
-            *pts_out = (double)timestamp * av_q2d(decoder->time_base);
-        } else {
-            *pts_out = (double)decoder->frame_index * decoder->fallback_interval;
-        }
-        decoder->frame_index++;
         av_frame_unref(decoder->frame);
         return 1;
     }
@@ -665,6 +743,46 @@ int rig_video_decoder_next(
         }
     }
 
+    return 0;
+}
+
+int rig_video_decoder_seek(
+    RigVideoDecoder *decoder,
+    double seconds,
+    char *err,
+    size_t err_len
+) {
+    if (decoder == NULL) {
+        set_error(err, err_len, "invalid video seek arguments");
+        return -1;
+    }
+
+    if (!isfinite(seconds) || seconds < 0.0) {
+        seconds = 0.0;
+    }
+
+    AVStream *stream = decoder->format->streams[decoder->stream_index];
+    int64_t timestamp = av_rescale_q(
+        (int64_t)(seconds * (double)AV_TIME_BASE),
+        AV_TIME_BASE_Q,
+        stream->time_base
+    );
+    int ret = av_seek_frame(
+        decoder->format,
+        decoder->stream_index,
+        timestamp,
+        AVSEEK_FLAG_BACKWARD
+    );
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to seek video", ret);
+        return -1;
+    }
+
+    avcodec_flush_buffers(decoder->codec);
+    decoder->flushing = 0;
+    decoder->frame_index = (int64_t)(seconds / decoder->fallback_interval);
+    decoder->seek_target = seconds;
+    decoder->has_seek_target = 1;
     return 0;
 }
 
@@ -755,6 +873,82 @@ static int open_audio_decoder(
     return 1;
 }
 
+static int seek_audio_decoder(
+    AVFormatContext *format,
+    AVCodecContext *codec,
+    SwrContext *swr,
+    int stream_index,
+    int64_t micros,
+    char *err,
+    size_t err_len
+) {
+    AVStream *stream = format->streams[stream_index];
+    AVRational micros_base = {1, 1000000};
+    int64_t timestamp = av_rescale_q(micros, micros_base, stream->time_base);
+    int ret = av_seek_frame(format, stream_index, timestamp, AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to seek audio", ret);
+        return -1;
+    }
+
+    avcodec_flush_buffers(codec);
+    swr_close(swr);
+    ret = swr_init(swr);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to reset audio resampler", ret);
+        return -1;
+    }
+    return 0;
+}
+
+static int sync_audio_seek(
+    RigPulseOutput *pulse,
+    AVFormatContext *format,
+    AVCodecContext *codec,
+    SwrContext *swr,
+    int stream_index,
+    AVPacket *packet,
+    AVFrame *frame,
+    const int *seek_generation,
+    const int64_t *seek_micros,
+    int *seen_seek_generation,
+    int *corked,
+    int *flushing,
+    char *err,
+    size_t err_len
+) {
+    int64_t micros = 0;
+    if (!take_seek_request(seek_generation, seek_micros, seen_seek_generation, &micros)) {
+        return 0;
+    }
+
+    pa_threaded_mainloop_lock(pulse->mainloop);
+    if (!*corked) {
+        if (pulse_output_set_corked_locked(pulse, 1, err, err_len) < 0) {
+            pa_threaded_mainloop_unlock(pulse->mainloop);
+            return -1;
+        }
+        *corked = 1;
+    }
+    if (pulse_output_flush_locked(pulse, err, err_len) < 0) {
+        pa_threaded_mainloop_unlock(pulse->mainloop);
+        return -1;
+    }
+    pa_threaded_mainloop_unlock(pulse->mainloop);
+
+    if (packet != NULL) {
+        av_packet_unref(packet);
+    }
+    if (frame != NULL) {
+        av_frame_unref(frame);
+    }
+    if (seek_audio_decoder(format, codec, swr, stream_index, micros, err, err_len) < 0) {
+        return -1;
+    }
+    *flushing = 0;
+    return 1;
+}
+
 static int write_converted_audio(
     SwrContext *swr,
     AVCodecContext *codec,
@@ -762,6 +956,9 @@ static int write_converted_audio(
     RigPulseOutput *pulse,
     const int *stop_flag,
     const int *pause_flag,
+    const int *seek_generation,
+    const int64_t *seek_micros,
+    int *seen_seek_generation,
     int *corked,
     uint8_t **out_buffer,
     int *out_capacity,
@@ -815,19 +1012,26 @@ static int write_converted_audio(
         return -1;
     }
 
-    if (bytes > 0
-        && pulse_output_write(
-               pulse,
-               *out_buffer,
-               bytes,
-               stop_flag,
-               pause_flag,
-               corked,
-               err,
-               err_len
-           )
-               < 0) {
-        return -1;
+    if (bytes > 0) {
+        int ret = pulse_output_write(
+            pulse,
+            *out_buffer,
+            bytes,
+            stop_flag,
+            pause_flag,
+            seek_generation,
+            seek_micros,
+            seen_seek_generation,
+            corked,
+            err,
+            err_len
+        );
+        if (ret < 0) {
+            return -1;
+        }
+        if (ret > 0) {
+            return 1;
+        }
     }
 
     return 0;
@@ -837,6 +1041,8 @@ int rig_play_audio(
     const char *path,
     const int *stop_flag,
     const int *pause_flag,
+    const int *seek_generation,
+    const int64_t *seek_micros,
     char *err,
     size_t err_len
 ) {
@@ -914,6 +1120,7 @@ int rig_play_audio(
     int failed = 0;
     int flushing = 0;
     int corked = 0;
+    int seen_seek_generation = 0;
 
     if (packet == NULL || frame == NULL) {
         set_error(err, err_len, "failed to allocate audio packet/frame");
@@ -921,11 +1128,47 @@ int rig_play_audio(
     }
 
     while (!failed && !stop_requested(stop_flag)) {
-        int pause_status =
-            sync_pulse_pause(&pulse, stop_flag, pause_flag, &corked, err, err_len);
+        int seek_status = sync_audio_seek(
+            &pulse,
+            format,
+            codec,
+            swr,
+            stream_index,
+            packet,
+            frame,
+            seek_generation,
+            seek_micros,
+            &seen_seek_generation,
+            &corked,
+            &flushing,
+            err,
+            err_len
+        );
+        if (seek_status < 0) {
+            failed = 1;
+            break;
+        }
+        if (seek_status > 0) {
+            continue;
+        }
+
+        int pause_status = sync_pulse_pause(
+            &pulse,
+            stop_flag,
+            pause_flag,
+            seek_generation,
+            seek_micros,
+            &seen_seek_generation,
+            &corked,
+            err,
+            err_len
+        );
         if (pause_status < 0) {
             failed = 1;
             break;
+        }
+        if (pause_status == 2) {
+            continue;
         }
         if (pause_status > 0) {
             break;
@@ -933,30 +1176,76 @@ int rig_play_audio(
 
         ret = avcodec_receive_frame(codec, frame);
         if (ret == 0) {
-            pause_status = sync_pulse_pause(&pulse, stop_flag, pause_flag, &corked, err, err_len);
+            seek_status = sync_audio_seek(
+                &pulse,
+                format,
+                codec,
+                swr,
+                stream_index,
+                packet,
+                frame,
+                seek_generation,
+                seek_micros,
+                &seen_seek_generation,
+                &corked,
+                &flushing,
+                err,
+                err_len
+            );
+            if (seek_status < 0) {
+                failed = 1;
+                av_frame_unref(frame);
+                break;
+            }
+            if (seek_status > 0) {
+                continue;
+            }
+
+            pause_status = sync_pulse_pause(
+                &pulse,
+                stop_flag,
+                pause_flag,
+                seek_generation,
+                seek_micros,
+                &seen_seek_generation,
+                &corked,
+                err,
+                err_len
+            );
             if (pause_status < 0) {
                 failed = 1;
                 av_frame_unref(frame);
                 break;
             }
+            if (pause_status == 2) {
+                av_frame_unref(frame);
+                continue;
+            }
             if (pause_status > 0) {
                 av_frame_unref(frame);
                 break;
             }
-            if (write_converted_audio(
+            int write_status = write_converted_audio(
                     swr,
                     codec,
                     frame,
                     &pulse,
                     stop_flag,
                     pause_flag,
+                    seek_generation,
+                    seek_micros,
+                    &seen_seek_generation,
                     &corked,
                     &out_buffer,
                     &out_capacity,
                     err,
                     err_len
-                ) < 0) {
+                );
+            if (write_status < 0) {
                 failed = 1;
+            } else if (write_status > 0) {
+                av_frame_unref(frame);
+                continue;
             }
             av_frame_unref(frame);
             continue;

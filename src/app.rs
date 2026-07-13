@@ -66,9 +66,12 @@ pub(crate) fn run() -> Result<()> {
     let mut video_ended = false;
     let frame_interval = frame_interval(source.fps);
     let mut next_frame_at = playback_started_at;
+    let mut playback_position = Duration::ZERO;
     let mut paused = false;
 
     loop {
+        poll_audio(&mut audio, &mut audio_done)?;
+
         match read_input_events()? {
             PlaybackInput::Quit => break,
             PlaybackInput::TogglePause => {
@@ -81,9 +84,27 @@ pub(crate) fn run() -> Result<()> {
                     next_frame_at = Instant::now();
                 }
             }
+            PlaybackInput::SeekBy(seconds) => {
+                let target = seek_position(playback_position, seconds, source.duration);
+                if is_end_seek(target, source.duration) {
+                    break;
+                }
+                decoder.seek(target);
+                if source.has_audio {
+                    if let Some(audio) = audio.as_mut() {
+                        audio.seek(target);
+                        audio.set_paused(paused);
+                    } else {
+                        audio = Some(AudioPlayer::spawn_at(&config.path, target, paused)?);
+                    }
+                    audio_done = false;
+                }
+                playback_position = target;
+                video_ended = false;
+                next_frame_at = Instant::now();
+            }
             PlaybackInput::None => {}
         }
-        poll_audio(&mut audio, &mut audio_done)?;
 
         let layout = terminal_image_area(target.width, target.height);
         if last_layout != Some(layout) {
@@ -104,6 +125,25 @@ pub(crate) fn run() -> Result<()> {
         }
 
         if paused {
+            match decoder.read_latest_frame(&mut frame)? {
+                FrameStatus::NewFrame { pts } => {
+                    draw_frame(
+                        &mut out,
+                        target,
+                        layout,
+                        &mut previous_image_id,
+                        &mut frame_serial,
+                        &frame,
+                        &mut sequence,
+                    )?;
+                    have_frame = true;
+                    playback_position = pts;
+                }
+                FrameStatus::NoFrame => {}
+                FrameStatus::Ended => {
+                    video_ended = true;
+                }
+            }
             out.flush()?;
             thread::sleep(Duration::from_millis(15));
             continue;
@@ -117,7 +157,7 @@ pub(crate) fn run() -> Result<()> {
         }
 
         match decoder.read_latest_frame(&mut frame)? {
-            FrameStatus::NewFrame => {
+            FrameStatus::NewFrame { pts } => {
                 draw_frame(
                     &mut out,
                     target,
@@ -128,6 +168,7 @@ pub(crate) fn run() -> Result<()> {
                     &mut sequence,
                 )?;
                 have_frame = true;
+                playback_position = pts;
                 out.flush()?;
                 advance_frame_clock(&mut next_frame_at, frame_interval);
             }
@@ -194,6 +235,21 @@ fn advance_frame_clock(next_frame_at: &mut Instant, frame_interval: Duration) {
     if *next_frame_at + frame_interval < now {
         *next_frame_at = now + frame_interval;
     }
+}
+
+fn seek_position(current: Duration, seconds: i32, duration: Option<Duration>) -> Duration {
+    let delta = Duration::from_secs(seconds.unsigned_abs().into());
+    let target = if seconds < 0 {
+        current.saturating_sub(delta)
+    } else {
+        current.checked_add(delta).unwrap_or(Duration::MAX)
+    };
+
+    duration.map_or(target, |duration| target.min(duration))
+}
+
+fn is_end_seek(target: Duration, duration: Option<Duration>) -> bool {
+    duration.is_some_and(|duration| target >= duration)
 }
 
 fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<()> {
@@ -269,6 +325,7 @@ Usage:
 
 Controls:
   Space, right click  pause/play
+  Left, Right         seek 5 seconds
   q, Esc, Ctrl-C    quit playback
 "
     );
@@ -377,5 +434,37 @@ mod tests {
 
         assert_eq!(target.width, 1920);
         assert_eq!(target.height, 810);
+    }
+
+    #[test]
+    fn seek_backward_saturates_at_start() {
+        assert_eq!(
+            seek_position(Duration::from_secs(3), -5, None),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn seek_forward_clamps_to_duration() {
+        assert_eq!(
+            seek_position(Duration::from_secs(18), 5, Some(Duration::from_secs(20))),
+            Duration::from_secs(20)
+        );
+    }
+
+    #[test]
+    fn exact_duration_seek_is_end_seek() {
+        assert!(is_end_seek(
+            Duration::from_secs(20),
+            Some(Duration::from_secs(20))
+        ));
+    }
+
+    #[test]
+    fn before_duration_seek_is_not_end_seek() {
+        assert!(!is_end_seek(
+            Duration::from_secs(19),
+            Some(Duration::from_secs(20))
+        ));
     }
 }
