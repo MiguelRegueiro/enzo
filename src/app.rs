@@ -39,6 +39,9 @@ const NORMAL_OVERLAY_SCALE_PERCENT: u32 = 100;
 const MAX_OVERLAY_SCALE_PERCENT: u32 = 125;
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
+const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
+const KEYBOARD_SEEK_MIN_STEP: Duration = Duration::from_secs(5);
+const KEYBOARD_SEEK_MAX_STEP: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy)]
 struct StatusMessage {
@@ -199,6 +202,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
     let mut last_drawn_status_visible = false;
     let mut status_message = None::<StatusMessage>;
     let mut scrub_position = None::<Duration>;
+    let mut keyboard_seek_commit_at = None::<Instant>;
 
     loop {
         poll_audio(&mut audio, &mut audio_done)?;
@@ -351,28 +355,36 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 }
                 redraw_current_frame = have_frame;
             }
-            PlaybackCommand::SeekBy(seconds) => {
-                scrub_position = None;
-                let seek_target = seek_position(playback_position, seconds, source.duration);
+            PlaybackCommand::SeekBy(steps) => {
+                let seconds = keyboard_seek_seconds(steps, source.duration);
+                let base_position = scrub_position.unwrap_or(playback_position);
+                let seek_target = seek_position(base_position, seconds, source.duration);
                 if is_end_seek(seek_target, source.duration) {
                     break;
                 }
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
-                seek_playback(
-                    &path,
-                    source.has_audio,
-                    &mut decoder,
-                    &mut audio,
-                    &mut audio_done,
-                    selected_audio_stream(&audio_tracks, selected_audio),
-                    seek_target,
-                    paused,
-                    muted,
-                )?;
-                playback_position = seek_target;
-                video_ended = false;
-                next_frame_at = Instant::now();
-                redraw_current_frame = false;
+                if keyboard_seek_commit_at.is_none_or(|deadline| input_at >= deadline) {
+                    seek_playback(
+                        &path,
+                        source.has_audio,
+                        &mut decoder,
+                        &mut audio,
+                        &mut audio_done,
+                        selected_audio_stream(&audio_tracks, selected_audio),
+                        seek_target,
+                        paused,
+                        muted,
+                    )?;
+                    playback_position = seek_target;
+                    scrub_position = None;
+                    video_ended = false;
+                    next_frame_at = Instant::now();
+                    keyboard_seek_commit_at = Some(input_at + KEYBOARD_SEEK_COMMIT_AFTER);
+                    redraw_current_frame = false;
+                } else {
+                    scrub_position = Some(seek_target);
+                    redraw_current_frame = have_frame;
+                }
             }
             PlaybackCommand::None => {}
         }
@@ -469,6 +481,9 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             subtitles_available: !subtitle_tracks.is_empty(),
             subtitle_count: subtitle_tracks.len(),
         };
+        if !input.mouse_events.is_empty() {
+            keyboard_seek_commit_at = None;
+        }
         for mouse in input.mouse_events {
             let seek_target = match mouse {
                 PlaybackMouse::Down { column, row } => {
@@ -602,6 +617,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
         }
 
         if let Some(seek_target) = pointer_seek_target {
+            keyboard_seek_commit_at = None;
             if is_end_seek(seek_target, source.duration) {
                 break;
             }
@@ -620,6 +636,27 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             video_ended = false;
             next_frame_at = Instant::now();
             redraw_current_frame = false;
+        }
+
+        if keyboard_seek_commit_at.is_some_and(|deadline| Instant::now() >= deadline) {
+            keyboard_seek_commit_at = None;
+            if let Some(seek_target) = scrub_position.take() {
+                seek_playback(
+                    &path,
+                    source.has_audio,
+                    &mut decoder,
+                    &mut audio,
+                    &mut audio_done,
+                    selected_audio_stream(&audio_tracks, selected_audio),
+                    seek_target,
+                    paused,
+                    muted,
+                )?;
+                playback_position = seek_target;
+                video_ended = false;
+                next_frame_at = Instant::now();
+                redraw_current_frame = false;
+            }
         }
 
         let overlay_is_visible = overlay_visible(
@@ -1220,6 +1257,20 @@ fn seek_position(current: Duration, seconds: i32, duration: Option<Duration>) ->
     };
 
     duration.map_or(target, |duration| target.min(duration))
+}
+
+fn keyboard_seek_seconds(steps: i32, duration: Option<Duration>) -> i32 {
+    let direction = steps.signum();
+    if direction == 0 {
+        return 0;
+    }
+    let step = duration
+        .map(|duration| duration / 200)
+        .unwrap_or(KEYBOARD_SEEK_MIN_STEP)
+        .clamp(KEYBOARD_SEEK_MIN_STEP, KEYBOARD_SEEK_MAX_STEP);
+    let total = step.as_secs().saturating_mul(steps.unsigned_abs().into());
+    let total = total.min(i32::MAX as u64) as i32;
+    total * direction
 }
 
 fn is_end_seek(target: Duration, duration: Option<Duration>) -> bool {
@@ -1831,6 +1882,23 @@ mod tests {
         assert_eq!(
             seek_position(Duration::from_secs(18), 5, Some(Duration::from_secs(20))),
             Duration::from_secs(20)
+        );
+    }
+
+    #[test]
+    fn keyboard_seek_step_scales_with_video_duration() {
+        assert_eq!(keyboard_seek_seconds(1, Some(Duration::from_secs(600))), 5);
+        assert_eq!(
+            keyboard_seek_seconds(1, Some(Duration::from_secs(7200))),
+            36
+        );
+        assert_eq!(
+            keyboard_seek_seconds(-2, Some(Duration::from_secs(7200))),
+            -72
+        );
+        assert_eq!(
+            keyboard_seek_seconds(1, Some(Duration::from_secs(24 * 60 * 60))),
+            60
         );
     }
 

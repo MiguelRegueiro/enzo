@@ -49,10 +49,11 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         mouse_events: Vec::new(),
         text: None,
     };
+    let mut seek_delta = 0_i32;
     while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
         match event::read().context("failed to read terminal input")? {
             Event::Key(key) => {
-                if key.kind != KeyEventKind::Press {
+                if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
                 if matches!(key.code, KeyCode::Char('q'))
@@ -72,10 +73,10 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     input.command = PlaybackCommand::ToggleSubtitles;
                 }
                 if matches!(key.code, KeyCode::Right) {
-                    input.command = PlaybackCommand::SeekBy(5);
+                    seek_delta = seek_delta.saturating_add(1);
                 }
                 if matches!(key.code, KeyCode::Left) {
-                    input.command = PlaybackCommand::SeekBy(-5);
+                    seek_delta = seek_delta.saturating_sub(1);
                 }
             }
             Event::Mouse(mouse) => {
@@ -110,6 +111,10 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
             }
             _ => {}
         }
+    }
+
+    if seek_delta != 0 && input.command == PlaybackCommand::None {
+        input.command = PlaybackCommand::SeekBy(seek_delta);
     }
 
     Ok(input)
