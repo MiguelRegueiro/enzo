@@ -40,6 +40,7 @@ const MAX_OVERLAY_SCALE_PERCENT: u32 = 125;
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
+const MOUSE_SCRUB_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const KEYBOARD_SEEK_MIN_STEP: Duration = Duration::from_secs(5);
 const KEYBOARD_SEEK_MAX_STEP: Duration = Duration::from_secs(60);
 
@@ -203,6 +204,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
     let mut status_message = None::<StatusMessage>;
     let mut scrub_position = None::<Duration>;
     let mut keyboard_seek_commit_at = None::<Instant>;
+    let mut mouse_scrub_commit_at = None::<Instant>;
 
     loop {
         poll_audio(&mut audio, &mut audio_done)?;
@@ -568,6 +570,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         scrub_position = point
                             .and_then(|point| overlay.progress_hit_test(hit_context, point))
                             .and_then(|ratio| seek_from_progress_ratio(ratio, source.duration));
+                        mouse_scrub_commit_at =
+                            scrub_position.map(|_| input_at + MOUSE_SCRUB_COMMIT_AFTER);
                         if picker_was_open || scrub_position.is_some() {
                             redraw_current_frame = have_frame;
                         }
@@ -587,7 +591,12 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     );
                     scrub_position = seek_from_progress_ratio(ratio, source.duration);
                     redraw_current_frame = have_frame;
-                    None
+                    if mouse_scrub_commit_at.is_some_and(|deadline| input_at >= deadline) {
+                        mouse_scrub_commit_at = Some(input_at + MOUSE_SCRUB_COMMIT_AFTER);
+                        scrub_position
+                    } else {
+                        None
+                    }
                 }
                 PlaybackMouse::Up { column, row } if scrub_position.is_some() => {
                     let x = mouse_canvas_x(column, row, canvas);
@@ -602,10 +611,12 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     );
                     let target = seek_from_progress_ratio(ratio, source.duration);
                     scrub_position = None;
+                    mouse_scrub_commit_at = None;
                     target
                 }
                 PlaybackMouse::Up { .. } => {
                     scrub_position = None;
+                    mouse_scrub_commit_at = None;
                     None
                 }
                 _ => None,
