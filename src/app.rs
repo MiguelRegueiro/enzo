@@ -4,6 +4,7 @@ use std::{
     fs,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -20,7 +21,8 @@ use crate::{
         PlaybackOverlay, SubtitlePickerAction,
     },
     subtitle::{
-        SubtitleRenderer, SubtitleTrack, load_embedded_subtitle_tracks, sidecar_subtitle_path,
+        EmbeddedSubtitleStream, SubtitleRenderer, SubtitleTrack, embedded_subtitle_streams,
+        load_embedded_subtitle_track, sidecar_subtitle_path,
     },
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
@@ -42,6 +44,35 @@ const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 struct StatusMessage {
     text: &'static str,
     visible_until: Instant,
+}
+
+struct PlaybackSubtitleTrack {
+    label: String,
+    track: Option<SubtitleTrack>,
+}
+
+impl PlaybackSubtitleTrack {
+    fn loaded(track: SubtitleTrack) -> Self {
+        Self {
+            label: track.label().to_string(),
+            track: Some(track),
+        }
+    }
+
+    fn pending(label: String) -> Self {
+        Self { label, track: None }
+    }
+}
+
+struct PendingEmbeddedSubtitle {
+    index: usize,
+    fallback_index: usize,
+    stream: EmbeddedSubtitleStream,
+}
+
+struct LoadedEmbeddedSubtitle {
+    index: usize,
+    track: Option<SubtitleTrack>,
 }
 
 pub(crate) fn run() -> Result<()> {
@@ -98,19 +129,20 @@ fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<
 fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
     let source = probe_video(&path)
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
-    let mut subtitle_tracks = load_subtitle_tracks(&path, sub_file)?;
-    let mut subtitle_labels = subtitle_tracks
-        .iter()
-        .map(|track| Box::leak(track.label().to_string().into_boxed_str()) as &'static str)
-        .collect::<Vec<_>>();
+    let (mut subtitle_tracks, embedded_subtitle_jobs) =
+        load_initial_subtitle_tracks(&path, sub_file)?;
+    let mut subtitle_labels = subtitle_labels(&subtitle_tracks);
     let mut selected_subtitle = (!subtitle_tracks.is_empty()).then_some(0_usize);
     let mut external_subtitle_paths = Vec::<(PathBuf, usize)>::new();
     if let (Some(path), true) = (
         external_subtitle_path(&path, sub_file),
-        !subtitle_tracks.is_empty(),
+        subtitle_tracks
+            .first()
+            .is_some_and(|track| track.track.is_some()),
     ) {
         external_subtitle_paths.push((normalized_subtitle_path(&path), 0));
     }
+    let embedded_subtitle_rx = spawn_embedded_subtitle_loader(path.clone(), embedded_subtitle_jobs);
     let mut audio_tracks = load_audio_tracks(&path);
     if audio_tracks.is_empty() && source.has_audio {
         audio_tracks.push(crate::media::AudioTrack::default_track());
@@ -173,6 +205,28 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
 
         let input = read_input_events()?;
         let input_at = Instant::now();
+        while let Ok(loaded) = embedded_subtitle_rx.try_recv() {
+            let loaded_index = loaded.index;
+            let loaded_ok = loaded.track.is_some();
+            if let Some(slot) = subtitle_tracks.get_mut(loaded_index) {
+                slot.track = loaded.track;
+            }
+            if selected_subtitle == Some(loaded_index) {
+                subtitle_renderer = SubtitleRenderer::new(
+                    font_system,
+                    active_subtitle_track(&subtitle_tracks, selected_subtitle)
+                        .and_then(SubtitleTrack::language),
+                );
+                if !loaded_ok {
+                    status_message = Some(StatusMessage {
+                        text: "SUBTITLE LOAD FAILED",
+                        visible_until: input_at + STATUS_VISIBLE_FOR,
+                    });
+                    overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                }
+                redraw_current_frame = have_frame;
+            }
+        }
         let was_overlay_visible = overlay_visible(
             paused,
             scrub_position.is_some(),
@@ -213,7 +267,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                                 let index = subtitle_tracks.len();
                                 subtitle_labels
                                     .push(Box::leak(track.label().to_string().into_boxed_str()));
-                                subtitle_tracks.push(track);
+                                subtitle_tracks.push(PlaybackSubtitleTrack::loaded(track));
                                 external_subtitle_paths.push((key, index));
                                 selected_subtitle = Some(index);
                                 subtitle_picker_open = false;
@@ -467,6 +521,15 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                                     active_subtitle_track(&subtitle_tracks, selected_subtitle)
                                         .and_then(SubtitleTrack::language),
                                 );
+                                if active_subtitle_track(&subtitle_tracks, selected_subtitle)
+                                    .is_none()
+                                {
+                                    status_message = Some(StatusMessage {
+                                        text: "SUBTITLE LOADING",
+                                        visible_until: input_at + STATUS_VISIBLE_FOR,
+                                    });
+                                    overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                                }
                             }
                             SubtitlePickerAction::SelectOff => {
                                 selected_subtitle = None;
@@ -1032,10 +1095,10 @@ fn switch_audio_track(
 }
 
 fn active_subtitle_track(
-    tracks: &[SubtitleTrack],
+    tracks: &[PlaybackSubtitleTrack],
     selected_subtitle: Option<usize>,
 ) -> Option<&SubtitleTrack> {
-    selected_subtitle.and_then(|index| tracks.get(index))
+    selected_subtitle.and_then(|index| tracks.get(index)?.track.as_ref())
 }
 
 fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
@@ -1174,13 +1237,63 @@ fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<
     Ok(())
 }
 
-fn load_subtitle_tracks(media_path: &Path, sub_file: Option<&Path>) -> Result<Vec<SubtitleTrack>> {
+fn load_initial_subtitle_tracks(
+    media_path: &Path,
+    sub_file: Option<&Path>,
+) -> Result<(Vec<PlaybackSubtitleTrack>, Vec<PendingEmbeddedSubtitle>)> {
     let mut tracks = Vec::new();
     if let Some(path) = external_subtitle_path(media_path, sub_file) {
-        tracks.push(SubtitleTrack::load(&path)?);
+        tracks.push(PlaybackSubtitleTrack::loaded(SubtitleTrack::load(&path)?));
     }
-    tracks.extend(load_embedded_subtitle_tracks(media_path)?);
-    Ok(tracks)
+
+    let mut jobs = Vec::new();
+    for (fallback_index, stream) in embedded_subtitle_streams(media_path)
+        .into_iter()
+        .enumerate()
+    {
+        if !stream.is_text() {
+            continue;
+        }
+        let index = tracks.len();
+        tracks.push(PlaybackSubtitleTrack::pending(stream.label()));
+        jobs.push(PendingEmbeddedSubtitle {
+            index,
+            fallback_index,
+            stream,
+        });
+    }
+    Ok((tracks, jobs))
+}
+
+fn subtitle_labels(tracks: &[PlaybackSubtitleTrack]) -> Vec<&'static str> {
+    tracks
+        .iter()
+        .map(|track| Box::leak(track.label.clone().into_boxed_str()) as &'static str)
+        .collect()
+}
+
+fn spawn_embedded_subtitle_loader(
+    media_path: PathBuf,
+    jobs: Vec<PendingEmbeddedSubtitle>,
+) -> mpsc::Receiver<LoadedEmbeddedSubtitle> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for job in jobs {
+            let track = load_embedded_subtitle_track(&media_path, &job.stream, job.fallback_index)
+                .ok()
+                .flatten();
+            if sender
+                .send(LoadedEmbeddedSubtitle {
+                    index: job.index,
+                    track,
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    receiver
 }
 
 fn external_subtitle_path(media_path: &Path, sub_file: Option<&Path>) -> Option<PathBuf> {
@@ -1800,6 +1913,38 @@ mod tests {
         let tracks = vec![crate::media::AudioTrack::default_track()];
 
         assert_eq!(selected_audio_stream(&tracks, Some(0)), None);
+    }
+
+    #[test]
+    fn pending_subtitle_tracks_keep_picker_label_without_active_track() {
+        let tracks = vec![PlaybackSubtitleTrack::pending(
+            "English — Embedded".to_string(),
+        )];
+        let labels = subtitle_labels(&tracks);
+
+        assert_eq!(labels, vec!["English — Embedded"]);
+        assert!(active_subtitle_track(&tracks, Some(0)).is_none());
+    }
+
+    #[test]
+    fn sidecar_subtitle_stays_loaded_before_background_embedded_tracks() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("rigoberto-sidecar-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("movie.mkv");
+        let subtitle = temp_dir.join("movie.srt");
+        std::fs::write(&media, b"not really video").expect("media placeholder should be written");
+        std::fs::write(&subtitle, "1\n00:00:00,000 --> 00:00:01,000\nhello\n")
+            .expect("subtitle should be written");
+
+        let (tracks, jobs) =
+            load_initial_subtitle_tracks(&media, None).expect("sidecar subtitle should load");
+
+        assert_eq!(tracks.len(), jobs.len() + 1);
+        assert!(active_subtitle_track(&tracks, Some(0)).is_some());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

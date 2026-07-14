@@ -99,54 +99,60 @@ pub(crate) fn sidecar_subtitle_path(media_path: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+#[cfg(test)]
 pub(crate) fn load_embedded_subtitle_tracks(media_path: &Path) -> Result<Vec<SubtitleTrack>> {
-    let text = media_path.as_os_str().to_string_lossy();
-    if text.contains("://") {
-        return Ok(Vec::new());
-    }
-
     let streams = embedded_subtitle_streams(media_path);
     let mut tracks = Vec::new();
-    for (fallback_index, stream) in streams.into_iter().enumerate() {
-        if !stream.is_text() {
-            continue;
+    for (fallback_index, stream) in streams.iter().enumerate() {
+        if let Some(track) = load_embedded_subtitle_track(media_path, stream, fallback_index)? {
+            tracks.push(track);
         }
-        let subtitle_index = stream.subtitle_index.unwrap_or(fallback_index);
-        let path = embedded_subtitle_temp_path(subtitle_index, stream.extraction_extension());
-        let output = Command::new("ffmpeg")
-            .arg("-nostdin")
-            .arg("-v")
-            .arg("error")
-            .arg("-y")
-            .arg("-i")
-            .arg(media_path)
-            .arg("-map")
-            .arg(format!("0:s:{subtitle_index}"))
-            .arg("-c:s")
-            .arg(stream.extraction_codec())
-            .arg(&path)
-            .output();
-
-        let Ok(output) = output else {
-            continue;
-        };
-        if !output.status.success()
-            || fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
-        {
-            let _ = fs::remove_file(&path);
-            continue;
-        }
-
-        if let Ok(track) = SubtitleTrack::load(&path) {
-            tracks.push(track.with_label(stream.label()));
-        }
-        let _ = fs::remove_file(&path);
     }
     Ok(tracks)
 }
 
+pub(crate) fn load_embedded_subtitle_track(
+    media_path: &Path,
+    stream: &EmbeddedSubtitleStream,
+    fallback_index: usize,
+) -> Result<Option<SubtitleTrack>> {
+    if !stream.is_text() {
+        return Ok(None);
+    }
+    let subtitle_index = stream.subtitle_index.unwrap_or(fallback_index);
+    let path = embedded_subtitle_temp_path(subtitle_index, stream.extraction_extension());
+    let output = Command::new("ffmpeg")
+        .arg("-nostdin")
+        .arg("-v")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(media_path)
+        .arg("-map")
+        .arg(format!("0:s:{subtitle_index}"))
+        .arg("-c:s")
+        .arg(stream.extraction_codec())
+        .arg(&path)
+        .output();
+
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+    if !output.status.success() || fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
+    {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    }
+
+    let track = SubtitleTrack::load(&path)
+        .ok()
+        .map(|track| track.with_label(stream.label()));
+    let _ = fs::remove_file(&path);
+    Ok(track)
+}
+
 #[derive(Clone, Debug, Default)]
-struct EmbeddedSubtitleStream {
+pub(crate) struct EmbeddedSubtitleStream {
     subtitle_index: Option<usize>,
     codec: Option<String>,
     language: Option<String>,
@@ -156,11 +162,11 @@ struct EmbeddedSubtitleStream {
 }
 
 impl EmbeddedSubtitleStream {
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         subtitle_label(self.language.as_deref(), self.title.as_deref(), "Embedded")
     }
 
-    fn is_text(&self) -> bool {
+    pub(crate) fn is_text(&self) -> bool {
         self.codec
             .as_deref()
             .map(|codec| TEXT_SUBTITLE_CODECS.contains(&codec))
@@ -184,7 +190,12 @@ impl EmbeddedSubtitleStream {
     }
 }
 
-fn embedded_subtitle_streams(media_path: &Path) -> Vec<EmbeddedSubtitleStream> {
+pub(crate) fn embedded_subtitle_streams(media_path: &Path) -> Vec<EmbeddedSubtitleStream> {
+    let text = media_path.as_os_str().to_string_lossy();
+    if text.contains("://") {
+        return Vec::new();
+    }
+
     let Ok(output) = Command::new("ffprobe")
         .arg("-v")
         .arg("error")
