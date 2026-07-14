@@ -40,15 +40,44 @@ const PREFERRED_FONT_PATTERNS: &[&str] = &[
     "vera",
 ];
 
+const JAPANESE_SUBTITLE_FONT_PATTERNS: &[&str] = &[
+    "notosanscjkjp",
+    "noto-cjk",
+    "notosanscjk",
+    "sourcehansansjp",
+    "sourcehansans",
+    "ipaexgothic",
+    "ipagothic",
+    "bizud",
+    "takao",
+    "hiragino",
+    "yugothic",
+    "japanese",
+    "japan",
+];
+
 impl FontSystem {
     pub(crate) fn discover() -> Self {
         Self::from_dirs(SYSTEM_FONT_DIRS.iter().map(OsString::from))
     }
 
-    pub(crate) fn resolve_all(&self, _role: FontRole) -> impl Iterator<Item = &Path> + '_ {
+    pub(crate) fn resolve_all(&self, role: FontRole) -> impl Iterator<Item = &Path> + '_ {
         let mut fonts = self.fonts.iter().collect::<Vec<_>>();
-        fonts.sort_by_key(|font| font.preference_rank());
+        fonts.sort_by_key(|font| font.preference_rank(role, None));
         fonts.into_iter().map(|font| font.path.as_path())
+    }
+
+    pub(crate) fn resolve_all_for_language(
+        &self,
+        role: FontRole,
+        language: Option<&str>,
+    ) -> Vec<PathBuf> {
+        let mut fonts = self.fonts.iter().collect::<Vec<_>>();
+        fonts.sort_by_key(|font| font.preference_rank(role, language));
+        fonts
+            .into_iter()
+            .map(|font| font.path.clone())
+            .collect::<Vec<_>>()
     }
 
     fn from_dirs(dirs: impl IntoIterator<Item = OsString>) -> Self {
@@ -71,21 +100,32 @@ impl FontCandidate {
             return None;
         }
         let family_hint = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default()
+            .to_string_lossy()
             .to_ascii_lowercase()
             .replace([' ', '_'], "");
         Some(Self { path, family_hint })
     }
 
-    fn preference_rank(&self) -> (usize, &Path) {
-        let pattern_rank = PREFERRED_FONT_PATTERNS
-            .iter()
-            .position(|pattern| self.family_hint.contains(pattern))
+    fn preference_rank(&self, role: FontRole, language: Option<&str>) -> (usize, usize, &Path) {
+        let language_rank = language
+            .filter(|language| role == FontRole::Subtitle && is_japanese_language(language))
+            .and_then(|_| pattern_rank(&self.family_hint, JAPANESE_SUBTITLE_FONT_PATTERNS))
+            .unwrap_or(JAPANESE_SUBTITLE_FONT_PATTERNS.len());
+        let pattern_rank = pattern_rank(&self.family_hint, PREFERRED_FONT_PATTERNS)
             .unwrap_or(PREFERRED_FONT_PATTERNS.len());
-        (pattern_rank, self.path.as_path())
+        (language_rank, pattern_rank, self.path.as_path())
     }
+}
+
+fn pattern_rank(haystack: &str, patterns: &[&str]) -> Option<usize> {
+    patterns
+        .iter()
+        .position(|pattern| haystack.contains(pattern))
+}
+
+fn is_japanese_language(language: &str) -> bool {
+    let language = language.to_ascii_lowercase();
+    language == "ja" || language == "jpn" || language.starts_with("ja-")
 }
 
 fn collect_font_candidates(dir: &Path, fonts: &mut Vec<FontCandidate>) {
@@ -167,6 +207,31 @@ mod tests {
         assert_eq!(
             system.resolve_all(FontRole::Subtitle).next(),
             Some(alpha.as_path())
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn japanese_subtitles_prefer_japanese_cjk_fonts() {
+        let root = temp_font_dir("japanese_subtitle_font");
+        let latin = root.join("NotoSans-Regular.ttf");
+        let chinese = root.join("NotoSansCJKSC-Regular.otf");
+        let japanese = root.join("noto-cjk/NotoSansCJK-Regular.ttc");
+        fs::create_dir_all(japanese.parent().expect("japanese parent"))
+            .expect("create japanese dir");
+        File::create(&latin).expect("create latin font");
+        File::create(&chinese).expect("create chinese font");
+        File::create(&japanese).expect("create japanese font");
+
+        let system = FontSystem::from_dirs([root.clone().into_os_string()]);
+
+        assert_eq!(
+            system.resolve_all_for_language(FontRole::Subtitle, Some("ja"))[0],
+            japanese
+        );
+        assert_eq!(
+            system.resolve_all_for_language(FontRole::Ui, Some("ja"))[0],
+            latin
         );
         fs::remove_dir_all(root).ok();
     }

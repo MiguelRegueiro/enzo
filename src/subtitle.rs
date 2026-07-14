@@ -1,7 +1,8 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
-    time::Duration,
+    process::{self, Command},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,6 +26,7 @@ pub(crate) struct SubtitleCue {
 #[derive(Debug)]
 pub(crate) struct SubtitleTrack {
     cues: Vec<SubtitleCue>,
+    language: Option<String>,
 }
 
 impl SubtitleTrack {
@@ -36,7 +38,14 @@ impl SubtitleTrack {
         if cues.is_empty() {
             bail!("subtitle file has no cues: {}", path.display());
         }
-        Ok(Self { cues })
+        Ok(Self {
+            language: infer_subtitle_language(path, &text),
+            cues,
+        })
+    }
+
+    pub(crate) fn language(&self) -> Option<&str> {
+        self.language.as_deref()
     }
 
     fn active_lines(&self, position: Duration) -> Option<&[String]> {
@@ -59,17 +68,63 @@ pub(crate) fn sidecar_subtitle_path(media_path: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+pub(crate) fn load_embedded_subtitle_track(media_path: &Path) -> Result<Option<SubtitleTrack>> {
+    let text = media_path.as_os_str().to_string_lossy();
+    if text.contains("://") {
+        return Ok(None);
+    }
+
+    let path = embedded_subtitle_temp_path();
+    let output = Command::new("ffmpeg")
+        .arg("-nostdin")
+        .arg("-v")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(media_path)
+        .arg("-map")
+        .arg("0:s:0")
+        .arg("-c:s")
+        .arg("srt")
+        .arg(&path)
+        .output();
+
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+    if !output.status.success() || fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
+    {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    }
+
+    let track = SubtitleTrack::load(&path).ok();
+    let _ = fs::remove_file(&path);
+    Ok(track)
+}
+
+fn embedded_subtitle_temp_path() -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    env::temp_dir().join(format!(
+        "rigoberto-embedded-subtitle-{}-{nonce}.srt",
+        process::id()
+    ))
+}
+
 pub(crate) struct SubtitleRenderer {
     font: Option<FontRenderer>,
     wrapped_lines: Vec<String>,
 }
 
 impl SubtitleRenderer {
-    pub(crate) fn new(fonts: &FontSystem) -> Self {
+    pub(crate) fn new(fonts: &FontSystem, language: Option<&str>) -> Self {
+        let fonts = fonts.resolve_all_for_language(FontRole::Subtitle, language);
+        let font = open_first_font(&fonts, 26);
         Self {
-            font: fonts
-                .resolve_all(FontRole::Subtitle)
-                .find_map(|path| FontRenderer::open_path(path, 26)),
+            font,
             wrapped_lines: Vec::new(),
         }
     }
@@ -145,6 +200,12 @@ impl SubtitleRenderer {
             y = y.saturating_add(line_height).saturating_add(line_gap);
         }
     }
+}
+
+fn open_first_font(paths: &[PathBuf], pixel_size: u32) -> Option<FontRenderer> {
+    paths
+        .iter()
+        .find_map(|path| FontRenderer::open_path(path, pixel_size))
 }
 
 fn parse_srt(text: &str) -> Result<Vec<SubtitleCue>> {
@@ -263,6 +324,153 @@ fn strip_srt_markup(line: &str) -> String {
         }
     }
     out
+}
+
+fn infer_subtitle_language(path: &Path, text: &str) -> Option<String> {
+    language_from_filename(path).or_else(|| detect_text_language(text))
+}
+
+fn language_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let normalized = stem.replace(['_', ' ', '[', ']', '(', ')'], ".");
+    let parts = normalized
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    for pair in parts.windows(2) {
+        let candidate = format!("{}-{}", pair[0], pair[1]);
+        if let Some(language) = normalize_language_tag(&candidate) {
+            return Some(language);
+        }
+    }
+
+    for part in &parts {
+        if let Some(language) = normalize_language_tag(part) {
+            return Some(language);
+        }
+    }
+
+    None
+}
+
+fn normalize_language_tag(tag: &str) -> Option<String> {
+    let tag = tag.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
+    if tag.is_empty() {
+        return None;
+    }
+    let lower = tag.to_ascii_lowercase();
+    let normalized = match lower.as_str() {
+        "en" | "eng" => "en".to_string(),
+        "ja" | "jp" | "jpn" => "ja".to_string(),
+        "ko" | "kor" => "ko".to_string(),
+        "zh" | "chi" | "zho" | "cn" => "zh".to_string(),
+        "zh-hans" | "chi-hans" | "zho-hans" => "zh-Hans".to_string(),
+        "zh-hant" | "chi-hant" | "zho-hant" => "zh-Hant".to_string(),
+        "ru" | "rus" => "ru".to_string(),
+        "es" | "spa" => "es".to_string(),
+        "fr" | "fre" | "fra" => "fr".to_string(),
+        "de" | "ger" | "deu" => "de".to_string(),
+        "it" | "ita" => "it".to_string(),
+        "pt" | "por" => "pt".to_string(),
+        _ => return None,
+    };
+    Some(normalized)
+}
+
+fn detect_text_language(text: &str) -> Option<String> {
+    let mut cjk = 0_u32;
+    let mut kana = 0_u32;
+    let mut hangul = 0_u32;
+    let mut cyrillic = 0_u32;
+    let mut latin = 0_u32;
+    let mut english_stopwords = 0_u32;
+
+    for line in text.lines().take(400) {
+        let line = strip_srt_markup(line);
+        if line.contains("-->") || line.trim().parse::<u32>().is_ok() {
+            continue;
+        }
+
+        for ch in line.chars() {
+            match ch {
+                '\u{3040}'..='\u{30ff}' => kana += 1,
+                '\u{3400}'..='\u{9fff}' => cjk += 1,
+                '\u{ac00}'..='\u{d7af}' => hangul += 1,
+                '\u{0400}'..='\u{04ff}' => cyrillic += 1,
+                ch if ch.is_ascii_alphabetic() => latin += 1,
+                _ => {}
+            }
+        }
+
+        for word in line
+            .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\'')
+            .map(|word| word.to_ascii_lowercase())
+        {
+            if is_english_stopword(&word) {
+                english_stopwords += 1;
+            }
+        }
+    }
+
+    if kana >= 4 {
+        return Some("ja".to_string());
+    }
+    if hangul >= 4 {
+        return Some("ko".to_string());
+    }
+    if cjk >= 4 {
+        return Some("zh".to_string());
+    }
+    if cyrillic >= 12 {
+        return Some("ru".to_string());
+    }
+    if latin >= 40 && english_stopwords >= 4 {
+        return Some("en".to_string());
+    }
+
+    None
+}
+
+fn is_english_stopword(word: &str) -> bool {
+    matches!(
+        word,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "but"
+            | "by"
+            | "for"
+            | "from"
+            | "had"
+            | "have"
+            | "he"
+            | "i"
+            | "in"
+            | "is"
+            | "it"
+            | "me"
+            | "my"
+            | "not"
+            | "of"
+            | "on"
+            | "or"
+            | "she"
+            | "that"
+            | "the"
+            | "they"
+            | "this"
+            | "to"
+            | "was"
+            | "we"
+            | "were"
+            | "with"
+            | "you"
+            | "your"
+    )
 }
 
 fn wrap_subtitle_lines(
@@ -692,6 +900,7 @@ One
 ",
             )
             .expect("srt should parse"),
+            language: None,
         };
 
         assert!(track.active_lines(Duration::from_millis(999)).is_none());
@@ -719,6 +928,120 @@ One
     }
 
     #[test]
+    fn infers_language_from_sidecar_filename() {
+        assert_eq!(
+            language_from_filename(Path::new("movie.jpn.srt")),
+            Some("ja".to_string())
+        );
+        assert_eq!(
+            language_from_filename(Path::new("movie.zh.Hans.srt")),
+            Some("zh-Hans".to_string())
+        );
+        assert_eq!(language_from_filename(Path::new("movie.srt")), None);
+    }
+
+    #[test]
+    fn detects_english_subtitle_text_without_filename_language() {
+        let text = "\
+1
+00:00:01,000 --> 00:00:03,000
+They all said the tree was rotting.
+
+2
+00:00:04,000 --> 00:00:06,000
+But I told them it was not.
+";
+
+        assert_eq!(detect_text_language(text), Some("en".to_string()));
+    }
+
+    #[test]
+    fn detects_script_based_subtitle_languages() {
+        assert_eq!(
+            detect_text_language("Привет, как дела? Это тест."),
+            Some("ru".to_string())
+        );
+        assert_eq!(
+            detect_text_language("これは日本語の字幕です。"),
+            Some("ja".to_string())
+        );
+        assert_eq!(
+            detect_text_language("이것은 한국어 자막입니다."),
+            Some("ko".to_string())
+        );
+        assert_eq!(
+            detect_text_language("这是中文字幕。"),
+            Some("zh".to_string())
+        );
+    }
+
+    #[test]
+    fn loads_embedded_srt_subtitle_when_ffmpeg_is_available() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-embedded-subtitle-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let sub = temp_dir.join("subtitle.srt");
+        let media = temp_dir.join("embedded.mkv");
+        fs::write(
+            &sub,
+            "1\n00:00:00,000 --> 00:00:01,000\nHello there, this is an embedded subtitle and you are in the test.\n",
+        )
+        .expect("subtitle fixture should be written");
+
+        let status = Command::new("ffmpeg")
+            .arg("-nostdin")
+            .arg("-v")
+            .arg("error")
+            .arg("-y")
+            .arg("-f")
+            .arg("lavfi")
+            .arg("-i")
+            .arg("color=size=16x16:duration=1:rate=1")
+            .arg("-f")
+            .arg("srt")
+            .arg("-i")
+            .arg(&sub)
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg("1:s:0")
+            .arg("-c:v")
+            .arg("ffv1")
+            .arg("-c:s")
+            .arg("srt")
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return;
+        }
+
+        let track = load_embedded_subtitle_track(&media)
+            .expect("embedded subtitle load should not error")
+            .expect("embedded subtitle should be found");
+        assert_eq!(track.language(), Some("en"));
+        assert_eq!(
+            track.active_lines(Duration::ZERO),
+            Some(
+                [String::from(
+                    "Hello there, this is an embedded subtitle and you are in the test.",
+                )]
+                .as_slice()
+            )
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn renderer_draws_active_subtitle() {
         let track = SubtitleTrack {
             cues: parse_srt(
@@ -729,6 +1052,7 @@ Hello
 ",
             )
             .expect("srt should parse"),
+            language: None,
         };
         let mut renderer = SubtitleRenderer {
             font: None,

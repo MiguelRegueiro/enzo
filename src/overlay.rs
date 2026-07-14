@@ -19,6 +19,10 @@ pub(crate) struct OverlayState {
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,
     pub(crate) visible: bool,
+    pub(crate) subtitles_available: bool,
+    pub(crate) subtitles_visible: bool,
+    pub(crate) subtitle_picker_open: bool,
+    pub(crate) subtitle_label: Option<&'static str>,
     pub(crate) status_message: Option<&'static str>,
     pub(crate) media_title: Option<&'static str>,
 }
@@ -34,6 +38,14 @@ pub(crate) struct OverlayHitContext {
     pub(crate) height: u32,
     pub(crate) scale_percent: u32,
     pub(crate) duration: Option<Duration>,
+    pub(crate) subtitles_available: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SubtitlePickerAction {
+    TogglePicker,
+    SelectOff,
+    SelectOn,
 }
 
 #[derive(Clone, Copy)]
@@ -89,6 +101,7 @@ impl PlaybackOverlay {
             context.height,
             context.scale_percent,
             context.duration,
+            context.subtitles_available,
         );
         progress_hit_ratio(metrics, point)
     }
@@ -99,9 +112,10 @@ impl PlaybackOverlay {
         height: u32,
         scale_percent: u32,
         duration: Option<Duration>,
+        subtitles_available: bool,
         x: u32,
     ) -> f64 {
-        let metrics = self.metrics(width, height, scale_percent, duration);
+        let metrics = self.metrics(width, height, scale_percent, duration, subtitles_available);
         progress_ratio_for_x(metrics, x)
     }
 
@@ -115,8 +129,25 @@ impl PlaybackOverlay {
             context.height,
             context.scale_percent,
             context.duration,
+            context.subtitles_available,
         );
         playback_button_hit(metrics, point)
+    }
+
+    pub(crate) fn subtitle_picker_action(
+        &mut self,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
+        picker_open: bool,
+    ) -> Option<SubtitlePickerAction> {
+        let metrics = self.metrics(
+            context.width,
+            context.height,
+            context.scale_percent,
+            context.duration,
+            context.subtitles_available,
+        );
+        subtitle_picker_action(metrics, point, picker_open)
     }
 
     fn metrics(
@@ -125,8 +156,16 @@ impl PlaybackOverlay {
         height: u32,
         scale_percent: u32,
         duration: Option<Duration>,
+        subtitles_available: bool,
     ) -> OverlayMetrics {
-        overlay_metrics(width, height, scale_percent, duration, self.font.as_mut())
+        overlay_metrics(
+            width,
+            height,
+            scale_percent,
+            duration,
+            subtitles_available,
+            self.font.as_mut(),
+        )
     }
 }
 
@@ -143,6 +182,7 @@ struct OverlayMetrics {
     bar_height: u32,
     control_size: u32,
     control_y: u32,
+    subtitle_x: u32,
     time_x: u32,
     text_size: u32,
     fallback_text_scale: u32,
@@ -156,6 +196,7 @@ impl OverlayMetrics {
         fallback_text_scale: u32,
         text_height: u32,
         time_width: u32,
+        subtitles_available: bool,
     ) -> Self {
         let bar_height = bar_height_for_text(text_size).min(video_height.max(1));
         let vertical_pad = vertical_padding_for_text(text_size);
@@ -189,11 +230,21 @@ impl OverlayMetrics {
             .saturating_add(control_gap)
             .min(width.saturating_sub(1));
         let content_right = width.saturating_sub(inner_x).max(inner_x.saturating_add(1));
+        let subtitle_x = if subtitles_available {
+            content_right.saturating_sub(control_size)
+        } else {
+            content_right
+        };
         let bar_x = time_x
             .saturating_add(time_width)
             .saturating_add(control_gap)
-            .min(content_right.saturating_sub(1));
-        let bar_width = content_right.saturating_sub(bar_x).max(1);
+            .min(subtitle_x.saturating_sub(1));
+        let bar_right = if subtitles_available {
+            subtitle_x.saturating_sub(control_gap)
+        } else {
+            content_right
+        };
+        let bar_width = bar_right.saturating_sub(bar_x).max(1);
         let bar_y = row_y.saturating_add((row_height.saturating_sub(bar_height)) / 2);
 
         Self {
@@ -208,6 +259,7 @@ impl OverlayMetrics {
             bar_height,
             control_size,
             control_y,
+            subtitle_x,
             time_x,
             text_size,
             fallback_text_scale,
@@ -279,6 +331,7 @@ fn render_overlay_rgb(
         fallback_text_scale,
         text_height,
         time_width,
+        state.subtitles_available,
     );
     let panel_width = width
         .saturating_sub(metrics.inset_x.saturating_mul(2))
@@ -350,6 +403,20 @@ fn render_overlay_rgb(
     }
 
     draw_playback_control(frame, width, height, metrics, state.paused);
+    if state.subtitles_available {
+        draw_subtitle_control(frame, width, height, metrics, state.subtitles_visible);
+        if state.subtitle_picker_open {
+            draw_subtitle_picker(
+                font.as_deref_mut(),
+                frame,
+                width,
+                height,
+                metrics,
+                state.subtitle_label.unwrap_or("Subtitles"),
+                state.subtitles_visible,
+            );
+        }
+    }
     draw_overlay_text(
         font,
         frame,
@@ -443,6 +510,7 @@ fn overlay_metrics(
     height: u32,
     scale_percent: u32,
     duration: Option<Duration>,
+    subtitles_available: bool,
     font: Option<&mut FontRenderer>,
 ) -> OverlayMetrics {
     let text_size = text_size(width, height, scale_percent);
@@ -460,6 +528,7 @@ fn overlay_metrics(
         fallback_text_scale,
         text_height,
         time_width,
+        subtitles_available,
     )
 }
 
@@ -538,6 +607,206 @@ fn draw_pause_icon(frame: &mut [u8], width: u32, height: u32, x: u32, y: u32, si
     }
 }
 
+fn draw_subtitle_control(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    visible: bool,
+) {
+    draw_subtitle_icon(
+        frame,
+        width,
+        height,
+        metrics,
+        if visible { 238 } else { 132 },
+    );
+}
+
+fn draw_subtitle_picker(
+    mut font: Option<&mut FontRenderer>,
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    label: &str,
+    subtitles_visible: bool,
+) {
+    let picker = subtitle_picker_rect(metrics);
+    let radius = rounded_radius(
+        picker.right.saturating_sub(picker.left),
+        picker.bottom.saturating_sub(picker.top),
+        metrics.text_size / 3,
+    );
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(picker.left),
+            y: f64::from(picker.top),
+            width: f64::from(picker.right.saturating_sub(picker.left)),
+            height: f64::from(picker.bottom.saturating_sub(picker.top)),
+            radius: f64::from(radius),
+        },
+        PANEL_COLOR,
+        232,
+    );
+
+    let pad = picker_padding(metrics);
+    let row_height = subtitle_picker_row_height(metrics);
+    let marker_size = (metrics.text_size / 3).clamp(4, 7);
+    let marker_x = picker.left.saturating_add(pad);
+    let text_x = marker_x.saturating_add(marker_size).saturating_add(pad / 2);
+    let on_y = picker.top.saturating_add(pad);
+    let off_y = on_y.saturating_add(row_height);
+    if subtitles_visible {
+        draw_picker_marker(
+            frame,
+            width,
+            height,
+            marker_x,
+            on_y,
+            row_height,
+            marker_size,
+        );
+    } else {
+        draw_picker_marker(
+            frame,
+            width,
+            height,
+            marker_x,
+            off_y,
+            row_height,
+            marker_size,
+        );
+    }
+    draw_overlay_text(
+        font.as_deref_mut(),
+        frame,
+        width,
+        height,
+        text_x,
+        on_y,
+        metrics.fallback_text_scale,
+        label,
+        TEXT_COLOR,
+        244,
+    );
+    draw_overlay_text(
+        font,
+        frame,
+        width,
+        height,
+        text_x,
+        off_y,
+        metrics.fallback_text_scale,
+        "Off",
+        TEXT_COLOR,
+        210,
+    );
+}
+
+fn draw_subtitle_icon(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    alpha: u8,
+) {
+    let icon_width = (metrics.control_size * 4 / 5).max(14);
+    let icon_height = (metrics.control_size * 3 / 5).max(10);
+    let icon_x = metrics
+        .subtitle_x
+        .saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
+    let icon_y = metrics
+        .control_y
+        .saturating_add(metrics.control_size.saturating_sub(icon_height) / 2);
+    let radius = rounded_radius(icon_width, icon_height, icon_height / 4);
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(icon_x),
+            y: f64::from(icon_y),
+            width: f64::from(icon_width),
+            height: f64::from(icon_height),
+            radius: f64::from(radius),
+        },
+        TEXT_COLOR,
+        alpha,
+    );
+
+    let stroke = (icon_height / 8).max(2);
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(icon_x.saturating_add(stroke)),
+            y: f64::from(icon_y.saturating_add(stroke)),
+            width: f64::from(icon_width.saturating_sub(stroke.saturating_mul(2))),
+            height: f64::from(icon_height.saturating_sub(stroke.saturating_mul(2))),
+            radius: f64::from(radius.saturating_sub(stroke / 2)),
+        },
+        PANEL_COLOR,
+        255,
+    );
+
+    let line_height = stroke.max(2);
+    let short_width = icon_width / 3;
+    let long_width = icon_width / 2;
+    let top_y = icon_y
+        .saturating_add(icon_height / 2)
+        .saturating_sub(line_height);
+    let bottom_y = top_y.saturating_add(line_height.saturating_mul(2));
+    let left_x = icon_x.saturating_add(icon_width / 4);
+    let right_x = icon_x.saturating_add(icon_width / 2);
+    for (line_x, line_y, line_width) in [
+        (right_x, top_y, short_width),
+        (left_x, bottom_y, long_width),
+    ] {
+        fill_rounded_rect(
+            frame,
+            width,
+            height,
+            RoundedRect {
+                x: f64::from(line_x),
+                y: f64::from(line_y),
+                width: f64::from(line_width),
+                height: f64::from(line_height),
+                radius: f64::from(line_height),
+            },
+            TEXT_COLOR,
+            alpha,
+        );
+    }
+}
+
+fn draw_picker_marker(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    x: u32,
+    row_y: u32,
+    row_height: u32,
+    size: u32,
+) {
+    fill_circle(
+        frame,
+        width,
+        height,
+        Circle {
+            x: f64::from(x.saturating_add(size / 2)),
+            y: f64::from(row_y.saturating_add(row_height / 2)),
+            radius: f64::from(size / 2),
+        },
+        ACCENT_COLOR,
+        245,
+    );
+}
+
 fn playback_button_hit(metrics: OverlayMetrics, point: OverlayHitPoint) -> bool {
     hitbox_intersects(
         point.cell,
@@ -548,6 +817,93 @@ fn playback_button_hit(metrics: OverlayMetrics, point: OverlayHitPoint) -> bool 
             bottom: metrics.control_y.saturating_add(metrics.control_size),
         },
     )
+}
+
+fn subtitle_picker_action(
+    metrics: OverlayMetrics,
+    point: OverlayHitPoint,
+    picker_open: bool,
+) -> Option<SubtitlePickerAction> {
+    if picker_open {
+        let picker = subtitle_picker_rect(metrics);
+        if hitbox_intersects(point.cell, subtitle_picker_on_rect(metrics, picker)) {
+            return Some(SubtitlePickerAction::SelectOn);
+        }
+        if hitbox_intersects(point.cell, subtitle_picker_off_rect(metrics, picker)) {
+            return Some(SubtitlePickerAction::SelectOff);
+        }
+    }
+
+    hitbox_intersects(point.cell, subtitle_button_rect(metrics))
+        .then_some(SubtitlePickerAction::TogglePicker)
+}
+
+fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
+    HitboxRect {
+        left: metrics.subtitle_x,
+        top: metrics.control_y,
+        right: metrics.subtitle_x.saturating_add(metrics.control_size),
+        bottom: metrics.control_y.saturating_add(metrics.control_size),
+    }
+}
+
+fn subtitle_picker_rect(metrics: OverlayMetrics) -> HitboxRect {
+    let pad = picker_padding(metrics);
+    let row_height = subtitle_picker_row_height(metrics);
+    let picker_width = scaled_normal_pixels(132, metrics.text_size).max(metrics.control_size);
+    let picker_height = row_height
+        .saturating_mul(2)
+        .saturating_add(pad.saturating_mul(2));
+    let right = metrics
+        .subtitle_x
+        .saturating_add(metrics.control_size)
+        .max(picker_width);
+    let left = right.saturating_sub(picker_width);
+    let bottom = metrics
+        .control_y
+        .saturating_sub(control_gap_for_text(metrics.text_size));
+    let top = bottom.saturating_sub(picker_height);
+    HitboxRect {
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+fn subtitle_picker_on_rect(metrics: OverlayMetrics, picker: HitboxRect) -> HitboxRect {
+    let pad = picker_padding(metrics);
+    HitboxRect {
+        left: picker.left,
+        top: picker.top,
+        right: picker.right,
+        bottom: picker
+            .top
+            .saturating_add(pad)
+            .saturating_add(subtitle_picker_row_height(metrics)),
+    }
+}
+
+fn subtitle_picker_off_rect(metrics: OverlayMetrics, picker: HitboxRect) -> HitboxRect {
+    let pad = picker_padding(metrics);
+    let row_height = subtitle_picker_row_height(metrics);
+    HitboxRect {
+        left: picker.left,
+        top: picker.top.saturating_add(pad).saturating_add(row_height),
+        right: picker.right,
+        bottom: picker.bottom,
+    }
+}
+
+fn picker_padding(metrics: OverlayMetrics) -> u32 {
+    (horizontal_padding_for_text(metrics.text_size) / 2).max(6)
+}
+
+fn subtitle_picker_row_height(metrics: OverlayMetrics) -> u32 {
+    metrics
+        .text_size
+        .max(7 * metrics.fallback_text_scale)
+        .saturating_add(6)
 }
 
 fn draw_progress_handle(
@@ -1181,6 +1537,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
                 visible: true,
+                subtitles_available: false,
+                subtitles_visible: false,
+                subtitle_picker_open: false,
+                subtitle_label: None,
                 status_message: None,
                 media_title: None,
             },
@@ -1216,6 +1576,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: true,
+                subtitles_available: false,
+                subtitles_visible: false,
+                subtitle_picker_open: false,
+                subtitle_label: None,
                 status_message: None,
                 media_title: None,
             },
@@ -1252,6 +1616,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
                 visible: true,
+                subtitles_available: false,
+                subtitles_visible: false,
+                subtitle_picker_open: false,
+                subtitle_label: None,
                 status_message: None,
                 media_title: None,
             },
@@ -1303,6 +1671,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: false,
+                subtitles_available: false,
+                subtitles_visible: false,
+                subtitle_picker_open: false,
+                subtitle_label: None,
                 status_message: None,
                 media_title: None,
             },
@@ -1332,6 +1704,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: false,
+                subtitles_available: false,
+                subtitles_visible: false,
+                subtitle_picker_open: false,
+                subtitle_label: None,
                 status_message: Some("MUTE ON"),
                 media_title: None,
             },
@@ -1364,6 +1740,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: true,
+                subtitles_available: false,
+                subtitles_visible: false,
+                subtitle_picker_open: false,
+                subtitle_label: None,
                 status_message: None,
                 media_title: Some("movie.mkv"),
             },
@@ -1480,6 +1860,40 @@ mod tests {
     }
 
     #[test]
+    fn subtitle_button_hit_test_toggles_picker() {
+        let metrics = test_metrics_with_subtitles(320, 180);
+
+        assert_eq!(
+            subtitle_picker_action(
+                metrics,
+                hit_point(
+                    metrics.subtitle_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size / 2,
+                ),
+                false,
+            ),
+            Some(SubtitlePickerAction::TogglePicker)
+        );
+    }
+
+    #[test]
+    fn subtitle_picker_selects_on_and_off_rows() {
+        let metrics = test_metrics_with_subtitles(320, 180);
+        let picker = subtitle_picker_rect(metrics);
+        let on = subtitle_picker_on_rect(metrics, picker);
+        let off = subtitle_picker_off_rect(metrics, picker);
+
+        assert_eq!(
+            subtitle_picker_action(metrics, hit_point(on.left + 1, on.top + 1), true),
+            Some(SubtitlePickerAction::SelectOn)
+        );
+        assert_eq!(
+            subtitle_picker_action(metrics, hit_point(off.left + 1, off.top + 1), true),
+            Some(SubtitlePickerAction::SelectOff)
+        );
+    }
+
+    #[test]
     fn playback_button_hit_test_uses_clicked_cell_overlap() {
         let metrics = test_metrics_with_scale(1920, 1200, 120);
 
@@ -1550,7 +1964,11 @@ mod tests {
     }
 
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {
-        test_metrics_with_scale(width, height, 100)
+        test_metrics_with_scale_and_subtitles(width, height, 100, false)
+    }
+
+    fn test_metrics_with_subtitles(width: u32, height: u32) -> OverlayMetrics {
+        test_metrics_with_scale_and_subtitles(width, height, 100, true)
     }
 
     fn hit_point(x: u32, y: u32) -> OverlayHitPoint {
@@ -1570,6 +1988,15 @@ mod tests {
     }
 
     fn test_metrics_with_scale(width: u32, height: u32, scale_percent: u32) -> OverlayMetrics {
+        test_metrics_with_scale_and_subtitles(width, height, scale_percent, false)
+    }
+
+    fn test_metrics_with_scale_and_subtitles(
+        width: u32,
+        height: u32,
+        scale_percent: u32,
+        subtitles_available: bool,
+    ) -> OverlayMetrics {
         let text_size = text_size(width, height, scale_percent);
         let fallback_text_scale = fallback_text_scale(width, height, scale_percent);
         let text_height = 7 * fallback_text_scale;
@@ -1582,6 +2009,7 @@ mod tests {
             fallback_text_scale,
             text_height,
             time_width,
+            subtitles_available,
         )
     }
 
