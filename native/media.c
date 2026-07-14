@@ -840,6 +840,7 @@ void rig_video_decoder_close(RigVideoDecoder *decoder) {
 
 static int open_audio_decoder(
     const char *path,
+    int requested_stream_index,
     AVFormatContext **format_out,
     AVCodecContext **codec_out,
     int *stream_index_out,
@@ -860,7 +861,17 @@ static int open_audio_decoder(
         return -1;
     }
 
-    int stream_index = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    int stream_index = requested_stream_index;
+    if (stream_index >= 0) {
+        if ((unsigned int)stream_index >= format->nb_streams ||
+            format->streams[stream_index]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+            set_error(err, err_len, "selected audio stream is not available");
+            avformat_close_input(&format);
+            return -1;
+        }
+    } else {
+        stream_index = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    }
     if (stream_index < 0) {
         avformat_close_input(&format);
         return 0;
@@ -1212,6 +1223,7 @@ static int write_converted_audio(
 
 int rig_play_audio(
     const char *path,
+    int audio_stream_index,
     const int *stop_flag,
     const int *pause_flag,
     const int *mute_flag,
@@ -1230,7 +1242,7 @@ int rig_play_audio(
     AVFormatContext *format = NULL;
     AVCodecContext *codec = NULL;
     int stream_index = -1;
-    int opened = open_audio_decoder(path, &format, &codec, &stream_index, err, err_len);
+    int opened = open_audio_decoder(path, audio_stream_index, &format, &codec, &stream_index, err, err_len);
     if (opened <= 0) {
         return opened;
     }

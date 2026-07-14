@@ -19,6 +19,10 @@ pub(crate) struct OverlayState {
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,
     pub(crate) visible: bool,
+    pub(crate) audio_available: bool,
+    pub(crate) selected_audio: Option<usize>,
+    pub(crate) audio_picker_open: bool,
+    pub(crate) audio_labels: Vec<&'static str>,
     pub(crate) subtitles_available: bool,
     pub(crate) selected_subtitle: Option<usize>,
     pub(crate) subtitle_picker_open: bool,
@@ -38,8 +42,16 @@ pub(crate) struct OverlayHitContext {
     pub(crate) height: u32,
     pub(crate) scale_percent: u32,
     pub(crate) duration: Option<Duration>,
+    pub(crate) audio_available: bool,
+    pub(crate) audio_count: usize,
     pub(crate) subtitles_available: bool,
     pub(crate) subtitle_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AudioPickerAction {
+    TogglePicker,
+    SelectTrack(usize),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,11 +114,13 @@ impl PlaybackOverlay {
             context.height,
             context.scale_percent,
             context.duration,
+            context.audio_available,
             context.subtitles_available,
         );
         progress_hit_ratio(metrics, point)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn progress_ratio_from_x(
         &mut self,
         width: u32,
@@ -114,9 +128,17 @@ impl PlaybackOverlay {
         scale_percent: u32,
         duration: Option<Duration>,
         subtitles_available: bool,
+        audio_available: bool,
         x: u32,
     ) -> f64 {
-        let metrics = self.metrics(width, height, scale_percent, duration, subtitles_available);
+        let metrics = self.metrics(
+            width,
+            height,
+            scale_percent,
+            duration,
+            audio_available,
+            subtitles_available,
+        );
         progress_ratio_for_x(metrics, x)
     }
 
@@ -130,9 +152,27 @@ impl PlaybackOverlay {
             context.height,
             context.scale_percent,
             context.duration,
+            context.audio_available,
             context.subtitles_available,
         );
         playback_button_hit(metrics, point)
+    }
+
+    pub(crate) fn audio_picker_action(
+        &mut self,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
+        picker_open: bool,
+    ) -> Option<AudioPickerAction> {
+        let metrics = self.metrics(
+            context.width,
+            context.height,
+            context.scale_percent,
+            context.duration,
+            context.audio_available,
+            context.subtitles_available,
+        );
+        audio_picker_action(metrics, point, picker_open, context.audio_count)
     }
 
     pub(crate) fn subtitle_picker_action(
@@ -146,6 +186,7 @@ impl PlaybackOverlay {
             context.height,
             context.scale_percent,
             context.duration,
+            context.audio_available,
             context.subtitles_available,
         );
         subtitle_picker_action(metrics, point, picker_open, context.subtitle_count)
@@ -157,6 +198,7 @@ impl PlaybackOverlay {
         height: u32,
         scale_percent: u32,
         duration: Option<Duration>,
+        audio_available: bool,
         subtitles_available: bool,
     ) -> OverlayMetrics {
         overlay_metrics(
@@ -164,6 +206,7 @@ impl PlaybackOverlay {
             height,
             scale_percent,
             duration,
+            audio_available,
             subtitles_available,
             self.font.as_mut(),
         )
@@ -183,6 +226,7 @@ struct OverlayMetrics {
     bar_height: u32,
     control_size: u32,
     control_y: u32,
+    audio_x: u32,
     subtitle_x: u32,
     time_x: u32,
     text_size: u32,
@@ -190,6 +234,7 @@ struct OverlayMetrics {
 }
 
 impl OverlayMetrics {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         width: u32,
         video_height: u32,
@@ -197,6 +242,7 @@ impl OverlayMetrics {
         fallback_text_scale: u32,
         text_height: u32,
         time_width: u32,
+        audio_available: bool,
         subtitles_available: bool,
     ) -> Self {
         let bar_height = bar_height_for_text(text_size).min(video_height.max(1));
@@ -231,17 +277,32 @@ impl OverlayMetrics {
             .saturating_add(control_gap)
             .min(width.saturating_sub(1));
         let content_right = width.saturating_sub(inner_x).max(inner_x.saturating_add(1));
+        let controls = u32::from(audio_available).saturating_add(u32::from(subtitles_available));
+        let controls_width = controls
+            .saturating_mul(control_size)
+            .saturating_add(controls.saturating_sub(1).saturating_mul(control_gap));
+        let controls_left = content_right.saturating_sub(controls_width);
+        let mut next_control_x = controls_left;
+        let audio_x = if audio_available {
+            let x = next_control_x;
+            next_control_x = next_control_x
+                .saturating_add(control_size)
+                .saturating_add(control_gap);
+            x
+        } else {
+            content_right
+        };
         let subtitle_x = if subtitles_available {
-            content_right.saturating_sub(control_size)
+            next_control_x
         } else {
             content_right
         };
         let bar_x = time_x
             .saturating_add(time_width)
             .saturating_add(control_gap)
-            .min(subtitle_x.saturating_sub(1));
-        let bar_right = if subtitles_available {
-            subtitle_x.saturating_sub(control_gap)
+            .min(controls_left.saturating_sub(1));
+        let bar_right = if controls > 0 {
+            controls_left.saturating_sub(control_gap)
         } else {
             content_right
         };
@@ -260,6 +321,7 @@ impl OverlayMetrics {
             bar_height,
             control_size,
             control_y,
+            audio_x,
             subtitle_x,
             time_x,
             text_size,
@@ -332,6 +394,7 @@ fn render_overlay_rgb(
         fallback_text_scale,
         text_height,
         time_width,
+        state.audio_available,
         state.subtitles_available,
     );
     let panel_width = width
@@ -404,6 +467,28 @@ fn render_overlay_rgb(
     }
 
     draw_playback_control(frame, width, height, metrics, state.paused);
+    if state.audio_available {
+        draw_audio_control(
+            frame,
+            width,
+            height,
+            metrics,
+            state.selected_audio.is_some(),
+        );
+        if state.audio_picker_open {
+            draw_track_picker(
+                font.as_deref_mut(),
+                frame,
+                width,
+                height,
+                metrics,
+                metrics.audio_x,
+                &state.audio_labels,
+                state.selected_audio,
+                false,
+            );
+        }
+    }
     if state.subtitles_available {
         draw_subtitle_control(
             frame,
@@ -413,14 +498,16 @@ fn render_overlay_rgb(
             state.selected_subtitle.is_some(),
         );
         if state.subtitle_picker_open {
-            draw_subtitle_picker(
+            draw_track_picker(
                 font.as_deref_mut(),
                 frame,
                 width,
                 height,
                 metrics,
+                metrics.subtitle_x,
                 &state.subtitle_labels,
                 state.selected_subtitle,
+                true,
             );
         }
     }
@@ -517,6 +604,7 @@ fn overlay_metrics(
     height: u32,
     scale_percent: u32,
     duration: Option<Duration>,
+    audio_available: bool,
     subtitles_available: bool,
     font: Option<&mut FontRenderer>,
 ) -> OverlayMetrics {
@@ -535,6 +623,7 @@ fn overlay_metrics(
         fallback_text_scale,
         text_height,
         time_width,
+        audio_available,
         subtitles_available,
     )
 }
@@ -614,6 +703,97 @@ fn draw_pause_icon(frame: &mut [u8], width: u32, height: u32, x: u32, y: u32, si
     }
 }
 
+fn draw_audio_control(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    active: bool,
+) {
+    draw_audio_icon(
+        frame,
+        width,
+        height,
+        metrics,
+        if active { 238 } else { 132 },
+    );
+}
+
+fn draw_audio_icon(frame: &mut [u8], width: u32, height: u32, metrics: OverlayMetrics, alpha: u8) {
+    let icon_width = (metrics.control_size * 4 / 5).max(14);
+    let icon_height = (metrics.control_size * 3 / 5).max(10);
+    let icon_x = metrics
+        .audio_x
+        .saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
+    let icon_y = metrics
+        .control_y
+        .saturating_add(metrics.control_size.saturating_sub(icon_height) / 2);
+    let radius = rounded_radius(icon_width, icon_height, icon_height / 4);
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(icon_x),
+            y: f64::from(icon_y),
+            width: f64::from(icon_width),
+            height: f64::from(icon_height),
+            radius: f64::from(radius),
+        },
+        TEXT_COLOR,
+        alpha,
+    );
+
+    let stroke = (icon_height / 8).max(2);
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(icon_x.saturating_add(stroke)),
+            y: f64::from(icon_y.saturating_add(stroke)),
+            width: f64::from(icon_width.saturating_sub(stroke.saturating_mul(2))),
+            height: f64::from(icon_height.saturating_sub(stroke.saturating_mul(2))),
+            radius: f64::from(radius.saturating_sub(stroke / 2)),
+        },
+        PANEL_COLOR,
+        255,
+    );
+
+    let bar_w = stroke.max(2);
+    let gap = stroke.max(2);
+    let total_w = bar_w
+        .saturating_mul(3)
+        .saturating_add(gap.saturating_mul(2));
+    let start_x = icon_x.saturating_add(icon_width.saturating_sub(total_w) / 2);
+    let base_y = icon_y
+        .saturating_add(icon_height)
+        .saturating_sub(stroke.saturating_mul(2));
+    let bar_heights = [
+        icon_height.saturating_mul(3) / 10,
+        icon_height.saturating_mul(5) / 10,
+        icon_height.saturating_mul(4) / 10,
+    ];
+    for (index, bar_h) in bar_heights.into_iter().enumerate() {
+        let bar_x = start_x.saturating_add((bar_w + gap).saturating_mul(index as u32));
+        let bar_y = base_y.saturating_sub(bar_h);
+        fill_rounded_rect(
+            frame,
+            width,
+            height,
+            RoundedRect {
+                x: f64::from(bar_x),
+                y: f64::from(bar_y),
+                width: f64::from(bar_w),
+                height: f64::from(bar_h),
+                radius: f64::from(bar_w),
+            },
+            TEXT_COLOR,
+            alpha,
+        );
+    }
+}
+
 fn draw_subtitle_control(
     frame: &mut [u8],
     width: u32,
@@ -630,24 +810,27 @@ fn draw_subtitle_control(
     );
 }
 
-fn draw_subtitle_picker(
+#[allow(clippy::too_many_arguments)]
+fn draw_track_picker(
     mut font: Option<&mut FontRenderer>,
     frame: &mut [u8],
     width: u32,
     height: u32,
     metrics: OverlayMetrics,
+    anchor_x: u32,
     labels: &[&str],
-    selected_subtitle: Option<usize>,
+    selected_track: Option<usize>,
+    include_off: bool,
 ) {
     let max_label_width = labels
         .iter()
         .copied()
-        .chain(std::iter::once("Off"))
+        .chain(include_off.then_some("Off"))
         .map(|label| picker_text_width(font.as_deref_mut(), label, metrics.fallback_text_scale))
         .max()
         .unwrap_or(0);
-    let picker_width = subtitle_picker_width(metrics, max_label_width);
-    let picker = subtitle_picker_rect(metrics, labels.len(), picker_width);
+    let picker_width = track_picker_width(metrics, anchor_x, max_label_width);
+    let picker = track_picker_rect(metrics, anchor_x, labels.len(), picker_width, include_off);
     let radius = rounded_radius(
         picker.right.saturating_sub(picker.left),
         picker.bottom.saturating_sub(picker.top),
@@ -669,7 +852,7 @@ fn draw_subtitle_picker(
     );
 
     let pad = picker_padding(metrics);
-    let row_height = subtitle_picker_row_height(metrics);
+    let row_height = track_picker_row_height(metrics);
     let marker_size = (metrics.text_size / 3).clamp(4, 7);
     let marker_x = picker.left.saturating_add(pad);
     let text_x = marker_x.saturating_add(marker_size).saturating_add(pad / 2);
@@ -679,7 +862,7 @@ fn draw_subtitle_picker(
             .top
             .saturating_add(pad)
             .saturating_add(row_height.saturating_mul(index as u32));
-        if selected_subtitle == Some(index) {
+        if selected_track == Some(index) {
             draw_picker_marker(
                 frame,
                 width,
@@ -710,33 +893,35 @@ fn draw_subtitle_picker(
         );
     }
 
-    let off_y = picker
-        .top
-        .saturating_add(pad)
-        .saturating_add(row_height.saturating_mul(labels.len() as u32));
-    if selected_subtitle.is_none() {
-        draw_picker_marker(
+    if include_off {
+        let off_y = picker
+            .top
+            .saturating_add(pad)
+            .saturating_add(row_height.saturating_mul(labels.len() as u32));
+        if selected_track.is_none() {
+            draw_picker_marker(
+                frame,
+                width,
+                height,
+                marker_x,
+                off_y,
+                row_height,
+                marker_size,
+            );
+        }
+        draw_overlay_text(
+            font,
             frame,
             width,
             height,
-            marker_x,
+            text_x,
             off_y,
-            row_height,
-            marker_size,
+            metrics.fallback_text_scale,
+            "Off",
+            TEXT_COLOR,
+            210,
         );
     }
-    draw_overlay_text(
-        font,
-        frame,
-        width,
-        height,
-        text_x,
-        off_y,
-        metrics.fallback_text_scale,
-        "Off",
-        TEXT_COLOR,
-        210,
-    );
 }
 
 fn draw_subtitle_icon(
@@ -883,6 +1068,31 @@ fn playback_button_hit(metrics: OverlayMetrics, point: OverlayHitPoint) -> bool 
     )
 }
 
+fn audio_picker_action(
+    metrics: OverlayMetrics,
+    point: OverlayHitPoint,
+    picker_open: bool,
+    audio_count: usize,
+) -> Option<AudioPickerAction> {
+    if picker_open {
+        let picker = track_picker_rect(
+            metrics,
+            metrics.audio_x,
+            audio_count,
+            track_picker_max_width(metrics, metrics.audio_x),
+            false,
+        );
+        for index in 0..audio_count {
+            if hitbox_intersects(point.cell, track_picker_track_rect(metrics, picker, index)) {
+                return Some(AudioPickerAction::SelectTrack(index));
+            }
+        }
+    }
+
+    hitbox_intersects(point.cell, audio_button_rect(metrics))
+        .then_some(AudioPickerAction::TogglePicker)
+}
+
 fn subtitle_picker_action(
     metrics: OverlayMetrics,
     point: OverlayHitPoint,
@@ -890,19 +1100,21 @@ fn subtitle_picker_action(
     subtitle_count: usize,
 ) -> Option<SubtitlePickerAction> {
     if picker_open {
-        let picker =
-            subtitle_picker_rect(metrics, subtitle_count, subtitle_picker_max_width(metrics));
+        let picker = track_picker_rect(
+            metrics,
+            metrics.subtitle_x,
+            subtitle_count,
+            track_picker_max_width(metrics, metrics.subtitle_x),
+            true,
+        );
         for index in 0..subtitle_count {
-            if hitbox_intersects(
-                point.cell,
-                subtitle_picker_track_rect(metrics, picker, index),
-            ) {
+            if hitbox_intersects(point.cell, track_picker_track_rect(metrics, picker, index)) {
                 return Some(SubtitlePickerAction::SelectTrack(index));
             }
         }
         if hitbox_intersects(
             point.cell,
-            subtitle_picker_off_rect(metrics, picker, subtitle_count),
+            track_picker_off_rect(metrics, picker, subtitle_count),
         ) {
             return Some(SubtitlePickerAction::SelectOff);
         }
@@ -910,6 +1122,15 @@ fn subtitle_picker_action(
 
     hitbox_intersects(point.cell, subtitle_button_rect(metrics))
         .then_some(SubtitlePickerAction::TogglePicker)
+}
+
+fn audio_button_rect(metrics: OverlayMetrics) -> HitboxRect {
+    HitboxRect {
+        left: metrics.audio_x,
+        top: metrics.control_y,
+        right: metrics.audio_x.saturating_add(metrics.control_size),
+        bottom: metrics.control_y.saturating_add(metrics.control_size),
+    }
 }
 
 fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
@@ -921,18 +1142,20 @@ fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
     }
 }
 
-fn subtitle_picker_rect(
+fn track_picker_rect(
     metrics: OverlayMetrics,
-    subtitle_count: usize,
+    anchor_x: u32,
+    track_count: usize,
     picker_width: u32,
+    include_off: bool,
 ) -> HitboxRect {
     let pad = picker_padding(metrics);
-    let row_height = subtitle_picker_row_height(metrics);
+    let row_height = track_picker_row_height(metrics);
+    let row_count = track_count.saturating_add(usize::from(include_off));
     let picker_height = row_height
-        .saturating_mul(subtitle_count.saturating_add(1) as u32)
+        .saturating_mul(row_count as u32)
         .saturating_add(pad.saturating_mul(2));
-    let right = metrics
-        .subtitle_x
+    let right = anchor_x
         .saturating_add(metrics.control_size)
         .max(picker_width);
     let left = right.saturating_sub(picker_width);
@@ -948,7 +1171,7 @@ fn subtitle_picker_rect(
     }
 }
 
-fn subtitle_picker_width(metrics: OverlayMetrics, label_width: u32) -> u32 {
+fn track_picker_width(metrics: OverlayMetrics, anchor_x: u32, label_width: u32) -> u32 {
     let pad = picker_padding(metrics);
     let marker_size = (metrics.text_size / 3).clamp(4, 7);
     let desired = pad
@@ -958,24 +1181,23 @@ fn subtitle_picker_width(metrics: OverlayMetrics, label_width: u32) -> u32 {
         .saturating_add(label_width)
         .max(scaled_normal_pixels(132, metrics.text_size))
         .max(metrics.control_size);
-    desired.min(subtitle_picker_max_width(metrics).max(1))
+    desired.min(track_picker_max_width(metrics, anchor_x).max(1))
 }
 
-fn subtitle_picker_max_width(metrics: OverlayMetrics) -> u32 {
-    metrics
-        .subtitle_x
+fn track_picker_max_width(metrics: OverlayMetrics, anchor_x: u32) -> u32 {
+    anchor_x
         .saturating_add(metrics.control_size)
         .saturating_sub(metrics.inset_x)
         .max(metrics.control_size)
 }
 
-fn subtitle_picker_track_rect(
+fn track_picker_track_rect(
     metrics: OverlayMetrics,
     picker: HitboxRect,
     index: usize,
 ) -> HitboxRect {
     let pad = picker_padding(metrics);
-    let row_height = subtitle_picker_row_height(metrics);
+    let row_height = track_picker_row_height(metrics);
     let top = picker
         .top
         .saturating_add(pad)
@@ -988,19 +1210,19 @@ fn subtitle_picker_track_rect(
     }
 }
 
-fn subtitle_picker_off_rect(
+fn track_picker_off_rect(
     metrics: OverlayMetrics,
     picker: HitboxRect,
-    subtitle_count: usize,
+    track_count: usize,
 ) -> HitboxRect {
-    subtitle_picker_track_rect(metrics, picker, subtitle_count)
+    track_picker_track_rect(metrics, picker, track_count)
 }
 
 fn picker_padding(metrics: OverlayMetrics) -> u32 {
     (horizontal_padding_for_text(metrics.text_size) / 2).max(6)
 }
 
-fn subtitle_picker_row_height(metrics: OverlayMetrics) -> u32 {
+fn track_picker_row_height(metrics: OverlayMetrics) -> u32 {
     metrics
         .text_size
         .max(7 * metrics.fallback_text_scale)
@@ -1638,6 +1860,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
                 visible: true,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
@@ -1677,6 +1903,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: true,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
@@ -1717,6 +1947,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: true,
                 visible: true,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
@@ -1772,6 +2006,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: false,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
@@ -1805,6 +2043,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: false,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
@@ -1841,6 +2083,10 @@ mod tests {
                 duration: Some(Duration::from_secs(120)),
                 paused: false,
                 visible: true,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
@@ -1979,22 +2225,46 @@ mod tests {
     }
 
     #[test]
+    fn audio_button_hit_test_toggles_picker() {
+        let metrics = test_metrics_with_audio_and_subtitles(320, 180);
+
+        assert_eq!(
+            audio_picker_action(
+                metrics,
+                hit_point(
+                    metrics.audio_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size / 2,
+                ),
+                false,
+                2,
+            ),
+            Some(AudioPickerAction::TogglePicker)
+        );
+    }
+
+    #[test]
     fn subtitle_picker_width_expands_and_clamps_to_canvas() {
         let metrics = test_metrics_with_subtitles(320, 180);
-        let short = subtitle_picker_width(metrics, 20);
-        let long = subtitle_picker_width(metrics, 600);
+        let short = track_picker_width(metrics, metrics.subtitle_x, 20);
+        let long = track_picker_width(metrics, metrics.subtitle_x, 600);
 
         assert!(long > short);
-        assert_eq!(long, subtitle_picker_max_width(metrics));
+        assert_eq!(long, track_picker_max_width(metrics, metrics.subtitle_x));
     }
 
     #[test]
     fn subtitle_picker_selects_track_and_off_rows() {
         let metrics = test_metrics_with_subtitles(320, 180);
-        let picker = subtitle_picker_rect(metrics, 2, subtitle_picker_max_width(metrics));
-        let first = subtitle_picker_track_rect(metrics, picker, 0);
-        let second = subtitle_picker_track_rect(metrics, picker, 1);
-        let off = subtitle_picker_off_rect(metrics, picker, 2);
+        let picker = track_picker_rect(
+            metrics,
+            metrics.subtitle_x,
+            2,
+            track_picker_max_width(metrics, metrics.subtitle_x),
+            true,
+        );
+        let first = track_picker_track_rect(metrics, picker, 0);
+        let second = track_picker_track_rect(metrics, picker, 1);
+        let off = track_picker_off_rect(metrics, picker, 2);
 
         assert_eq!(
             subtitle_picker_action(metrics, hit_point(first.left + 1, first.top + 1), true, 2),
@@ -2007,6 +2277,47 @@ mod tests {
         assert_eq!(
             subtitle_picker_action(metrics, hit_point(off.left + 1, off.top + 1), true, 2),
             Some(SubtitlePickerAction::SelectOff)
+        );
+        assert_eq!(
+            subtitle_picker_action(metrics, hit_point(metrics.bar_x, metrics.bar_y), true, 2),
+            None
+        );
+    }
+
+    #[test]
+    fn audio_picker_selects_track_rows_without_off_row() {
+        let metrics = test_metrics_with_audio_and_subtitles(320, 180);
+        let picker = track_picker_rect(
+            metrics,
+            metrics.audio_x,
+            2,
+            track_picker_max_width(metrics, metrics.audio_x),
+            false,
+        );
+        let first = track_picker_track_rect(metrics, picker, 0);
+        let second = track_picker_track_rect(metrics, picker, 1);
+        let off_space = track_picker_off_rect(metrics, picker, 2);
+
+        assert_eq!(
+            audio_picker_action(metrics, hit_point(first.left + 1, first.top + 1), true, 2),
+            Some(AudioPickerAction::SelectTrack(0))
+        );
+        assert_eq!(
+            audio_picker_action(metrics, hit_point(second.left + 1, second.top + 1), true, 2),
+            Some(AudioPickerAction::SelectTrack(1))
+        );
+        assert_eq!(
+            audio_picker_action(
+                metrics,
+                hit_point(off_space.left + 1, off_space.top + 1),
+                true,
+                2,
+            ),
+            None
+        );
+        assert_eq!(
+            audio_picker_action(metrics, hit_point(metrics.bar_x, metrics.bar_y), true, 2),
+            None
         );
     }
 
@@ -2081,11 +2392,15 @@ mod tests {
     }
 
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {
-        test_metrics_with_scale_and_subtitles(width, height, 100, false)
+        test_metrics_with_scale_and_controls(width, height, 100, false, false)
+    }
+
+    fn test_metrics_with_audio_and_subtitles(width: u32, height: u32) -> OverlayMetrics {
+        test_metrics_with_scale_and_controls(width, height, 100, true, true)
     }
 
     fn test_metrics_with_subtitles(width: u32, height: u32) -> OverlayMetrics {
-        test_metrics_with_scale_and_subtitles(width, height, 100, true)
+        test_metrics_with_scale_and_controls(width, height, 100, false, true)
     }
 
     fn hit_point(x: u32, y: u32) -> OverlayHitPoint {
@@ -2105,13 +2420,14 @@ mod tests {
     }
 
     fn test_metrics_with_scale(width: u32, height: u32, scale_percent: u32) -> OverlayMetrics {
-        test_metrics_with_scale_and_subtitles(width, height, scale_percent, false)
+        test_metrics_with_scale_and_controls(width, height, scale_percent, false, false)
     }
 
-    fn test_metrics_with_scale_and_subtitles(
+    fn test_metrics_with_scale_and_controls(
         width: u32,
         height: u32,
         scale_percent: u32,
+        audio_available: bool,
         subtitles_available: bool,
     ) -> OverlayMetrics {
         let text_size = text_size(width, height, scale_percent);
@@ -2126,6 +2442,7 @@ mod tests {
             fallback_text_scale,
             text_height,
             time_width,
+            audio_available,
             subtitles_available,
         )
     }

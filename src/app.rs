@@ -14,10 +14,10 @@ use crate::{
     drop_target::{draw_drop_target, is_remote_url_text, media_candidates_from_text},
     font_system::FontSystem,
     input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
-    media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
+    media::{AudioPlayer, FrameStatus, VideoDecoder, load_audio_tracks, probe_video},
     overlay::{
-        HitboxRect, OverlayHitContext, OverlayHitPoint, OverlayState, PlaybackOverlay,
-        SubtitlePickerAction,
+        AudioPickerAction, HitboxRect, OverlayHitContext, OverlayHitPoint, OverlayState,
+        PlaybackOverlay, SubtitlePickerAction,
     },
     subtitle::{
         SubtitleRenderer, SubtitleTrack, load_embedded_subtitle_tracks, sidecar_subtitle_path,
@@ -111,6 +111,16 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
     ) {
         external_subtitle_paths.push((normalized_subtitle_path(&path), 0));
     }
+    let mut audio_tracks = load_audio_tracks(&path);
+    if audio_tracks.is_empty() && source.has_audio {
+        audio_tracks.push(crate::media::AudioTrack::default_track());
+    }
+    let audio_labels = audio_tracks
+        .iter()
+        .map(|track| Box::leak(track.label().to_string().into_boxed_str()) as &'static str)
+        .collect::<Vec<_>>();
+    let mut selected_audio = (!audio_tracks.is_empty()).then_some(0_usize);
+    let mut audio_picker_open = false;
     let mut subtitle_picker_open = false;
     let media_title = media_title(&path);
     let (mut target, mut canvas) = terminal_target_and_canvas(source.width, source.height);
@@ -118,7 +128,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
     let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
     let mut muted = false;
     let mut audio = if source.has_audio {
-        Some(AudioPlayer::spawn(&path, muted)?)
+        Some(AudioPlayer::spawn(
+            &path,
+            selected_audio_stream(&audio_tracks, selected_audio),
+            muted,
+        )?)
     } else {
         None
     };
@@ -296,6 +310,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     &mut decoder,
                     &mut audio,
                     &mut audio_done,
+                    selected_audio_stream(&audio_tracks, selected_audio),
                     seek_target,
                     paused,
                     muted,
@@ -357,6 +372,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     paused,
                     overlay_visible_until,
                     status_message,
+                    !audio_tracks.is_empty(),
+                    selected_audio,
+                    audio_picker_open,
+                    audio_labels.clone(),
                     !subtitle_tracks.is_empty(),
                     selected_subtitle,
                     subtitle_picker_open,
@@ -391,6 +410,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             height: canvas.height,
             scale_percent: canvas.overlay_scale_percent,
             duration: source.duration,
+            audio_available: !audio_tracks.is_empty(),
+            audio_count: audio_tracks.len(),
             subtitles_available: !subtitle_tracks.is_empty(),
             subtitle_count: subtitle_tracks.len(),
         };
@@ -399,6 +420,34 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 PlaybackMouse::Down { column, row } => {
                     let point = mouse_canvas_position(column, row, canvas);
                     if let Some(action) = point.and_then(|point| {
+                        overlay.audio_picker_action(hit_context, point, audio_picker_open)
+                    }) {
+                        scrub_position = None;
+                        overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                        match action {
+                            AudioPickerAction::TogglePicker => {
+                                audio_picker_open = !audio_picker_open;
+                                if audio_picker_open {
+                                    subtitle_picker_open = false;
+                                }
+                            }
+                            AudioPickerAction::SelectTrack(index) => {
+                                selected_audio = Some(index);
+                                audio_picker_open = false;
+                                switch_audio_track(
+                                    &path,
+                                    &audio_tracks,
+                                    selected_audio,
+                                    &mut audio,
+                                    &mut audio_done,
+                                    playback_position,
+                                    paused,
+                                    muted,
+                                )?;
+                            }
+                        }
+                        redraw_current_frame = have_frame;
+                    } else if let Some(action) = point.and_then(|point| {
                         overlay.subtitle_picker_action(hit_context, point, subtitle_picker_open)
                     }) {
                         scrub_position = None;
@@ -406,6 +455,9 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         match action {
                             SubtitlePickerAction::TogglePicker => {
                                 subtitle_picker_open = !subtitle_picker_open;
+                                if subtitle_picker_open {
+                                    audio_picker_open = false;
+                                }
                             }
                             SubtitlePickerAction::SelectTrack(index) => {
                                 selected_subtitle = Some(index);
@@ -427,15 +479,18 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     {
                         scrub_position = None;
                         subtitle_picker_open = false;
+                        audio_picker_open = false;
                         overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                         toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
                         redraw_current_frame = have_frame;
                     } else {
+                        let picker_was_open = audio_picker_open || subtitle_picker_open;
+                        audio_picker_open = false;
                         subtitle_picker_open = false;
                         scrub_position = point
                             .and_then(|point| overlay.progress_hit_test(hit_context, point))
                             .and_then(|ratio| seek_from_progress_ratio(ratio, source.duration));
-                        if scrub_position.is_some() {
+                        if picker_was_open || scrub_position.is_some() {
                             redraw_current_frame = have_frame;
                         }
                     }
@@ -449,6 +504,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         canvas.overlay_scale_percent,
                         source.duration,
                         !subtitle_tracks.is_empty(),
+                        !audio_tracks.is_empty(),
                         x,
                     );
                     scrub_position = seek_from_progress_ratio(ratio, source.duration);
@@ -463,6 +519,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         canvas.overlay_scale_percent,
                         source.duration,
                         !subtitle_tracks.is_empty(),
+                        !audio_tracks.is_empty(),
                         x,
                     );
                     let target = seek_from_progress_ratio(ratio, source.duration);
@@ -491,6 +548,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 &mut decoder,
                 &mut audio,
                 &mut audio_done,
+                selected_audio_stream(&audio_tracks, selected_audio),
                 seek_target,
                 paused,
                 muted,
@@ -523,6 +581,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 paused,
                 overlay_visible_until,
                 status_message,
+                !audio_tracks.is_empty(),
+                selected_audio,
+                audio_picker_open,
+                audio_labels.clone(),
                 !subtitle_tracks.is_empty(),
                 selected_subtitle,
                 subtitle_picker_open,
@@ -562,6 +624,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         paused,
                         overlay_visible_until,
                         status_message,
+                        !audio_tracks.is_empty(),
+                        selected_audio,
+                        audio_picker_open,
+                        audio_labels.clone(),
                         !subtitle_tracks.is_empty(),
                         selected_subtitle,
                         subtitle_picker_open,
@@ -616,6 +682,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     paused,
                     overlay_visible_until,
                     status_message,
+                    !audio_tracks.is_empty(),
+                    selected_audio,
+                    audio_picker_open,
+                    audio_labels.clone(),
                     !subtitle_tracks.is_empty(),
                     selected_subtitle,
                     subtitle_picker_open,
@@ -662,6 +732,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         paused,
                         overlay_visible_until,
                         status_message,
+                        !audio_tracks.is_empty(),
+                        selected_audio,
+                        audio_picker_open,
+                        audio_labels.clone(),
                         !subtitle_tracks.is_empty(),
                         selected_subtitle,
                         subtitle_picker_open,
@@ -828,6 +902,7 @@ fn seek_playback(
     decoder: &mut VideoDecoder,
     audio: &mut Option<AudioPlayer>,
     audio_done: &mut bool,
+    audio_stream_index: Option<usize>,
     position: Duration,
     paused: bool,
     muted: bool,
@@ -839,7 +914,13 @@ fn seek_playback(
             audio.set_paused(paused);
             audio.set_muted(muted);
         } else {
-            *audio = Some(AudioPlayer::spawn_at(path, position, paused, muted)?);
+            *audio = Some(AudioPlayer::spawn_at(
+                path,
+                audio_stream_index,
+                position,
+                paused,
+                muted,
+            )?);
         }
         *audio_done = false;
     }
@@ -870,6 +951,10 @@ fn overlay_state(
     paused: bool,
     visible_until: Option<Instant>,
     status_message: Option<StatusMessage>,
+    audio_available: bool,
+    selected_audio: Option<usize>,
+    audio_picker_open: bool,
+    audio_labels: Vec<&'static str>,
     subtitles_available: bool,
     selected_subtitle: Option<usize>,
     subtitle_picker_open: bool,
@@ -882,7 +967,12 @@ fn overlay_state(
         duration,
         paused,
         visible: overlay_visible(paused, scrub_position.is_some(), visible_until, now)
+            || audio_picker_open
             || subtitle_picker_open,
+        audio_available,
+        selected_audio,
+        audio_picker_open,
+        audio_labels,
         subtitles_available,
         selected_subtitle,
         subtitle_picker_open,
@@ -900,6 +990,45 @@ fn media_title(path: &Path) -> &'static str {
         .to_string_lossy()
         .into_owned();
     Box::leak(text.into_boxed_str())
+}
+
+fn selected_audio_stream(
+    tracks: &[crate::media::AudioTrack],
+    selected_audio: Option<usize>,
+) -> Option<usize> {
+    selected_audio
+        .and_then(|index| tracks.get(index))
+        .map(|track| track.stream_index())
+        .filter(|stream_index| *stream_index != usize::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn switch_audio_track(
+    path: &Path,
+    tracks: &[crate::media::AudioTrack],
+    selected_audio: Option<usize>,
+    audio: &mut Option<AudioPlayer>,
+    audio_done: &mut bool,
+    position: Duration,
+    paused: bool,
+    muted: bool,
+) -> Result<()> {
+    if let Some(player) = audio.as_mut() {
+        player.stop()?;
+    }
+    *audio = selected_audio
+        .map(|_| {
+            AudioPlayer::spawn_at(
+                path,
+                selected_audio_stream(tracks, selected_audio),
+                position,
+                paused,
+                muted,
+            )
+        })
+        .transpose()?;
+    *audio_done = selected_audio.is_none();
+    Ok(())
 }
 
 fn active_subtitle_track(
@@ -1653,6 +1782,10 @@ mod tests {
             None,
             false,
             Vec::new(),
+            false,
+            None,
+            false,
+            Vec::new(),
             "movie.mp4",
         );
 
@@ -1660,6 +1793,13 @@ mod tests {
         assert!(state.visible);
         assert_eq!(state.status_message, None);
         assert_eq!(state.media_title, Some("movie.mp4"));
+    }
+
+    #[test]
+    fn selected_audio_stream_uses_default_when_probe_metadata_is_missing() {
+        let tracks = vec![crate::media::AudioTrack::default_track()];
+
+        assert_eq!(selected_audio_stream(&tracks, Some(0)), None);
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::{
     io::{self, ErrorKind},
     os::unix::ffi::OsStrExt,
     path::Path,
+    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicI32, AtomicI64, Ordering},
@@ -63,6 +64,7 @@ unsafe extern "C" {
     fn rig_video_decoder_close(decoder: *mut RigVideoDecoderOpaque);
     fn rig_play_audio(
         path: *const c_char,
+        audio_stream_index: c_int,
         stop_flag: *const c_int,
         pause_flag: *const c_int,
         mute_flag: *const c_int,
@@ -117,6 +119,182 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
             .map(Duration::from_secs_f64),
         has_audio: info.has_audio != 0,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AudioTrack {
+    stream_index: usize,
+    label: String,
+}
+
+impl AudioTrack {
+    pub(crate) fn default_track() -> Self {
+        Self {
+            stream_index: usize::MAX,
+            label: "Default".to_string(),
+        }
+    }
+
+    pub(crate) fn stream_index(&self) -> usize {
+        self.stream_index
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+pub(crate) fn load_audio_tracks(path: &Path) -> Vec<AudioTrack> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("a")
+        .arg("-show_entries")
+        .arg("stream=index,codec_name,channels,channel_layout:stream_tags=language,title:stream_disposition=default")
+        .arg("-of")
+        .arg("compact=p=0:nk=0")
+        .arg(path)
+        .output();
+
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .enumerate()
+        .filter_map(|(fallback, line)| parse_audio_track(line, fallback))
+        .collect()
+}
+
+#[derive(Default)]
+struct AudioTrackProbe {
+    stream_index: Option<usize>,
+    codec: Option<String>,
+    language: Option<String>,
+    title: Option<String>,
+    channels: Option<u32>,
+    channel_layout: Option<String>,
+    default: bool,
+}
+
+fn parse_audio_track(line: &str, fallback_index: usize) -> Option<AudioTrack> {
+    let mut probe = AudioTrackProbe::default();
+    for field in line.split('|') {
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
+        match key {
+            "index" => probe.stream_index = value.parse().ok(),
+            "codec_name" => probe.codec = non_empty(value),
+            "channels" => probe.channels = value.parse().ok(),
+            "channel_layout" => probe.channel_layout = non_empty(value),
+            "tag:language" => probe.language = normalize_audio_language(value),
+            "tag:title" => probe.title = non_empty(value),
+            "disposition:default" => probe.default = value == "1",
+            _ => {}
+        }
+    }
+
+    let stream_index = probe.stream_index?;
+    Some(AudioTrack {
+        stream_index,
+        label: audio_track_label(&probe, fallback_index),
+    })
+}
+
+fn audio_track_label(track: &AudioTrackProbe, fallback_index: usize) -> String {
+    let mut parts = Vec::<String>::new();
+    let title = track.title.as_deref();
+    if let Some(language) = track
+        .language
+        .as_deref()
+        .filter(|language| !title_mentions(title, language))
+    {
+        parts.push(language.to_string());
+    }
+    if let Some(title) =
+        title.filter(|title| !parts.iter().any(|part| part.eq_ignore_ascii_case(title)))
+    {
+        parts.push(title.to_string());
+    }
+    if let Some(channels) = audio_channel_label(track.channels, track.channel_layout.as_deref())
+        .filter(|channels| !title_mentions_channel(title, channels, track.channels))
+    {
+        parts.push(channels);
+    }
+    if let Some(codec) = track.codec.as_deref() {
+        parts.push(codec.to_uppercase());
+    }
+    if track.default {
+        parts.push("Default".to_string());
+    }
+    if parts.is_empty() {
+        format!("Track {}", fallback_index + 1)
+    } else {
+        parts.join(" — ")
+    }
+}
+
+fn title_mentions(title: Option<&str>, value: &str) -> bool {
+    title.is_some_and(|title| {
+        title
+            .to_ascii_lowercase()
+            .contains(&value.to_ascii_lowercase())
+    })
+}
+
+fn title_mentions_channel(title: Option<&str>, value: &str, channels: Option<u32>) -> bool {
+    if title_mentions(title, value) {
+        return true;
+    }
+    let Some(title) = title.map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    match channels {
+        Some(1) => title.contains("1.0") || title.contains("mono"),
+        Some(2) => title.contains("2.0") || title.contains("stereo"),
+        Some(6) => title.contains("5.1"),
+        Some(8) => title.contains("7.1"),
+        Some(value) => title.contains(&format!("{value}ch")),
+        None => false,
+    }
+}
+
+fn audio_channel_label(channels: Option<u32>, layout: Option<&str>) -> Option<String> {
+    if let Some(layout) = layout.filter(|layout| !layout.is_empty() && *layout != "unknown") {
+        let layout = layout.replace(['(', ')'], " ");
+        return Some(match layout.trim() {
+            "mono" => "Mono".to_string(),
+            "stereo" => "Stereo".to_string(),
+            other => other.split_whitespace().collect::<Vec<_>>().join(" "),
+        });
+    }
+    match channels {
+        Some(1) => Some("Mono".to_string()),
+        Some(2) => Some("Stereo".to_string()),
+        Some(value) => Some(format!("{value}ch")),
+        None => None,
+    }
+}
+
+fn normalize_audio_language(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "und" => None,
+        "eng" | "en" => Some("English".to_string()),
+        "jpn" | "ja" | "jp" => Some("Japanese".to_string()),
+        "spa" | "es" => Some("Spanish".to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && value != "N/A").then(|| value.to_string())
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -579,17 +757,28 @@ pub(crate) struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub(crate) fn spawn(path: &Path, muted: bool) -> Result<Self> {
-        Self::spawn_at(path, Duration::ZERO, false, muted)
+    pub(crate) fn spawn(
+        path: &Path,
+        audio_stream_index: Option<usize>,
+        muted: bool,
+    ) -> Result<Self> {
+        Self::spawn_at(path, audio_stream_index, Duration::ZERO, false, muted)
     }
 
     pub(crate) fn spawn_at(
         path: &Path,
+        audio_stream_index: Option<usize>,
         position: Duration,
         paused: bool,
         muted: bool,
     ) -> Result<Self> {
         let path = path_cstring(path)?;
+        let audio_stream_index = audio_stream_index
+            .map(i32::try_from)
+            .transpose()
+            .context("audio stream index is too large")?
+            .filter(|index| *index >= 0)
+            .unwrap_or(-1);
         let stop = Arc::new(AtomicI32::new(0));
         let stop_thread = Arc::clone(&stop);
         let pause = Arc::new(AtomicI32::new(i32::from(paused)));
@@ -605,6 +794,7 @@ impl AudioPlayer {
             let status = unsafe {
                 rig_play_audio(
                     path.as_ptr(),
+                    audio_stream_index,
                     stop_thread.as_ptr(),
                     pause_thread.as_ptr(),
                     mute_thread.as_ptr(),
@@ -793,6 +983,27 @@ mod tests {
         let error = ErrorBuffer::new();
 
         assert_eq!(error.message("fallback"), "fallback");
+    }
+
+    #[test]
+    fn parses_audio_track_labels_from_ffprobe_output() {
+        let track = parse_audio_track(
+            "index=2|codec_name=aac|channels=6|channel_layout=5.1|tag:language=jpn|tag:title=Japanese 5.1|disposition:default=1",
+            0,
+        )
+        .expect("audio track should parse");
+
+        assert_eq!(track.stream_index(), 2);
+        assert_eq!(track.label(), "Japanese 5.1 — AAC — Default");
+    }
+
+    #[test]
+    fn audio_track_label_falls_back_to_track_number() {
+        let track = parse_audio_track("index=7|codec_name=|channels=N/A", 2)
+            .expect("audio track should parse");
+
+        assert_eq!(track.stream_index(), 7);
+        assert_eq!(track.label(), "Track 3");
     }
 
     #[test]

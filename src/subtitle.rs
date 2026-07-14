@@ -571,10 +571,8 @@ fn is_ass_drawing(text: &str) -> bool {
         if ch != '\\' {
             continue;
         }
-        if matches!(chars.next(), Some('p' | 'P')) {
-            if matches!(chars.peek(), Some('1'..='9')) {
-                return true;
-            }
+        if matches!(chars.next(), Some('p' | 'P')) && matches!(chars.peek(), Some('1'..='9')) {
+            return true;
         }
     }
     false
