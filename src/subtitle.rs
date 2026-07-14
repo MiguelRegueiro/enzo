@@ -15,6 +15,16 @@ use crate::{
 const TEXT_COLOR: [u8; 3] = [255, 255, 255];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
 const MAX_SUBTITLE_WIDTH_RATIO: f64 = 0.84;
+const TEXT_SUBTITLE_CODECS: &[&str] = &[
+    "ass",
+    "ssa",
+    "subrip",
+    "srt",
+    "text",
+    "mov_text",
+    "webvtt",
+    "hdmv_text_subtitle",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SubtitleCue {
@@ -32,9 +42,8 @@ pub(crate) struct SubtitleTrack {
 
 impl SubtitleTrack {
     pub(crate) fn load(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("failed to read subtitle file {}", path.display()))?;
-        let cues = parse_srt(&text)
+        let text = load_subtitle_text(path)?;
+        let cues = parse_subtitle_text(path, &text)
             .with_context(|| format!("failed to parse subtitle file {}", path.display()))?;
         if cues.is_empty() {
             bail!("subtitle file has no cues: {}", path.display());
@@ -60,13 +69,21 @@ impl SubtitleTrack {
         &self.label
     }
 
-    fn active_lines(&self, position: Duration) -> Option<&[String]> {
-        let index = self
-            .cues
-            .partition_point(|cue| cue.start <= position)
-            .checked_sub(1)?;
-        let cue = &self.cues[index];
-        (position < cue.end).then_some(cue.lines.as_slice())
+    fn active_lines(&self, position: Duration) -> Option<Vec<String>> {
+        let mut lines = Vec::new();
+        let end = self.cues.partition_point(|cue| cue.start <= position);
+        for cue in self.cues[..end].iter().rev() {
+            if position >= cue.end {
+                continue;
+            }
+            for line in &cue.lines {
+                if !lines.contains(line) {
+                    lines.push(line.clone());
+                }
+            }
+        }
+        lines.reverse();
+        (!lines.is_empty()).then_some(lines)
     }
 }
 
@@ -76,8 +93,10 @@ pub(crate) fn sidecar_subtitle_path(media_path: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let path = media_path.with_extension("srt");
-    path.is_file().then_some(path)
+    ["srt", "ass", "ssa", "vtt"]
+        .into_iter()
+        .map(|extension| media_path.with_extension(extension))
+        .find(|path| path.is_file())
 }
 
 pub(crate) fn load_embedded_subtitle_tracks(media_path: &Path) -> Result<Vec<SubtitleTrack>> {
@@ -89,8 +108,11 @@ pub(crate) fn load_embedded_subtitle_tracks(media_path: &Path) -> Result<Vec<Sub
     let streams = embedded_subtitle_streams(media_path);
     let mut tracks = Vec::new();
     for (fallback_index, stream) in streams.into_iter().enumerate() {
+        if !stream.is_text() {
+            continue;
+        }
         let subtitle_index = stream.subtitle_index.unwrap_or(fallback_index);
-        let path = embedded_subtitle_temp_path(subtitle_index);
+        let path = embedded_subtitle_temp_path(subtitle_index, stream.extraction_extension());
         let output = Command::new("ffmpeg")
             .arg("-nostdin")
             .arg("-v")
@@ -101,7 +123,7 @@ pub(crate) fn load_embedded_subtitle_tracks(media_path: &Path) -> Result<Vec<Sub
             .arg("-map")
             .arg(format!("0:s:{subtitle_index}"))
             .arg("-c:s")
-            .arg("srt")
+            .arg(stream.extraction_codec())
             .arg(&path)
             .output();
 
@@ -126,6 +148,7 @@ pub(crate) fn load_embedded_subtitle_tracks(media_path: &Path) -> Result<Vec<Sub
 #[derive(Clone, Debug, Default)]
 struct EmbeddedSubtitleStream {
     subtitle_index: Option<usize>,
+    codec: Option<String>,
     language: Option<String>,
     title: Option<String>,
     default: bool,
@@ -136,6 +159,29 @@ impl EmbeddedSubtitleStream {
     fn label(&self) -> String {
         subtitle_label(self.language.as_deref(), self.title.as_deref(), "Embedded")
     }
+
+    fn is_text(&self) -> bool {
+        self.codec
+            .as_deref()
+            .map(|codec| TEXT_SUBTITLE_CODECS.contains(&codec))
+            .unwrap_or(true)
+    }
+
+    fn extraction_codec(&self) -> &'static str {
+        if matches!(self.codec.as_deref(), Some("ass" | "ssa")) {
+            "ass"
+        } else {
+            "srt"
+        }
+    }
+
+    fn extraction_extension(&self) -> &'static str {
+        if matches!(self.codec.as_deref(), Some("ass" | "ssa")) {
+            "ass"
+        } else {
+            "srt"
+        }
+    }
 }
 
 fn embedded_subtitle_streams(media_path: &Path) -> Vec<EmbeddedSubtitleStream> {
@@ -145,7 +191,7 @@ fn embedded_subtitle_streams(media_path: &Path) -> Vec<EmbeddedSubtitleStream> {
         .arg("-select_streams")
         .arg("s")
         .arg("-show_entries")
-        .arg("stream=index:stream_tags=language,title:stream_disposition=default,forced")
+        .arg("stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced")
         .arg("-of")
         .arg("compact=p=0:nk=0")
         .arg(media_path)
@@ -189,6 +235,7 @@ fn parse_embedded_subtitle_stream(line: &str, subtitle_index: usize) -> Embedded
             continue;
         };
         match key {
+            "codec_name" => stream.codec = Some(value.to_string()),
             "tag:language" => stream.language = normalize_language_tag(value),
             "tag:title" => stream.title = Some(value.to_string()),
             "disposition:default" => stream.default = value == "1",
@@ -207,15 +254,96 @@ fn subtitle_label(language: Option<&str>, title: Option<&str>, fallback: &str) -
     }
 }
 
-fn embedded_subtitle_temp_path(subtitle_index: usize) -> PathBuf {
+fn embedded_subtitle_temp_path(subtitle_index: usize, extension: &str) -> PathBuf {
+    subtitle_temp_path("embedded", subtitle_index, extension)
+}
+
+fn converted_subtitle_temp_path(path: &Path) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("external");
+    subtitle_temp_path(stem, 0, "srt")
+}
+
+fn subtitle_temp_path(label: &str, subtitle_index: usize, extension: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
+    let label = label
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>();
     env::temp_dir().join(format!(
-        "rigoberto-embedded-subtitle-{}-{subtitle_index}-{nonce}.srt",
-        process::id()
+        "rigoberto-subtitle-{label}-{}-{subtitle_index}-{nonce}.{extension}",
+        process::id(),
     ))
+}
+
+fn load_subtitle_text(path: &Path) -> Result<String> {
+    if matches_subtitle_extension(path, &["srt", "ass", "ssa"]) {
+        return fs::read_to_string(path)
+            .with_context(|| format!("failed to read subtitle file {}", path.display()));
+    }
+
+    if path_extension_is(path, "vtt") {
+        return convert_subtitle_file_to_srt_text(path);
+    }
+
+    fs::read_to_string(path)
+        .with_context(|| format!("failed to read subtitle file {}", path.display()))
+}
+
+fn convert_subtitle_file_to_srt_text(path: &Path) -> Result<String> {
+    let output_path = converted_subtitle_temp_path(path);
+    let output = Command::new("ffmpeg")
+        .arg("-nostdin")
+        .arg("-v")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(path)
+        .arg("-c:s")
+        .arg("srt")
+        .arg(&output_path)
+        .output()
+        .with_context(|| format!("failed to run ffmpeg for subtitle file {}", path.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_file(&output_path);
+        bail!(
+            "failed to convert subtitle file {} to srt: {}",
+            path.display(),
+            stderr.trim()
+        );
+    }
+
+    let text = fs::read_to_string(&output_path).with_context(|| {
+        format!(
+            "failed to read converted subtitle file {}",
+            output_path.display()
+        )
+    });
+    let _ = fs::remove_file(&output_path);
+    text
+}
+
+fn path_extension_is(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
+}
+
+fn matches_subtitle_extension(path: &Path, extensions: &[&str]) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extensions
+                .iter()
+                .any(|expected| extension.eq_ignore_ascii_case(expected))
+        })
 }
 
 pub(crate) struct SubtitleRenderer {
@@ -264,7 +392,7 @@ impl SubtitleRenderer {
         let max_width = (f64::from(width) * MAX_SUBTITLE_WIDTH_RATIO).round() as u32;
         self.wrapped_lines.clear();
         wrap_subtitle_lines(
-            lines,
+            &lines,
             max_width.max(1),
             fallback_scale,
             font.as_deref_mut(),
@@ -331,6 +459,129 @@ fn open_first_font(paths: &[PathBuf], pixel_size: u32) -> Option<FontRenderer> {
     paths
         .iter()
         .find_map(|path| FontRenderer::open_path(path, pixel_size))
+}
+
+fn parse_subtitle_text(path: &Path, text: &str) -> Result<Vec<SubtitleCue>> {
+    if matches_subtitle_extension(path, &["ass", "ssa"]) || text.contains("[Events]") {
+        parse_ass(text)
+    } else {
+        parse_srt(text)
+    }
+}
+
+fn parse_ass(text: &str) -> Result<Vec<SubtitleCue>> {
+    let normalized = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let mut in_events = false;
+    let mut format = Vec::<String>::new();
+    let mut cues = Vec::new();
+
+    for line in normalized.lines().map(str::trim_end) {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("[Events]") {
+            in_events = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_events = false;
+            continue;
+        }
+        if !in_events {
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("Format:") {
+            format = value
+                .split(',')
+                .map(|field| field.trim().to_ascii_lowercase())
+                .collect();
+            continue;
+        }
+
+        let Some(value) = trimmed.strip_prefix("Dialogue:") else {
+            continue;
+        };
+        if format.is_empty() {
+            format = ass_default_format();
+        }
+        if let Some(cue) = parse_ass_dialogue(value.trim_start(), &format)? {
+            cues.push(cue);
+        }
+    }
+
+    cues.sort_by_key(|cue| cue.start);
+    Ok(cues)
+}
+
+fn ass_default_format() -> Vec<String> {
+    [
+        "layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCue>> {
+    let fields = line.splitn(format.len(), ',').collect::<Vec<_>>();
+    if fields.len() < format.len() {
+        return Ok(None);
+    }
+
+    let field = |name: &str| -> Option<&str> {
+        let index = format.iter().position(|field| field == name)?;
+        fields.get(index).copied()
+    };
+
+    let Some(start) = field("start") else {
+        return Ok(None);
+    };
+    let Some(end) = field("end") else {
+        return Ok(None);
+    };
+    let Some(text) = field("text") else {
+        return Ok(None);
+    };
+    let effect = field("effect").unwrap_or_default().trim();
+
+    if is_ass_drawing(text) {
+        return Ok(None);
+    }
+
+    let start = parse_timestamp(start.trim())?;
+    let end = parse_timestamp(end.trim())?;
+    if end <= start {
+        return Ok(None);
+    }
+
+    let line = strip_srt_markup(text).trim().to_string();
+    if line.is_empty() || !ass_dialogue_line_is_useful(effect, &line) {
+        return Ok(None);
+    }
+
+    Ok(Some(SubtitleCue {
+        start,
+        end,
+        lines: vec![line],
+    }))
+}
+
+fn is_ass_drawing(text: &str) -> bool {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            continue;
+        }
+        if matches!(chars.next(), Some('p' | 'P')) {
+            if matches!(chars.peek(), Some('1'..='9')) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn ass_dialogue_line_is_useful(effect: &str, _line: &str) -> bool {
+    effect.trim().is_empty()
 }
 
 fn parse_srt(text: &str) -> Result<Vec<SubtitleCue>> {
@@ -438,6 +689,40 @@ fn parse_timestamp(text: &str) -> Result<Duration> {
 }
 
 fn strip_srt_markup(line: &str) -> String {
+    let without_ass = strip_ass_override_blocks(line);
+    let without_html = strip_html_tags(&without_ass);
+    decode_subtitle_entities(&normalize_ass_text_escapes(&without_html))
+}
+
+fn strip_ass_override_blocks(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let after_start = &rest[start + 1..];
+        let Some(end) = after_start.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+
+        let block = &after_start[..end];
+        if !looks_like_ass_override_block(block) {
+            out.push('{');
+            out.push_str(block);
+            out.push('}');
+        }
+        rest = &after_start[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn looks_like_ass_override_block(block: &str) -> bool {
+    let trimmed = block.trim();
+    trimmed.starts_with('\\') || trimmed.contains('\\')
+}
+
+fn strip_html_tags(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut in_tag = false;
     for ch in line.chars() {
@@ -449,6 +734,37 @@ fn strip_srt_markup(line: &str) -> String {
         }
     }
     out
+}
+
+fn normalize_ass_text_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('N' | 'n' | 'h') => {
+                chars.next();
+                if !out.ends_with(' ') {
+                    out.push(' ');
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn decode_subtitle_entities(line: &str) -> String {
+    line.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
 }
 
 fn infer_subtitle_language(path: &Path, text: &str) -> Option<String> {
@@ -1003,6 +1319,81 @@ world
     }
 
     #[test]
+    fn parses_ass_dialogues_and_overlapping_lines() {
+        let cues = parse_ass(
+            "\
+[Script Info]
+Title: test
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.56,0:00:05.27,OP-E1,,0,0,0,fx,{\\pos(960,1050)\\clip(1,2,3,4)}Surpass a fiction that nobody knows..
+Dialogue: 0,0:00:00.60,0:00:01.60,OP-R1,,0,0,0,fx,{\\an5\\move(724.5,30,724.5,75,0,400)}m
+Dialogue: 0,0:00:00.70,0:00:01.70,SeriesTitle,,0,0,0,,{\\p1}m 0 0 l 100 0 100 100 0 100
+Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond half
+",
+        )
+        .expect("ass should parse");
+
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].lines, ["Normal line second half"]);
+
+        let track = SubtitleTrack {
+            cues,
+            language: None,
+            label: String::from("Subtitles"),
+        };
+        assert_eq!(
+            track.active_lines(Duration::from_millis(1200)),
+            Some(vec![String::from("Normal line second half")])
+        );
+    }
+
+    #[test]
+    fn strips_subtitle_markup_without_losing_literal_braces() {
+        assert_eq!(strip_srt_markup(r"{\an8}{\i1}ku{\i0}"), "ku");
+        assert_eq!(
+            strip_srt_markup(r"hello {world} &amp; <i>friends</i>"),
+            "hello {world} & friends"
+        );
+        assert_eq!(strip_srt_markup(r"one\Ntwo\hthree"), "one two three");
+    }
+
+    #[test]
+    fn parses_srt_with_ass_override_tags_left_by_conversion() {
+        let cues = parse_srt(
+            "\
+1
+00:00:01,000 --> 00:00:02,000
+{\\an8}ku
+
+2
+00:00:03,000 --> 00:00:04,000
+{\\pos(10,20)}sign {literal}
+",
+        )
+        .expect("srt should parse");
+
+        assert_eq!(cues[0].lines, ["ku"]);
+        assert_eq!(cues[1].lines, ["sign {literal}"]);
+    }
+
+    #[test]
+    fn recognizes_text_and_bitmap_embedded_subtitle_codecs() {
+        let ass = parse_embedded_subtitle_stream(
+            "index=4|codec_name=ass|tag:language=eng|tag:title=English",
+            0,
+        );
+        let pgs = parse_embedded_subtitle_stream(
+            "index=5|codec_name=hdmv_pgs_subtitle|tag:language=eng",
+            1,
+        );
+
+        assert!(ass.is_text());
+        assert!(!pgs.is_text());
+    }
+
+    #[test]
     fn parses_short_millisecond_fields() {
         assert_eq!(
             parse_timestamp("00:00:01,5").expect("timestamp should parse"),
@@ -1032,7 +1423,7 @@ One
         assert!(track.active_lines(Duration::from_millis(999)).is_none());
         assert_eq!(
             track.active_lines(Duration::from_millis(1000)),
-            Some([String::from("One")].as_slice())
+            Some(vec![String::from("One")])
         );
         assert!(track.active_lines(Duration::from_millis(2000)).is_none());
     }
@@ -1045,6 +1436,24 @@ One
         fs::create_dir(&temp_dir).expect("temp dir should be created");
         let media = temp_dir.join("movie.mp4");
         let subtitle = temp_dir.join("movie.srt");
+        fs::write(&media, "").expect("media placeholder should be written");
+        fs::write(&subtitle, "").expect("subtitle placeholder should be written");
+
+        assert_eq!(sidecar_subtitle_path(&media), Some(subtitle));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn sidecar_path_uses_supported_text_subtitle_extensions() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-subtitle-extension-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("movie.mp4");
+        let subtitle = temp_dir.join("movie.ass");
         fs::write(&media, "").expect("media placeholder should be written");
         fs::write(&subtitle, "").expect("subtitle placeholder should be written");
 
@@ -1158,12 +1567,80 @@ But I told them it was not.
         assert_eq!(track.language(), Some("en"));
         assert_eq!(
             track.active_lines(Duration::ZERO),
-            Some(
-                [String::from(
-                    "Hello there, this is an embedded subtitle and you are in the test.",
-                )]
-                .as_slice()
-            )
+            Some(vec![String::from(
+                "Hello there, this is an embedded subtitle and you are in the test.",
+            )])
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn loads_embedded_ass_subtitle_without_srt_karaoke_flattening() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-embedded-ass-subtitle-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let sub = temp_dir.join("subtitle.ass");
+        let media = temp_dir.join("embedded-ass.mkv");
+        fs::write(
+            &sub,
+            "\
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\an8}Whole sentence, not syllable
+",
+        )
+        .expect("subtitle fixture should be written");
+
+        let status = Command::new("ffmpeg")
+            .arg("-nostdin")
+            .arg("-v")
+            .arg("error")
+            .arg("-y")
+            .arg("-f")
+            .arg("lavfi")
+            .arg("-i")
+            .arg("color=size=16x16:duration=1:rate=1")
+            .arg("-i")
+            .arg(&sub)
+            .arg("-map")
+            .arg("0:v:0")
+            .arg("-map")
+            .arg("1:s:0")
+            .arg("-c:v")
+            .arg("ffv1")
+            .arg("-c:s")
+            .arg("ass")
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return;
+        }
+
+        let track = load_embedded_subtitle_tracks(&media)
+            .expect("embedded subtitle load should not error")
+            .into_iter()
+            .next()
+            .expect("embedded subtitle should be found");
+        assert_eq!(
+            track.active_lines(Duration::ZERO),
+            Some(vec![String::from("Whole sentence, not syllable")])
         );
 
         let _ = fs::remove_dir_all(&temp_dir);

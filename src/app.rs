@@ -1066,7 +1066,7 @@ fn normalized_subtitle_path(path: &Path) -> PathBuf {
 
 fn subtitle_path_from_drop_text(text: &str) -> Result<Option<PathBuf>> {
     for candidate in media_candidates_from_text(text) {
-        if !path_extension_is(&candidate, "srt") {
+        if !is_supported_subtitle_path(&candidate) {
             continue;
         }
         validate_subtitle_path(&candidate)?;
@@ -1087,6 +1087,12 @@ fn path_extension_is(path: &Path, expected: &str) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
+}
+
+fn is_supported_subtitle_path(path: &Path) -> bool {
+    ["srt", "ass", "ssa", "vtt"]
+        .iter()
+        .any(|extension| path_extension_is(path, extension))
 }
 
 struct Config {
@@ -1221,7 +1227,7 @@ fn print_help() {
 rigoberto - video player for Kitty-compatible terminals
 
 Usage:
-  rigoberto [--force] [--sub-file path.srt] [video-or-url]
+  rigoberto [--force] [--sub-file subtitle] [video-or-url]
 
 Controls:
   Drop file/URL      play from launcher
@@ -1451,7 +1457,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir(&temp_dir).expect("temp dir should be created");
-        let sub_file = temp_dir.join("Movie Signs.eng.srt");
+        let sub_file = temp_dir.join("Movie Signs.eng.ass");
         std::fs::write(&sub_file, "subtitle").expect("subtitle should be written");
 
         let from_drop = subtitle_path_from_drop_text(&format!("file://{}", sub_file.display()))
