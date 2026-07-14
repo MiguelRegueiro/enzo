@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     drop_target::{draw_drop_target, is_remote_url_text, media_candidates_from_text},
+    font_system::FontSystem,
     input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, probe_video},
     overlay::{HitboxRect, OverlayHitContext, OverlayHitPoint, OverlayState, PlaybackOverlay},
@@ -39,6 +40,7 @@ struct StatusMessage {
 
 pub(crate) fn run() -> Result<()> {
     let config = parse_args(env::args_os().skip(1))?;
+    let font_system = FontSystem::discover();
     if !config.force && !looks_like_kitty() {
         bail!(
             "Rigoberto targets Kitty graphics; run from kitty or pass --force if your terminal is compatible"
@@ -51,13 +53,13 @@ pub(crate) fn run() -> Result<()> {
 
     if let Some(path) = config.path {
         let _terminal = TerminalGuard::enter()?;
-        play_media(path, config.sub_file.as_deref())
+        play_media(path, config.sub_file.as_deref(), &font_system)
     } else {
-        run_drop_target(config.sub_file.as_deref())
+        run_drop_target(config.sub_file.as_deref(), &font_system)
     }
 }
 
-fn run_drop_target(sub_file: Option<&Path>) -> Result<()> {
+fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
     let _terminal = TerminalGuard::enter()?;
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -78,7 +80,7 @@ fn run_drop_target(sub_file: Option<&Path>) -> Result<()> {
                 clear_screen_and_images(&mut out)?;
                 out.flush()?;
                 drop(out);
-                return play_media(path, sub_file);
+                return play_media(path, sub_file, font_system);
             }
             Err(error) => {
                 status = Some(error.to_string());
@@ -87,7 +89,7 @@ fn run_drop_target(sub_file: Option<&Path>) -> Result<()> {
     }
 }
 
-fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
+fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
     let source = probe_video(&path)
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
     let subtitle_track = load_subtitle_track(&path, sub_file)?;
@@ -109,8 +111,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>) -> Result<()> {
     let mut out =
         BufWriter::with_capacity(canvas.frame_len() + canvas.frame_len() / 2, stdout.lock());
     let mut sequence = Vec::with_capacity(canvas.frame_len() + canvas.frame_len() / 2 + 4096);
-    let mut overlay = PlaybackOverlay::new();
-    let mut subtitle_renderer = SubtitleRenderer::new();
+    let mut overlay = PlaybackOverlay::new(font_system);
+    let mut subtitle_renderer = SubtitleRenderer::new(font_system);
     clear_screen_and_images(&mut out)?;
 
     let mut frame = vec![0_u8; target.frame_len()];

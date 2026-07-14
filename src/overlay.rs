@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use crate::font::FontRenderer;
+use crate::{
+    font::FontRenderer,
+    font_system::{FontRole, FontSystem},
+};
 
 const PANEL_COLOR: [u8; 3] = [18, 18, 22];
 const TRACK_COLOR: [u8; 3] = [82, 82, 91];
@@ -48,10 +51,12 @@ pub(crate) struct HitboxRect {
 }
 
 impl PlaybackOverlay {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(fonts: &FontSystem) -> Self {
         Self {
             scratch: String::new(),
-            font: FontRenderer::open_default(18),
+            font: fonts
+                .resolve_all(FontRole::Ui)
+                .find_map(|path| FontRenderer::open_path(path, 18)),
         }
     }
 

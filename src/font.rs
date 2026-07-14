@@ -6,12 +6,6 @@ use std::{
 };
 
 const FT_LOAD_RENDER: c_int = 4;
-const DEFAULT_FONT_PATHS: &[&str] = &[
-    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/TTF/OpenSans-Regular.ttf",
-    "/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
-    "/usr/share/fonts/TTF/Vera.ttf",
-];
 
 type FtLibrary = *mut c_void;
 type FtFace = *mut FtFaceRec;
@@ -149,12 +143,6 @@ pub(crate) struct FontRenderer {
 }
 
 impl FontRenderer {
-    pub(crate) fn open_default(pixel_size: u32) -> Option<Self> {
-        DEFAULT_FONT_PATHS
-            .iter()
-            .find_map(|path| Self::open_path(path, pixel_size))
-    }
-
     pub(crate) fn set_pixel_size(&mut self, pixel_size: u32) -> bool {
         let pixel_size = pixel_size.max(1);
         if self.pixel_size == pixel_size {
@@ -208,12 +196,12 @@ impl FontRenderer {
         }
     }
 
-    fn open_path(path: &str, pixel_size: u32) -> Option<Self> {
-        if !Path::new(path).is_file() {
+    pub(crate) fn open_path(path: &Path, pixel_size: u32) -> Option<Self> {
+        if !path.is_file() {
             return None;
         }
 
-        let path = CString::new(path).ok()?;
+        let path = CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
         let mut library = ptr::null_mut();
         if unsafe { FT_Init_FreeType(&mut library) } != 0 {
             return None;
@@ -381,7 +369,14 @@ mod tests {
 
     #[test]
     fn default_font_can_draw_ascii_when_available() {
-        let Some(mut font) = FontRenderer::open_default(20) else {
+        let Some(path) = crate::font_system::FontSystem::discover()
+            .resolve_all(crate::font_system::FontRole::Ui)
+            .next()
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(mut font) = FontRenderer::open_path(&path, 20) else {
             return;
         };
         let mut frame = vec![0_u8; 160 * 48 * 3];

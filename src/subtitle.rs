@@ -6,7 +6,10 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::font::FontRenderer;
+use crate::{
+    font::FontRenderer,
+    font_system::{FontRole, FontSystem},
+};
 
 const TEXT_COLOR: [u8; 3] = [255, 255, 255];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
@@ -62,9 +65,11 @@ pub(crate) struct SubtitleRenderer {
 }
 
 impl SubtitleRenderer {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(fonts: &FontSystem) -> Self {
         Self {
-            font: FontRenderer::open_default(26),
+            font: fonts
+                .resolve_all(FontRole::Subtitle)
+                .find_map(|path| FontRenderer::open_path(path, 26)),
             wrapped_lines: Vec::new(),
         }
     }
