@@ -1,6 +1,7 @@
 use std::{
     env,
     ffi::OsString,
+    fs,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     thread,
@@ -97,12 +98,19 @@ fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<
 fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
     let source = probe_video(&path)
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
-    let subtitle_tracks = load_subtitle_tracks(&path, sub_file)?;
-    let subtitle_labels = subtitle_tracks
+    let mut subtitle_tracks = load_subtitle_tracks(&path, sub_file)?;
+    let mut subtitle_labels = subtitle_tracks
         .iter()
         .map(|track| Box::leak(track.label().to_string().into_boxed_str()) as &'static str)
         .collect::<Vec<_>>();
     let mut selected_subtitle = (!subtitle_tracks.is_empty()).then_some(0_usize);
+    let mut external_subtitle_paths = Vec::<(PathBuf, usize)>::new();
+    if let (Some(path), true) = (
+        external_subtitle_path(&path, sub_file),
+        !subtitle_tracks.is_empty(),
+    ) {
+        external_subtitle_paths.push((normalized_subtitle_path(&path), 0));
+    }
     let mut subtitle_picker_open = false;
     let media_title = media_title(&path);
     let (mut target, mut canvas) = terminal_target_and_canvas(source.width, source.height);
@@ -161,6 +169,72 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
             if have_frame && !was_overlay_visible {
                 redraw_current_frame = true;
+            }
+        }
+
+        if let Some(text) = input.text.as_deref() {
+            match subtitle_path_from_drop_text(text) {
+                Ok(Some(path)) => {
+                    let key = normalized_subtitle_path(&path);
+                    if let Some(index) = external_subtitle_paths
+                        .iter()
+                        .find_map(|(loaded_path, index)| (loaded_path == &key).then_some(*index))
+                    {
+                        selected_subtitle = Some(index);
+                        subtitle_picker_open = false;
+                        subtitle_renderer = SubtitleRenderer::new(
+                            font_system,
+                            active_subtitle_track(&subtitle_tracks, selected_subtitle)
+                                .and_then(SubtitleTrack::language),
+                        );
+                        status_message = Some(StatusMessage {
+                            text: "SUBTITLES ALREADY LOADED",
+                            visible_until: input_at + STATUS_VISIBLE_FOR,
+                        });
+                        overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                        redraw_current_frame = have_frame;
+                    } else {
+                        match load_dropped_subtitle_track(&path) {
+                            Ok(track) => {
+                                let index = subtitle_tracks.len();
+                                subtitle_labels
+                                    .push(Box::leak(track.label().to_string().into_boxed_str()));
+                                subtitle_tracks.push(track);
+                                external_subtitle_paths.push((key, index));
+                                selected_subtitle = Some(index);
+                                subtitle_picker_open = false;
+                                subtitle_renderer = SubtitleRenderer::new(
+                                    font_system,
+                                    active_subtitle_track(&subtitle_tracks, selected_subtitle)
+                                        .and_then(SubtitleTrack::language),
+                                );
+                                status_message = Some(StatusMessage {
+                                    text: "SUBTITLES LOADED",
+                                    visible_until: input_at + STATUS_VISIBLE_FOR,
+                                });
+                                overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                                redraw_current_frame = have_frame;
+                            }
+                            Err(_) => {
+                                status_message = Some(StatusMessage {
+                                    text: "SUBTITLE LOAD FAILED",
+                                    visible_until: input_at + STATUS_VISIBLE_FOR,
+                                });
+                                overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                                redraw_current_frame = have_frame;
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    status_message = Some(StatusMessage {
+                        text: "SUBTITLE LOAD FAILED",
+                        visible_until: input_at + STATUS_VISIBLE_FOR,
+                    });
+                    overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
+                    redraw_current_frame = have_frame;
+                }
             }
         }
 
@@ -973,14 +1047,46 @@ fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<
 
 fn load_subtitle_tracks(media_path: &Path, sub_file: Option<&Path>) -> Result<Vec<SubtitleTrack>> {
     let mut tracks = Vec::new();
-    if let Some(path) = sub_file
-        .map(Path::to_path_buf)
-        .or_else(|| sidecar_subtitle_path(media_path))
-    {
+    if let Some(path) = external_subtitle_path(media_path, sub_file) {
         tracks.push(SubtitleTrack::load(&path)?);
     }
     tracks.extend(load_embedded_subtitle_tracks(media_path)?);
     Ok(tracks)
+}
+
+fn external_subtitle_path(media_path: &Path, sub_file: Option<&Path>) -> Option<PathBuf> {
+    sub_file
+        .map(Path::to_path_buf)
+        .or_else(|| sidecar_subtitle_path(media_path))
+}
+
+fn normalized_subtitle_path(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn subtitle_path_from_drop_text(text: &str) -> Result<Option<PathBuf>> {
+    for candidate in media_candidates_from_text(text) {
+        if !path_extension_is(&candidate, "srt") {
+            continue;
+        }
+        validate_subtitle_path(&candidate)?;
+        return Ok(Some(candidate));
+    }
+    Ok(None)
+}
+
+fn load_dropped_subtitle_track(path: &Path) -> Result<SubtitleTrack> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("External");
+    Ok(SubtitleTrack::load(path)?.with_label(format!("External — {file_name}")))
+}
+
+fn path_extension_is(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
 
 struct Config {
@@ -1334,6 +1440,67 @@ mod tests {
         assert_eq!(sidecar_subtitle_path(&from_arg), Some(sidecar.clone()));
         assert_eq!(sidecar_subtitle_path(&from_drop), Some(sidecar));
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn playback_drop_accepts_subtitle_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-app-playback-subtitle-drop-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let sub_file = temp_dir.join("Movie Signs.eng.srt");
+        std::fs::write(&sub_file, "subtitle").expect("subtitle should be written");
+
+        let from_drop = subtitle_path_from_drop_text(&format!("file://{}", sub_file.display()))
+            .expect("drop subtitle should parse");
+
+        assert_eq!(from_drop, Some(sub_file));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn playback_drop_normalizes_duplicate_subtitle_paths() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-app-playback-subtitle-dup-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let sub_file = temp_dir.join("movie.srt");
+        std::fs::write(&sub_file, "subtitle").expect("subtitle should be written");
+
+        let plain = subtitle_path_from_drop_text(&sub_file.display().to_string())
+            .expect("plain subtitle should parse")
+            .expect("plain subtitle should exist");
+        let file_url = subtitle_path_from_drop_text(&format!("file://{}", sub_file.display()))
+            .expect("file url subtitle should parse")
+            .expect("file url subtitle should exist");
+
+        assert_eq!(
+            normalized_subtitle_path(&plain),
+            normalized_subtitle_path(&file_url)
+        );
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn playback_drop_ignores_non_subtitle_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rigoberto-app-playback-video-drop-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("Movie.mkv");
+        std::fs::write(&media, "video").expect("video should be written");
+
+        let from_drop = subtitle_path_from_drop_text(&media.display().to_string())
+            .expect("video drop should not error");
+
+        assert_eq!(from_drop, None);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 

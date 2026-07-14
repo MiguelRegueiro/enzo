@@ -20,6 +20,7 @@ pub(crate) struct PlaybackInput {
     pub(crate) command: PlaybackCommand,
     pub(crate) mouse_activity: bool,
     pub(crate) mouse_events: Vec<PlaybackMouse>,
+    pub(crate) text: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +47,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         command: PlaybackCommand::None,
         mouse_activity: false,
         mouse_events: Vec::new(),
+        text: None,
     };
     while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
         match event::read().context("failed to read terminal input")? {
@@ -102,6 +104,9 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     }
                     _ => {}
                 }
+            }
+            Event::Paste(text) => {
+                input.text = Some(text);
             }
             _ => {}
         }
