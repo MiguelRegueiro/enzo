@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use anyhow::{Context, Result};
 use crossterm::{
     cursor::{Hide, Show},
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -12,6 +12,9 @@ use crossterm::{
 };
 
 use super::kitty_graphics::clear_all_kitty_images;
+
+const ENABLE_MOUSE_TRACKING: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+const DISABLE_MOUSE_TRACKING: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1016l";
 
 pub(crate) struct TerminalGuard;
 
@@ -24,13 +27,12 @@ impl TerminalGuard {
             EnterAlternateScreen,
             Clear(ClearType::All),
             Hide,
-            EnableBracketedPaste,
-            EnableMouseCapture
+            EnableBracketedPaste
         )
         .context("failed to enter terminal playback mode")?;
         stdout
-            .write_all(b"\x1b[?1016h")
-            .context("failed to enable pixel mouse mode")?;
+            .write_all(ENABLE_MOUSE_TRACKING)
+            .context("failed to enable terminal mouse tracking")?;
         stdout.flush().context("failed to flush terminal setup")?;
         Ok(Self)
     }
@@ -40,14 +42,8 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
         let _ = clear_all_kitty_images(&mut stdout);
-        let _ = stdout.write_all(b"\x1b[?1016l");
-        let _ = execute!(
-            stdout,
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            Show,
-            LeaveAlternateScreen
-        );
+        let _ = stdout.write_all(DISABLE_MOUSE_TRACKING);
+        let _ = execute!(stdout, DisableBracketedPaste, Show, LeaveAlternateScreen);
         let _ = stdout.flush();
         let _ = disable_raw_mode();
     }

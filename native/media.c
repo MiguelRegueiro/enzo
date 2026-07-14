@@ -4,6 +4,7 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/log.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libavutil/time.h>
@@ -125,6 +126,10 @@ static void set_ffmpeg_error(char *err, size_t err_len, const char *prefix, int 
     char detail[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(code, detail, sizeof(detail));
     set_error(err, err_len, "%s: %s", prefix, detail);
+}
+
+static void suppress_ffmpeg_logs(void) {
+    av_log_set_level(AV_LOG_QUIET);
 }
 
 static void pulse_context_state_callback(pa_context *context, void *userdata) {
@@ -520,6 +525,8 @@ static double stream_fps(const AVStream *stream) {
 }
 
 int rig_probe_video(const char *path, RigVideoInfo *out, char *err, size_t err_len) {
+    suppress_ffmpeg_logs();
+
     if (path == NULL || out == NULL) {
         set_error(err, err_len, "invalid probe arguments");
         return -1;
@@ -567,6 +574,8 @@ int rig_video_decoder_open(
     char *err,
     size_t err_len
 ) {
+    suppress_ffmpeg_logs();
+
     if (path == NULL || out == NULL || out_width <= 0 || out_height <= 0) {
         set_error(err, err_len, "invalid video decoder arguments");
         return -1;
@@ -1211,6 +1220,8 @@ int rig_play_audio(
     char *err,
     size_t err_len
 ) {
+    suppress_ffmpeg_logs();
+
     if (path == NULL) {
         set_error(err, err_len, "invalid audio path");
         return -1;
