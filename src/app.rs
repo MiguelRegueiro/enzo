@@ -19,7 +19,7 @@ use crate::{
         SubtitlePickerAction,
     },
     subtitle::{
-        SubtitleRenderer, SubtitleTrack, load_embedded_subtitle_track, sidecar_subtitle_path,
+        SubtitleRenderer, SubtitleTrack, load_embedded_subtitle_tracks, sidecar_subtitle_path,
     },
     terminal::{
         ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
@@ -97,10 +97,12 @@ fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<
 fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
     let source = probe_video(&path)
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
-    let subtitle_track = load_subtitle_track(&path, sub_file)?;
-    let _subtitle_language = subtitle_track.as_ref().and_then(SubtitleTrack::language);
-    let subtitle_label = subtitle_track_label(subtitle_track.as_ref());
-    let mut subtitles_visible = subtitle_track.is_some();
+    let subtitle_tracks = load_subtitle_tracks(&path, sub_file)?;
+    let subtitle_labels = subtitle_tracks
+        .iter()
+        .map(|track| Box::leak(track.label().to_string().into_boxed_str()) as &'static str)
+        .collect::<Vec<_>>();
+    let mut selected_subtitle = (!subtitle_tracks.is_empty()).then_some(0_usize);
     let mut subtitle_picker_open = false;
     let media_title = media_title(&path);
     let (mut target, mut canvas) = terminal_target_and_canvas(source.width, source.height);
@@ -122,7 +124,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
     let mut overlay = PlaybackOverlay::new(font_system);
     let mut subtitle_renderer = SubtitleRenderer::new(
         font_system,
-        subtitle_track.as_ref().and_then(SubtitleTrack::language),
+        active_subtitle_track(&subtitle_tracks, selected_subtitle)
+            .and_then(SubtitleTrack::language),
     );
     clear_screen_and_images(&mut out)?;
 
@@ -181,19 +184,26 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             }
             PlaybackCommand::ToggleSubtitles => {
                 subtitle_picker_open = false;
-                if subtitle_track.is_some() {
-                    subtitles_visible = !subtitles_visible;
+                if subtitle_tracks.is_empty() {
                     status_message = Some(StatusMessage {
-                        text: if subtitles_visible {
-                            "SUBTITLES ON"
-                        } else {
-                            "SUBTITLES OFF"
-                        },
+                        text: "NO SUBTITLES",
+                        visible_until: input_at + STATUS_VISIBLE_FOR,
+                    });
+                } else if selected_subtitle.is_some() {
+                    selected_subtitle = None;
+                    status_message = Some(StatusMessage {
+                        text: "SUBTITLES OFF",
                         visible_until: input_at + STATUS_VISIBLE_FOR,
                     });
                 } else {
+                    selected_subtitle = Some(0);
+                    subtitle_renderer = SubtitleRenderer::new(
+                        font_system,
+                        active_subtitle_track(&subtitle_tracks, selected_subtitle)
+                            .and_then(SubtitleTrack::language),
+                    );
                     status_message = Some(StatusMessage {
-                        text: "NO SUBTITLES",
+                        text: "SUBTITLES ON",
                         visible_until: input_at + STATUS_VISIBLE_FOR,
                     });
                 }
@@ -273,10 +283,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     paused,
                     overlay_visible_until,
                     status_message,
-                    subtitle_track.is_some(),
-                    subtitles_visible,
+                    !subtitle_tracks.is_empty(),
+                    selected_subtitle,
                     subtitle_picker_open,
-                    subtitle_label,
+                    subtitle_labels.clone(),
                     media_title,
                 );
                 draw_frame(
@@ -288,11 +298,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     &frame,
                     &mut composited_frame,
                     &mut subtitle_renderer,
-                    subtitle_track.as_ref(),
-                    subtitles_visible,
+                    active_subtitle_track(&subtitle_tracks, selected_subtitle),
+                    selected_subtitle.is_some(),
                     playback_position,
                     &mut overlay,
-                    state,
+                    &state,
                     &mut sequence,
                 )?;
                 last_drawn_overlay_visible = state.visible;
@@ -307,7 +317,8 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             height: canvas.height,
             scale_percent: canvas.overlay_scale_percent,
             duration: source.duration,
-            subtitles_available: subtitle_track.is_some(),
+            subtitles_available: !subtitle_tracks.is_empty(),
+            subtitle_count: subtitle_tracks.len(),
         };
         for mouse in input.mouse_events {
             let seek_target = match mouse {
@@ -322,12 +333,17 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                             SubtitlePickerAction::TogglePicker => {
                                 subtitle_picker_open = !subtitle_picker_open;
                             }
-                            SubtitlePickerAction::SelectOn => {
-                                subtitles_visible = true;
+                            SubtitlePickerAction::SelectTrack(index) => {
+                                selected_subtitle = Some(index);
                                 subtitle_picker_open = false;
+                                subtitle_renderer = SubtitleRenderer::new(
+                                    font_system,
+                                    active_subtitle_track(&subtitle_tracks, selected_subtitle)
+                                        .and_then(SubtitleTrack::language),
+                                );
                             }
                             SubtitlePickerAction::SelectOff => {
-                                subtitles_visible = false;
+                                selected_subtitle = None;
                                 subtitle_picker_open = false;
                             }
                         }
@@ -358,7 +374,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         canvas.height,
                         canvas.overlay_scale_percent,
                         source.duration,
-                        subtitle_track.is_some(),
+                        !subtitle_tracks.is_empty(),
                         x,
                     );
                     scrub_position = seek_from_progress_ratio(ratio, source.duration);
@@ -372,7 +388,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         canvas.height,
                         canvas.overlay_scale_percent,
                         source.duration,
-                        subtitle_track.is_some(),
+                        !subtitle_tracks.is_empty(),
                         x,
                     );
                     let target = seek_from_progress_ratio(ratio, source.duration);
@@ -433,10 +449,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 paused,
                 overlay_visible_until,
                 status_message,
-                subtitle_track.is_some(),
-                subtitles_visible,
+                !subtitle_tracks.is_empty(),
+                selected_subtitle,
                 subtitle_picker_open,
-                subtitle_label,
+                subtitle_labels.clone(),
                 media_title,
             );
             draw_frame(
@@ -448,11 +464,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 &frame,
                 &mut composited_frame,
                 &mut subtitle_renderer,
-                subtitle_track.as_ref(),
-                subtitles_visible,
+                active_subtitle_track(&subtitle_tracks, selected_subtitle),
+                selected_subtitle.is_some(),
                 playback_position,
                 &mut overlay,
-                state,
+                &state,
                 &mut sequence,
             )?;
             last_drawn_overlay_visible = state.visible;
@@ -472,10 +488,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         paused,
                         overlay_visible_until,
                         status_message,
-                        subtitle_track.is_some(),
-                        subtitles_visible,
+                        !subtitle_tracks.is_empty(),
+                        selected_subtitle,
                         subtitle_picker_open,
-                        subtitle_label,
+                        subtitle_labels.clone(),
                         media_title,
                     );
                     draw_frame(
@@ -487,11 +503,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         &frame,
                         &mut composited_frame,
                         &mut subtitle_renderer,
-                        subtitle_track.as_ref(),
-                        subtitles_visible,
+                        active_subtitle_track(&subtitle_tracks, selected_subtitle),
+                        selected_subtitle.is_some(),
                         playback_position,
                         &mut overlay,
-                        state,
+                        &state,
                         &mut sequence,
                     )?;
                     have_frame = true;
@@ -526,10 +542,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     paused,
                     overlay_visible_until,
                     status_message,
-                    subtitle_track.is_some(),
-                    subtitles_visible,
+                    !subtitle_tracks.is_empty(),
+                    selected_subtitle,
                     subtitle_picker_open,
-                    subtitle_label,
+                    subtitle_labels.clone(),
                     media_title,
                 );
                 draw_frame(
@@ -541,11 +557,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     &frame,
                     &mut composited_frame,
                     &mut subtitle_renderer,
-                    subtitle_track.as_ref(),
-                    subtitles_visible,
+                    active_subtitle_track(&subtitle_tracks, selected_subtitle),
+                    selected_subtitle.is_some(),
                     playback_position,
                     &mut overlay,
-                    state,
+                    &state,
                     &mut sequence,
                 )?;
                 have_frame = true;
@@ -572,10 +588,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         paused,
                         overlay_visible_until,
                         status_message,
-                        subtitle_track.is_some(),
-                        subtitles_visible,
+                        !subtitle_tracks.is_empty(),
+                        selected_subtitle,
                         subtitle_picker_open,
-                        subtitle_label,
+                        subtitle_labels.clone(),
                         media_title,
                     );
                     draw_frame(
@@ -587,11 +603,11 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         &frame,
                         &mut composited_frame,
                         &mut subtitle_renderer,
-                        subtitle_track.as_ref(),
-                        subtitles_visible,
+                        active_subtitle_track(&subtitle_tracks, selected_subtitle),
+                        selected_subtitle.is_some(),
                         playback_position,
                         &mut overlay,
-                        state,
+                        &state,
                         &mut sequence,
                     )?;
                     last_drawn_overlay_visible = state.visible;
@@ -629,7 +645,7 @@ fn draw_frame(
     subtitles_visible: bool,
     playback_position: Duration,
     overlay: &mut PlaybackOverlay,
-    overlay_state: OverlayState,
+    overlay_state: &OverlayState,
     sequence: &mut Vec<u8>,
 ) -> io::Result<()> {
     if frame.len() != target.frame_len() {
@@ -662,7 +678,7 @@ fn draw_frame(
         canvas.width,
         canvas.height,
         canvas.overlay_scale_percent,
-        overlay_state,
+        overlay_state.clone(),
     );
 
     let image_id = KITTY_IMAGE_IDS[(*frame_serial as usize) % KITTY_IMAGE_IDS.len()];
@@ -781,9 +797,9 @@ fn overlay_state(
     visible_until: Option<Instant>,
     status_message: Option<StatusMessage>,
     subtitles_available: bool,
-    subtitles_visible: bool,
+    selected_subtitle: Option<usize>,
     subtitle_picker_open: bool,
-    subtitle_label: Option<&'static str>,
+    subtitle_labels: Vec<&'static str>,
     media_title: &'static str,
 ) -> OverlayState {
     let now = Instant::now();
@@ -794,9 +810,9 @@ fn overlay_state(
         visible: overlay_visible(paused, scrub_position.is_some(), visible_until, now)
             || subtitle_picker_open,
         subtitles_available,
-        subtitles_visible,
+        selected_subtitle,
         subtitle_picker_open,
-        subtitle_label,
+        subtitle_labels,
         status_message: status_text(status_message, now),
         media_title: Some(media_title),
     }
@@ -812,27 +828,11 @@ fn media_title(path: &Path) -> &'static str {
     Box::leak(text.into_boxed_str())
 }
 
-fn subtitle_track_label(track: Option<&SubtitleTrack>) -> Option<&'static str> {
-    let label = match track.and_then(SubtitleTrack::language) {
-        Some("en") => "English",
-        Some("ja") => "Japanese",
-        Some("ko") => "Korean",
-        Some("zh") => "Chinese",
-        Some("zh-Hans") => "Chinese Simplified",
-        Some("zh-Hant") => "Chinese Traditional",
-        Some("ru") => "Russian",
-        Some("es") => "Spanish",
-        Some("fr") => "French",
-        Some("de") => "German",
-        Some("pt") => "Portuguese",
-        Some("it") => "Italian",
-        Some("ar") => "Arabic",
-        Some("hi") => "Hindi",
-        Some("tr") => "Turkish",
-        Some(_) => "Subtitles",
-        None => return None,
-    };
-    Some(label)
+fn active_subtitle_track(
+    tracks: &[SubtitleTrack],
+    selected_subtitle: Option<usize>,
+) -> Option<&SubtitleTrack> {
+    selected_subtitle.and_then(|index| tracks.get(index))
 }
 
 fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
@@ -971,19 +971,16 @@ fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<
     Ok(())
 }
 
-fn load_subtitle_track(
-    media_path: &Path,
-    sub_file: Option<&Path>,
-) -> Result<Option<SubtitleTrack>> {
-    if let Some(path) = sub_file.map(Path::to_path_buf) {
-        return SubtitleTrack::load(&path).map(Some);
+fn load_subtitle_tracks(media_path: &Path, sub_file: Option<&Path>) -> Result<Vec<SubtitleTrack>> {
+    let mut tracks = Vec::new();
+    if let Some(path) = sub_file
+        .map(Path::to_path_buf)
+        .or_else(|| sidecar_subtitle_path(media_path))
+    {
+        tracks.push(SubtitleTrack::load(&path)?);
     }
-
-    if let Some(path) = sidecar_subtitle_path(media_path) {
-        return SubtitleTrack::load(&path).map(Some);
-    }
-
-    load_embedded_subtitle_track(media_path)
+    tracks.extend(load_embedded_subtitle_tracks(media_path)?);
+    Ok(tracks)
 }
 
 struct Config {
@@ -1480,9 +1477,9 @@ mod tests {
             None,
             None,
             false,
-            false,
-            false,
             None,
+            false,
+            Vec::new(),
             "movie.mp4",
         );
 

@@ -13,16 +13,16 @@ const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
 const MIN_SCALE_PERCENT: u32 = 100;
 const MAX_SCALE_PERCENT: u32 = 125;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct OverlayState {
     pub(crate) position: Duration,
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,
     pub(crate) visible: bool,
     pub(crate) subtitles_available: bool,
-    pub(crate) subtitles_visible: bool,
+    pub(crate) selected_subtitle: Option<usize>,
     pub(crate) subtitle_picker_open: bool,
-    pub(crate) subtitle_label: Option<&'static str>,
+    pub(crate) subtitle_labels: Vec<&'static str>,
     pub(crate) status_message: Option<&'static str>,
     pub(crate) media_title: Option<&'static str>,
 }
@@ -39,13 +39,14 @@ pub(crate) struct OverlayHitContext {
     pub(crate) scale_percent: u32,
     pub(crate) duration: Option<Duration>,
     pub(crate) subtitles_available: bool,
+    pub(crate) subtitle_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SubtitlePickerAction {
     TogglePicker,
     SelectOff,
-    SelectOn,
+    SelectTrack(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -147,7 +148,7 @@ impl PlaybackOverlay {
             context.duration,
             context.subtitles_available,
         );
-        subtitle_picker_action(metrics, point, picker_open)
+        subtitle_picker_action(metrics, point, picker_open, context.subtitle_count)
     }
 
     fn metrics(
@@ -404,7 +405,13 @@ fn render_overlay_rgb(
 
     draw_playback_control(frame, width, height, metrics, state.paused);
     if state.subtitles_available {
-        draw_subtitle_control(frame, width, height, metrics, state.subtitles_visible);
+        draw_subtitle_control(
+            frame,
+            width,
+            height,
+            metrics,
+            state.selected_subtitle.is_some(),
+        );
         if state.subtitle_picker_open {
             draw_subtitle_picker(
                 font.as_deref_mut(),
@@ -412,8 +419,8 @@ fn render_overlay_rgb(
                 width,
                 height,
                 metrics,
-                state.subtitle_label.unwrap_or("Subtitles"),
-                state.subtitles_visible,
+                &state.subtitle_labels,
+                state.selected_subtitle,
             );
         }
     }
@@ -629,10 +636,18 @@ fn draw_subtitle_picker(
     width: u32,
     height: u32,
     metrics: OverlayMetrics,
-    label: &str,
-    subtitles_visible: bool,
+    labels: &[&str],
+    selected_subtitle: Option<usize>,
 ) {
-    let picker = subtitle_picker_rect(metrics);
+    let max_label_width = labels
+        .iter()
+        .copied()
+        .chain(std::iter::once("Off"))
+        .map(|label| picker_text_width(font.as_deref_mut(), label, metrics.fallback_text_scale))
+        .max()
+        .unwrap_or(0);
+    let picker_width = subtitle_picker_width(metrics, max_label_width);
+    let picker = subtitle_picker_rect(metrics, labels.len(), picker_width);
     let radius = rounded_radius(
         picker.right.saturating_sub(picker.left),
         picker.bottom.saturating_sub(picker.top),
@@ -658,19 +673,48 @@ fn draw_subtitle_picker(
     let marker_size = (metrics.text_size / 3).clamp(4, 7);
     let marker_x = picker.left.saturating_add(pad);
     let text_x = marker_x.saturating_add(marker_size).saturating_add(pad / 2);
-    let on_y = picker.top.saturating_add(pad);
-    let off_y = on_y.saturating_add(row_height);
-    if subtitles_visible {
-        draw_picker_marker(
+    let text_width = picker.right.saturating_sub(text_x).saturating_sub(pad);
+    for (index, label) in labels.iter().enumerate() {
+        let row_y = picker
+            .top
+            .saturating_add(pad)
+            .saturating_add(row_height.saturating_mul(index as u32));
+        if selected_subtitle == Some(index) {
+            draw_picker_marker(
+                frame,
+                width,
+                height,
+                marker_x,
+                row_y,
+                row_height,
+                marker_size,
+            );
+        }
+        let label = fit_picker_text(
+            font.as_deref_mut(),
+            label,
+            metrics.fallback_text_scale,
+            text_width,
+        );
+        draw_overlay_text(
+            font.as_deref_mut(),
             frame,
             width,
             height,
-            marker_x,
-            on_y,
-            row_height,
-            marker_size,
+            text_x,
+            row_y,
+            metrics.fallback_text_scale,
+            &label,
+            TEXT_COLOR,
+            244,
         );
-    } else {
+    }
+
+    let off_y = picker
+        .top
+        .saturating_add(pad)
+        .saturating_add(row_height.saturating_mul(labels.len() as u32));
+    if selected_subtitle.is_none() {
         draw_picker_marker(
             frame,
             width,
@@ -681,18 +725,6 @@ fn draw_subtitle_picker(
             marker_size,
         );
     }
-    draw_overlay_text(
-        font.as_deref_mut(),
-        frame,
-        width,
-        height,
-        text_x,
-        on_y,
-        metrics.fallback_text_scale,
-        label,
-        TEXT_COLOR,
-        244,
-    );
     draw_overlay_text(
         font,
         frame,
@@ -784,6 +816,38 @@ fn draw_subtitle_icon(
     }
 }
 
+fn picker_text_width(font: Option<&mut FontRenderer>, text: &str, fallback_scale: u32) -> u32 {
+    font.map(|font| font.text_width(text))
+        .unwrap_or_else(|| bitmap_text_width(text, fallback_scale))
+}
+
+fn fit_picker_text(
+    mut font: Option<&mut FontRenderer>,
+    text: &str,
+    fallback_scale: u32,
+    max_width: u32,
+) -> String {
+    if picker_text_width(font.as_deref_mut(), text, fallback_scale) <= max_width {
+        return text.to_string();
+    }
+
+    let suffix = "...";
+    let suffix_width = picker_text_width(font.as_deref_mut(), suffix, fallback_scale);
+    if suffix_width > max_width {
+        return String::new();
+    }
+
+    let mut trimmed = text.to_string();
+    while !trimmed.is_empty() {
+        trimmed.pop();
+        let candidate = format!("{trimmed}{suffix}");
+        if picker_text_width(font.as_deref_mut(), &candidate, fallback_scale) <= max_width {
+            return candidate;
+        }
+    }
+    suffix.to_string()
+}
+
 fn draw_picker_marker(
     frame: &mut [u8],
     width: u32,
@@ -823,13 +887,23 @@ fn subtitle_picker_action(
     metrics: OverlayMetrics,
     point: OverlayHitPoint,
     picker_open: bool,
+    subtitle_count: usize,
 ) -> Option<SubtitlePickerAction> {
     if picker_open {
-        let picker = subtitle_picker_rect(metrics);
-        if hitbox_intersects(point.cell, subtitle_picker_on_rect(metrics, picker)) {
-            return Some(SubtitlePickerAction::SelectOn);
+        let picker =
+            subtitle_picker_rect(metrics, subtitle_count, subtitle_picker_max_width(metrics));
+        for index in 0..subtitle_count {
+            if hitbox_intersects(
+                point.cell,
+                subtitle_picker_track_rect(metrics, picker, index),
+            ) {
+                return Some(SubtitlePickerAction::SelectTrack(index));
+            }
         }
-        if hitbox_intersects(point.cell, subtitle_picker_off_rect(metrics, picker)) {
+        if hitbox_intersects(
+            point.cell,
+            subtitle_picker_off_rect(metrics, picker, subtitle_count),
+        ) {
             return Some(SubtitlePickerAction::SelectOff);
         }
     }
@@ -847,12 +921,15 @@ fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
     }
 }
 
-fn subtitle_picker_rect(metrics: OverlayMetrics) -> HitboxRect {
+fn subtitle_picker_rect(
+    metrics: OverlayMetrics,
+    subtitle_count: usize,
+    picker_width: u32,
+) -> HitboxRect {
     let pad = picker_padding(metrics);
     let row_height = subtitle_picker_row_height(metrics);
-    let picker_width = scaled_normal_pixels(132, metrics.text_size).max(metrics.control_size);
     let picker_height = row_height
-        .saturating_mul(2)
+        .saturating_mul(subtitle_count.saturating_add(1) as u32)
         .saturating_add(pad.saturating_mul(2));
     let right = metrics
         .subtitle_x
@@ -871,28 +948,52 @@ fn subtitle_picker_rect(metrics: OverlayMetrics) -> HitboxRect {
     }
 }
 
-fn subtitle_picker_on_rect(metrics: OverlayMetrics, picker: HitboxRect) -> HitboxRect {
+fn subtitle_picker_width(metrics: OverlayMetrics, label_width: u32) -> u32 {
     let pad = picker_padding(metrics);
+    let marker_size = (metrics.text_size / 3).clamp(4, 7);
+    let desired = pad
+        .saturating_mul(2)
+        .saturating_add(marker_size)
+        .saturating_add(pad / 2)
+        .saturating_add(label_width)
+        .max(scaled_normal_pixels(132, metrics.text_size))
+        .max(metrics.control_size);
+    desired.min(subtitle_picker_max_width(metrics).max(1))
+}
+
+fn subtitle_picker_max_width(metrics: OverlayMetrics) -> u32 {
+    metrics
+        .subtitle_x
+        .saturating_add(metrics.control_size)
+        .saturating_sub(metrics.inset_x)
+        .max(metrics.control_size)
+}
+
+fn subtitle_picker_track_rect(
+    metrics: OverlayMetrics,
+    picker: HitboxRect,
+    index: usize,
+) -> HitboxRect {
+    let pad = picker_padding(metrics);
+    let row_height = subtitle_picker_row_height(metrics);
+    let top = picker
+        .top
+        .saturating_add(pad)
+        .saturating_add(row_height.saturating_mul(index as u32));
     HitboxRect {
         left: picker.left,
-        top: picker.top,
+        top,
         right: picker.right,
-        bottom: picker
-            .top
-            .saturating_add(pad)
-            .saturating_add(subtitle_picker_row_height(metrics)),
+        bottom: top.saturating_add(row_height),
     }
 }
 
-fn subtitle_picker_off_rect(metrics: OverlayMetrics, picker: HitboxRect) -> HitboxRect {
-    let pad = picker_padding(metrics);
-    let row_height = subtitle_picker_row_height(metrics);
-    HitboxRect {
-        left: picker.left,
-        top: picker.top.saturating_add(pad).saturating_add(row_height),
-        right: picker.right,
-        bottom: picker.bottom,
-    }
+fn subtitle_picker_off_rect(
+    metrics: OverlayMetrics,
+    picker: HitboxRect,
+    subtitle_count: usize,
+) -> HitboxRect {
+    subtitle_picker_track_rect(metrics, picker, subtitle_count)
 }
 
 fn picker_padding(metrics: OverlayMetrics) -> u32 {
@@ -1538,9 +1639,9 @@ mod tests {
                 paused: true,
                 visible: true,
                 subtitles_available: false,
-                subtitles_visible: false,
+                selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_label: None,
+                subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
             },
@@ -1577,9 +1678,9 @@ mod tests {
                 paused: false,
                 visible: true,
                 subtitles_available: false,
-                subtitles_visible: false,
+                selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_label: None,
+                subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
             },
@@ -1617,9 +1718,9 @@ mod tests {
                 paused: true,
                 visible: true,
                 subtitles_available: false,
-                subtitles_visible: false,
+                selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_label: None,
+                subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
             },
@@ -1672,9 +1773,9 @@ mod tests {
                 paused: false,
                 visible: false,
                 subtitles_available: false,
-                subtitles_visible: false,
+                selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_label: None,
+                subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
             },
@@ -1705,9 +1806,9 @@ mod tests {
                 paused: false,
                 visible: false,
                 subtitles_available: false,
-                subtitles_visible: false,
+                selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_label: None,
+                subtitle_labels: Vec::new(),
                 status_message: Some("MUTE ON"),
                 media_title: None,
             },
@@ -1741,9 +1842,9 @@ mod tests {
                 paused: false,
                 visible: true,
                 subtitles_available: false,
-                subtitles_visible: false,
+                selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_label: None,
+                subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: Some("movie.mkv"),
             },
@@ -1871,24 +1972,40 @@ mod tests {
                     metrics.control_y + metrics.control_size / 2,
                 ),
                 false,
+                2,
             ),
             Some(SubtitlePickerAction::TogglePicker)
         );
     }
 
     #[test]
-    fn subtitle_picker_selects_on_and_off_rows() {
+    fn subtitle_picker_width_expands_and_clamps_to_canvas() {
         let metrics = test_metrics_with_subtitles(320, 180);
-        let picker = subtitle_picker_rect(metrics);
-        let on = subtitle_picker_on_rect(metrics, picker);
-        let off = subtitle_picker_off_rect(metrics, picker);
+        let short = subtitle_picker_width(metrics, 20);
+        let long = subtitle_picker_width(metrics, 600);
+
+        assert!(long > short);
+        assert_eq!(long, subtitle_picker_max_width(metrics));
+    }
+
+    #[test]
+    fn subtitle_picker_selects_track_and_off_rows() {
+        let metrics = test_metrics_with_subtitles(320, 180);
+        let picker = subtitle_picker_rect(metrics, 2, subtitle_picker_max_width(metrics));
+        let first = subtitle_picker_track_rect(metrics, picker, 0);
+        let second = subtitle_picker_track_rect(metrics, picker, 1);
+        let off = subtitle_picker_off_rect(metrics, picker, 2);
 
         assert_eq!(
-            subtitle_picker_action(metrics, hit_point(on.left + 1, on.top + 1), true),
-            Some(SubtitlePickerAction::SelectOn)
+            subtitle_picker_action(metrics, hit_point(first.left + 1, first.top + 1), true, 2),
+            Some(SubtitlePickerAction::SelectTrack(0))
         );
         assert_eq!(
-            subtitle_picker_action(metrics, hit_point(off.left + 1, off.top + 1), true),
+            subtitle_picker_action(metrics, hit_point(second.left + 1, second.top + 1), true, 2),
+            Some(SubtitlePickerAction::SelectTrack(1))
+        );
+        assert_eq!(
+            subtitle_picker_action(metrics, hit_point(off.left + 1, off.top + 1), true, 2),
             Some(SubtitlePickerAction::SelectOff)
         );
     }

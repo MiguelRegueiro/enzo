@@ -27,6 +27,7 @@ pub(crate) struct SubtitleCue {
 pub(crate) struct SubtitleTrack {
     cues: Vec<SubtitleCue>,
     language: Option<String>,
+    label: String,
 }
 
 impl SubtitleTrack {
@@ -38,14 +39,25 @@ impl SubtitleTrack {
         if cues.is_empty() {
             bail!("subtitle file has no cues: {}", path.display());
         }
+        let language = infer_subtitle_language(path, &text);
         Ok(Self {
-            language: infer_subtitle_language(path, &text),
+            label: subtitle_label(language.as_deref(), None, "External"),
+            language,
             cues,
         })
     }
 
+    pub(crate) fn with_label(mut self, label: String) -> Self {
+        self.label = label;
+        self
+    }
+
     pub(crate) fn language(&self) -> Option<&str> {
         self.language.as_deref()
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        &self.label
     }
 
     fn active_lines(&self, position: Duration) -> Option<&[String]> {
@@ -68,48 +80,140 @@ pub(crate) fn sidecar_subtitle_path(media_path: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-pub(crate) fn load_embedded_subtitle_track(media_path: &Path) -> Result<Option<SubtitleTrack>> {
+pub(crate) fn load_embedded_subtitle_tracks(media_path: &Path) -> Result<Vec<SubtitleTrack>> {
     let text = media_path.as_os_str().to_string_lossy();
     if text.contains("://") {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
-    let path = embedded_subtitle_temp_path();
-    let output = Command::new("ffmpeg")
-        .arg("-nostdin")
-        .arg("-v")
-        .arg("error")
-        .arg("-y")
-        .arg("-i")
-        .arg(media_path)
-        .arg("-map")
-        .arg("0:s:0")
-        .arg("-c:s")
-        .arg("srt")
-        .arg(&path)
-        .output();
+    let streams = embedded_subtitle_streams(media_path);
+    let mut tracks = Vec::new();
+    for (fallback_index, stream) in streams.into_iter().enumerate() {
+        let subtitle_index = stream.subtitle_index.unwrap_or(fallback_index);
+        let path = embedded_subtitle_temp_path(subtitle_index);
+        let output = Command::new("ffmpeg")
+            .arg("-nostdin")
+            .arg("-v")
+            .arg("error")
+            .arg("-y")
+            .arg("-i")
+            .arg(media_path)
+            .arg("-map")
+            .arg(format!("0:s:{subtitle_index}"))
+            .arg("-c:s")
+            .arg("srt")
+            .arg(&path)
+            .output();
 
-    let Ok(output) = output else {
-        return Ok(None);
-    };
-    if !output.status.success() || fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
-    {
+        let Ok(output) = output else {
+            continue;
+        };
+        if !output.status.success()
+            || fs::metadata(&path).map_or(true, |metadata| metadata.len() == 0)
+        {
+            let _ = fs::remove_file(&path);
+            continue;
+        }
+
+        if let Ok(track) = SubtitleTrack::load(&path) {
+            tracks.push(track.with_label(stream.label()));
+        }
         let _ = fs::remove_file(&path);
-        return Ok(None);
     }
-
-    let track = SubtitleTrack::load(&path).ok();
-    let _ = fs::remove_file(&path);
-    Ok(track)
+    Ok(tracks)
 }
 
-fn embedded_subtitle_temp_path() -> PathBuf {
+#[derive(Clone, Debug, Default)]
+struct EmbeddedSubtitleStream {
+    subtitle_index: Option<usize>,
+    language: Option<String>,
+    title: Option<String>,
+    default: bool,
+    forced: bool,
+}
+
+impl EmbeddedSubtitleStream {
+    fn label(&self) -> String {
+        subtitle_label(self.language.as_deref(), self.title.as_deref(), "Embedded")
+    }
+}
+
+fn embedded_subtitle_streams(media_path: &Path) -> Vec<EmbeddedSubtitleStream> {
+    let Ok(output) = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("s")
+        .arg("-show_entries")
+        .arg("stream=index:stream_tags=language,title:stream_disposition=default,forced")
+        .arg("-of")
+        .arg("compact=p=0:nk=0")
+        .arg(media_path)
+        .output()
+    else {
+        return vec![EmbeddedSubtitleStream {
+            subtitle_index: Some(0),
+            ..EmbeddedSubtitleStream::default()
+        }];
+    };
+    if !output.status.success() {
+        return vec![EmbeddedSubtitleStream {
+            subtitle_index: Some(0),
+            ..EmbeddedSubtitleStream::default()
+        }];
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let streams = text
+        .lines()
+        .enumerate()
+        .map(|(subtitle_index, line)| parse_embedded_subtitle_stream(line, subtitle_index))
+        .collect::<Vec<_>>();
+    if streams.is_empty() {
+        vec![EmbeddedSubtitleStream {
+            subtitle_index: Some(0),
+            ..EmbeddedSubtitleStream::default()
+        }]
+    } else {
+        streams
+    }
+}
+
+fn parse_embedded_subtitle_stream(line: &str, subtitle_index: usize) -> EmbeddedSubtitleStream {
+    let mut stream = EmbeddedSubtitleStream {
+        subtitle_index: Some(subtitle_index),
+        ..EmbeddedSubtitleStream::default()
+    };
+    for part in line.split('|') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        match key {
+            "tag:language" => stream.language = normalize_language_tag(value),
+            "tag:title" => stream.title = Some(value.to_string()),
+            "disposition:default" => stream.default = value == "1",
+            "disposition:forced" => stream.forced = value == "1",
+            _ => {}
+        }
+    }
+    stream
+}
+
+fn subtitle_label(language: Option<&str>, title: Option<&str>, fallback: &str) -> String {
+    let language = language.map(language_label).unwrap_or(fallback);
+    match title.filter(|title| !title.trim().is_empty()) {
+        Some(title) => format!("{language} — {title}"),
+        None => language.to_string(),
+    }
+}
+
+fn embedded_subtitle_temp_path(subtitle_index: usize) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     env::temp_dir().join(format!(
-        "rigoberto-embedded-subtitle-{}-{nonce}.srt",
+        "rigoberto-embedded-subtitle-{}-{subtitle_index}-{nonce}.srt",
         process::id()
     ))
 }
@@ -199,6 +303,27 @@ impl SubtitleRenderer {
             );
             y = y.saturating_add(line_height).saturating_add(line_gap);
         }
+    }
+}
+
+fn language_label(language: &str) -> &'static str {
+    match language {
+        "en" => "English",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "zh" => "Chinese",
+        "zh-Hans" => "Chinese Simplified",
+        "zh-Hant" => "Chinese Traditional",
+        "ru" => "Russian",
+        "es" => "Spanish",
+        "fr" => "French",
+        "de" => "German",
+        "pt" => "Portuguese",
+        "it" => "Italian",
+        "ar" => "Arabic",
+        "hi" => "Hindi",
+        "tr" => "Turkish",
+        _ => "Subtitles",
     }
 }
 
@@ -901,6 +1026,7 @@ One
             )
             .expect("srt should parse"),
             language: None,
+            label: String::from("Subtitles"),
         };
 
         assert!(track.active_lines(Duration::from_millis(999)).is_none());
@@ -1024,8 +1150,10 @@ But I told them it was not.
             return;
         }
 
-        let track = load_embedded_subtitle_track(&media)
+        let track = load_embedded_subtitle_tracks(&media)
             .expect("embedded subtitle load should not error")
+            .into_iter()
+            .next()
             .expect("embedded subtitle should be found");
         assert_eq!(track.language(), Some("en"));
         assert_eq!(
@@ -1053,6 +1181,7 @@ Hello
             )
             .expect("srt should parse"),
             language: None,
+            label: String::from("Subtitles"),
         };
         let mut renderer = SubtitleRenderer {
             font: None,
