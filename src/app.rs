@@ -477,6 +477,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             width: canvas.width,
             height: canvas.height,
             scale_percent: canvas.overlay_scale_percent,
+            position: scrub_position.unwrap_or(playback_position),
             duration: source.duration,
             audio_available: !audio_tracks.is_empty(),
             audio_count: audio_tracks.len(),

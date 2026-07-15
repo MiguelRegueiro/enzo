@@ -41,6 +41,7 @@ pub(crate) struct OverlayHitContext {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) scale_percent: u32,
+    pub(crate) position: Duration,
     pub(crate) duration: Option<Duration>,
     pub(crate) audio_available: bool,
     pub(crate) audio_count: usize,
@@ -117,7 +118,7 @@ impl PlaybackOverlay {
             context.audio_available,
             context.subtitles_available,
         );
-        progress_hit_ratio(metrics, point)
+        progress_hit_ratio(metrics, point, context.position, context.duration)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -297,14 +298,15 @@ impl OverlayMetrics {
         } else {
             content_right
         };
+        let bar_gap = control_gap.saturating_mul(3);
         let bar_x = time_x
             .saturating_add(time_width)
-            .saturating_add(control_gap)
+            .saturating_add(bar_gap)
             .min(controls_left.saturating_sub(1));
         let bar_right = if controls > 0 {
-            controls_left.saturating_sub(control_gap)
+            controls_left.saturating_sub(bar_gap)
         } else {
-            content_right
+            content_right.saturating_sub(bar_gap)
         };
         let bar_width = bar_right.saturating_sub(bar_x).max(1);
         let bar_y = row_y.saturating_add((row_height.saturating_sub(bar_height)) / 2);
@@ -458,7 +460,7 @@ fn render_overlay_rgb(
     }
 
     scratch.clear();
-    scratch.push_str(&format_timestamp(state.position));
+    scratch.push_str(&format_position_timestamp(state.position, state.duration));
     scratch.push_str(" / ");
     if let Some(duration) = state.duration {
         scratch.push_str(&format_timestamp(duration));
@@ -1125,20 +1127,26 @@ fn subtitle_picker_action(
 }
 
 fn audio_button_rect(metrics: OverlayMetrics) -> HitboxRect {
-    HitboxRect {
-        left: metrics.audio_x,
-        top: metrics.control_y,
-        right: metrics.audio_x.saturating_add(metrics.control_size),
-        bottom: metrics.control_y.saturating_add(metrics.control_size),
-    }
+    icon_button_rect(metrics.audio_x, metrics)
 }
 
 fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
+    icon_button_rect(metrics.subtitle_x, metrics)
+}
+
+fn icon_button_rect(x: u32, metrics: OverlayMetrics) -> HitboxRect {
+    let icon_width = (metrics.control_size * 4 / 5).max(14);
+    let icon_height = (metrics.control_size * 3 / 5).max(10);
+    let left = x.saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
+    let top = metrics
+        .control_y
+        .saturating_add(metrics.control_size.saturating_sub(icon_height) / 2);
+
     HitboxRect {
-        left: metrics.subtitle_x,
-        top: metrics.control_y,
-        right: metrics.subtitle_x.saturating_add(metrics.control_size),
-        bottom: metrics.control_y.saturating_add(metrics.control_size),
+        left,
+        top,
+        right: left.saturating_add(icon_width),
+        bottom: top.saturating_add(icon_height),
     }
 }
 
@@ -1266,18 +1274,29 @@ fn draw_progress_handle(
     );
 }
 
-fn progress_hit_ratio(metrics: OverlayMetrics, point: OverlayHitPoint) -> Option<f64> {
+fn progress_hit_ratio(
+    metrics: OverlayMetrics,
+    point: OverlayHitPoint,
+    position: Duration,
+    duration: Option<Duration>,
+) -> Option<f64> {
     let hit_radius = progress_handle_radius(metrics.bar_height).max(8) + 5;
+    let center_y = progress_handle_center_y(metrics);
     let bar_rect = HitboxRect {
-        left: metrics.bar_x.saturating_sub(hit_radius),
-        top: progress_handle_center_y(metrics).saturating_sub(hit_radius),
-        right: metrics
-            .bar_x
-            .saturating_add(metrics.bar_width)
-            .saturating_add(hit_radius),
-        bottom: progress_handle_center_y(metrics).saturating_add(hit_radius),
+        left: metrics.bar_x,
+        top: center_y.saturating_sub(hit_radius),
+        right: metrics.bar_x.saturating_add(metrics.bar_width),
+        bottom: center_y.saturating_add(hit_radius),
     };
-    if !hitbox_intersects(point.cell, bar_rect) {
+    let filled = progress_pixels(metrics.bar_width, position, duration);
+    let handle_center_x = metrics.bar_x.saturating_add(filled.min(metrics.bar_width));
+    let handle_rect = HitboxRect {
+        left: handle_center_x.saturating_sub(hit_radius),
+        top: center_y.saturating_sub(hit_radius),
+        right: handle_center_x.saturating_add(hit_radius),
+        bottom: center_y.saturating_add(hit_radius),
+    };
+    if !hitbox_intersects(point.cell, bar_rect) && !hitbox_intersects(point.cell, handle_rect) {
         return None;
     }
 
@@ -1368,11 +1387,24 @@ fn time_column_width(
 
 fn time_column_template(duration: Option<Duration>) -> String {
     if let Some(duration) = duration {
-        let text = format_timestamp(duration);
-        format!("{text} / {text}")
+        let position = format_position_timestamp(Duration::ZERO, Some(duration));
+        let duration = format_timestamp(duration);
+        format!("{position} / {duration}")
     } else {
         "0:00 / --:--".to_string()
     }
+}
+
+fn format_position_timestamp(position: Duration, duration: Option<Duration>) -> String {
+    let Some(duration) = duration.filter(|duration| duration.as_secs() >= 3600) else {
+        return format_timestamp(position);
+    };
+
+    format_timestamp_with_hours(position, hour_digits(duration))
+}
+
+fn hour_digits(duration: Duration) -> usize {
+    ((duration.as_secs() / 3600).max(1)).to_string().len()
 }
 
 fn outer_padding_for_text(text_size: u32) -> u32 {
@@ -1405,10 +1437,19 @@ fn format_timestamp(duration: Duration) -> String {
     let seconds = total % 60;
 
     if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
+        format_timestamp_with_hours(duration, hour_digits(duration))
     } else {
         format!("{minutes}:{seconds:02}")
     }
+}
+
+fn format_timestamp_with_hours(duration: Duration, hour_width: usize) -> String {
+    let total = duration.as_secs();
+    let hours = total / 3600;
+    let minutes = (total / 60) % 60;
+    let seconds = total % 60;
+
+    format!("{hours:0hour_width$}:{minutes:02}:{seconds:02}")
 }
 
 #[derive(Clone, Copy)]
@@ -1836,6 +1877,32 @@ mod tests {
     }
 
     #[test]
+    fn time_column_uses_hour_position_when_duration_has_hours() {
+        let duration = Duration::from_secs(2 * 3600 + 6 * 60 + 44);
+
+        assert_eq!(
+            format_position_timestamp(Duration::ZERO, Some(duration)),
+            "0:00:00"
+        );
+        assert_eq!(
+            format_position_timestamp(Duration::from_secs(3600 + 37 * 60 + 38), Some(duration)),
+            "1:37:38"
+        );
+        assert_eq!(time_column_template(Some(duration)), "0:00:00 / 2:06:44");
+    }
+
+    #[test]
+    fn time_column_keeps_minute_position_for_short_duration() {
+        let duration = Duration::from_secs(6 * 60 + 44);
+
+        assert_eq!(
+            format_position_timestamp(Duration::ZERO, Some(duration)),
+            "0:00"
+        );
+        assert_eq!(time_column_template(Some(duration)), "0:00 / 6:44");
+    }
+
+    #[test]
     fn progress_pixels_clamps_to_width() {
         assert_eq!(
             progress_pixels(12, Duration::from_secs(30), Some(Duration::from_secs(10))),
@@ -2107,7 +2174,8 @@ mod tests {
         let x = metrics.bar_x + metrics.bar_width / 2;
         let y = metrics.bar_y + metrics.bar_height / 2;
 
-        let ratio = progress_hit_ratio(metrics, hit_point(x, y)).expect("bar should be hittable");
+        let ratio =
+            progress_hit_ratio_at_middle(metrics, hit_point(x, y)).expect("bar should be hittable");
 
         assert!((ratio - 0.5).abs() < 0.01);
     }
@@ -2117,9 +2185,44 @@ mod tests {
         let metrics = test_metrics(320, 180);
 
         assert_eq!(
-            progress_hit_ratio(metrics, hit_point(metrics.bar_x, 0)),
+            progress_hit_ratio_at_middle(metrics, hit_point(metrics.bar_x, 0)),
             None
         );
+    }
+
+    #[test]
+    fn progress_hit_test_ignores_side_padding() {
+        let metrics = test_metrics(320, 180);
+        let y = metrics.bar_y + metrics.bar_height / 2;
+
+        assert_eq!(
+            progress_hit_ratio_at_middle(metrics, hit_point(metrics.bar_x.saturating_sub(1), y)),
+            None
+        );
+        assert_eq!(
+            progress_hit_ratio_at_middle(
+                metrics,
+                hit_point(metrics.bar_x + metrics.bar_width + 1, y)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn progress_hit_test_keeps_visible_edge_handle_hittable() {
+        let metrics = test_metrics(320, 180);
+        let y = metrics.bar_y + metrics.bar_height / 2;
+        let x = metrics.bar_x.saturating_sub(1);
+
+        let ratio = progress_hit_ratio(
+            metrics,
+            hit_point(x, y),
+            Duration::ZERO,
+            Some(Duration::from_secs(120)),
+        )
+        .expect("visible start handle should be hittable");
+
+        assert_eq!(ratio, 0.0);
     }
 
     #[test]
@@ -2138,12 +2241,12 @@ mod tests {
             },
         );
 
-        let ratio = progress_hit_ratio(metrics, cell_overlapping_from_below)
+        let ratio = progress_hit_ratio_at_middle(metrics, cell_overlapping_from_below)
             .expect("overlapping cell should be hittable");
 
         assert!((ratio - 0.5).abs() < 0.01);
         assert_eq!(
-            progress_hit_ratio(
+            progress_hit_ratio_at_middle(
                 metrics,
                 hit_point_with_cell(
                     x,
@@ -2158,7 +2261,7 @@ mod tests {
             None
         );
         assert_eq!(
-            progress_hit_ratio(
+            progress_hit_ratio_at_middle(
                 metrics,
                 hit_point_with_cell(
                     x,
@@ -2173,7 +2276,7 @@ mod tests {
             None
         );
         assert_eq!(
-            progress_hit_ratio(
+            progress_hit_ratio_at_middle(
                 metrics,
                 hit_point_with_cell(
                     x,
@@ -2209,36 +2312,46 @@ mod tests {
     #[test]
     fn subtitle_button_hit_test_toggles_picker() {
         let metrics = test_metrics_with_subtitles(320, 180);
+        let rect = subtitle_button_rect(metrics);
 
         assert_eq!(
             subtitle_picker_action(
                 metrics,
                 hit_point(
-                    metrics.subtitle_x + metrics.control_size / 2,
-                    metrics.control_y + metrics.control_size / 2,
+                    rect.left + (rect.right - rect.left) / 2,
+                    rect.top + (rect.bottom - rect.top) / 2,
                 ),
                 false,
                 2,
             ),
             Some(SubtitlePickerAction::TogglePicker)
         );
+        assert_eq!(
+            subtitle_picker_action(metrics, hit_point(rect.right + 1, rect.top), false, 2),
+            None
+        );
     }
 
     #[test]
     fn audio_button_hit_test_toggles_picker() {
         let metrics = test_metrics_with_audio_and_subtitles(320, 180);
+        let rect = audio_button_rect(metrics);
 
         assert_eq!(
             audio_picker_action(
                 metrics,
                 hit_point(
-                    metrics.audio_x + metrics.control_size / 2,
-                    metrics.control_y + metrics.control_size / 2,
+                    rect.left + (rect.right - rect.left) / 2,
+                    rect.top + (rect.bottom - rect.top) / 2,
                 ),
                 false,
                 2,
             ),
             Some(AudioPickerAction::TogglePicker)
+        );
+        assert_eq!(
+            audio_picker_action(metrics, hit_point(rect.right + 1, rect.top), false, 2),
+            None
         );
     }
 
@@ -2356,6 +2469,59 @@ mod tests {
     }
 
     #[test]
+    fn progress_bar_end_gap_matches_start_gap_without_extra_controls() {
+        let width = 320;
+        let metrics = test_metrics(width, 180);
+        let time_width = time_column_width(
+            None,
+            Some(Duration::from_secs(120)),
+            metrics.fallback_text_scale,
+        );
+        let left_gap = metrics
+            .bar_x
+            .saturating_sub(metrics.time_x.saturating_add(time_width));
+        let right_gap = width
+            .saturating_sub(metrics.inner_x)
+            .saturating_sub(metrics.bar_x.saturating_add(metrics.bar_width));
+
+        assert_eq!(right_gap, left_gap);
+    }
+
+    #[test]
+    fn progress_bar_keeps_matching_visual_gap_before_track_buttons() {
+        let metrics = test_metrics_with_audio_and_subtitles(782, 586);
+        let control_gap = control_gap_for_text(metrics.text_size);
+        let time_width = time_column_width(
+            None,
+            Some(Duration::from_secs(120)),
+            metrics.fallback_text_scale,
+        );
+        let left_gap = metrics
+            .bar_x
+            .saturating_sub(metrics.time_x.saturating_add(time_width));
+        let right_gap = metrics
+            .audio_x
+            .saturating_sub(metrics.bar_x.saturating_add(metrics.bar_width));
+
+        assert_eq!(left_gap, control_gap * 3);
+        assert_eq!(right_gap, left_gap);
+        assert_eq!(
+            progress_hit_ratio_at_middle(
+                metrics,
+                hit_point(metrics.bar_x.saturating_sub(1), metrics.bar_y),
+            ),
+            None
+        );
+        assert_eq!(
+            progress_hit_ratio_at_middle(
+                metrics,
+                hit_point(metrics.bar_x + metrics.bar_width + 1, metrics.bar_y),
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn overlay_large_canvas_uses_normal_text_size() {
         let medium = test_metrics(640, 360);
         let large = test_metrics(1920, 1080);
@@ -2417,6 +2583,18 @@ mod tests {
 
     fn hit_point_with_cell(x: u32, cell: HitboxRect) -> OverlayHitPoint {
         OverlayHitPoint { x, cell }
+    }
+
+    fn progress_hit_ratio_at_middle(
+        metrics: OverlayMetrics,
+        point: OverlayHitPoint,
+    ) -> Option<f64> {
+        progress_hit_ratio(
+            metrics,
+            point,
+            Duration::from_secs(60),
+            Some(Duration::from_secs(120)),
+        )
     }
 
     fn test_metrics_with_scale(width: u32, height: u32, scale_percent: u32) -> OverlayMetrics {
