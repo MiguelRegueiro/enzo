@@ -84,7 +84,7 @@ pub(crate) fn run() -> Result<()> {
     let font_system = FontSystem::discover();
     if !config.force && !looks_like_kitty() {
         bail!(
-            "Rigoberto targets Kitty graphics; run from kitty or pass --force if your terminal is compatible"
+            "Verno targets Kitty graphics; run from kitty or pass --force if your terminal is compatible"
         );
     }
 
@@ -1528,17 +1528,17 @@ fn join_positionals(positionals: Vec<OsString>) -> Option<PathBuf> {
 fn print_help() {
     println!(
         "\
-rigoberto - video player for Kitty-compatible terminals
+verno - video player for Kitty-compatible terminals
 
 Usage:
-  rigoberto [--force] [--sub-file subtitle] [video-or-url]
+  verno [--force] [--sub-file subtitle] [video-or-url]
 
 Controls:
   Drop file/URL      play from launcher
   Space, right click  pause/play
   m                  mute/unmute
   v                  subtitles on/off
-  Left, Right         seek 5 seconds
+  Left, Right         seek backward/forward
   q                  quit
 "
     );
@@ -1732,7 +1732,7 @@ mod tests {
     #[test]
     fn launcher_drop_uses_same_media_and_sidecar_path_as_argument() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-app-drop-subtitle-test-{}",
+            "verno-app-drop-subtitle-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1756,7 +1756,7 @@ mod tests {
     #[test]
     fn playback_drop_accepts_subtitle_file() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-app-playback-subtitle-drop-test-{}",
+            "verno-app-playback-subtitle-drop-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1774,7 +1774,7 @@ mod tests {
     #[test]
     fn playback_drop_normalizes_duplicate_subtitle_paths() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-app-playback-subtitle-dup-test-{}",
+            "verno-app-playback-subtitle-dup-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1799,7 +1799,7 @@ mod tests {
     #[test]
     fn playback_drop_ignores_non_subtitle_file() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-app-playback-video-drop-test-{}",
+            "verno-app-playback-video-drop-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1828,10 +1828,8 @@ mod tests {
 
     #[test]
     fn parse_args_accepts_sub_file() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-app-subtitle-test-{}",
-            std::process::id()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("verno-app-subtitle-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir(&temp_dir).expect("temp dir should be created");
         let sub_file = temp_dir.join("movie.srt");
@@ -2006,9 +2004,29 @@ mod tests {
     }
 
     #[test]
+    fn invalid_media_does_not_invent_pending_embedded_subtitles() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "verno-no-embedded-subtitle-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("movie.mp4");
+        std::fs::write(&media, b"not really video").expect("media placeholder should be written");
+
+        let (tracks, jobs) = load_initial_subtitle_tracks(&media, None)
+            .expect("subtitle discovery should tolerate videos without subtitle streams");
+
+        assert!(tracks.is_empty());
+        assert!(jobs.is_empty());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn sidecar_subtitle_stays_loaded_before_background_embedded_tracks() {
         let temp_dir =
-            std::env::temp_dir().join(format!("rigoberto-sidecar-load-{}", std::process::id()));
+            std::env::temp_dir().join(format!("verno-sidecar-load-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
         let media = temp_dir.join("movie.mkv");

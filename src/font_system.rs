@@ -254,7 +254,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
-        let dir = env::temp_dir().join(format!("rigoberto-font-system-{name}-{nonce}"));
+        let dir = env::temp_dir().join(format!("verno-font-system-{name}-{nonce}"));
         fs::create_dir_all(&dir).expect("create temp font dir");
         dir
     }

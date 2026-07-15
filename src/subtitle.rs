@@ -50,7 +50,7 @@ impl SubtitleTrack {
         }
         let language = infer_subtitle_language(path, &text);
         Ok(Self {
-            label: subtitle_label(language.as_deref(), None, "External"),
+            label: external_subtitle_label(path, language.as_deref()),
             language,
             cues,
         })
@@ -163,7 +163,7 @@ pub(crate) struct EmbeddedSubtitleStream {
 
 impl EmbeddedSubtitleStream {
     pub(crate) fn label(&self) -> String {
-        subtitle_label(self.language.as_deref(), self.title.as_deref(), "Embedded")
+        embedded_subtitle_label(self)
     }
 
     pub(crate) fn is_text(&self) -> bool {
@@ -208,32 +208,20 @@ pub(crate) fn embedded_subtitle_streams(media_path: &Path) -> Vec<EmbeddedSubtit
         .arg(media_path)
         .output()
     else {
-        return vec![EmbeddedSubtitleStream {
-            subtitle_index: Some(0),
-            ..EmbeddedSubtitleStream::default()
-        }];
+        return Vec::new();
     };
     if !output.status.success() {
-        return vec![EmbeddedSubtitleStream {
-            subtitle_index: Some(0),
-            ..EmbeddedSubtitleStream::default()
-        }];
+        return Vec::new();
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    let streams = text
-        .lines()
+    parse_embedded_subtitle_streams(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_embedded_subtitle_streams(text: &str) -> Vec<EmbeddedSubtitleStream> {
+    text.lines()
         .enumerate()
         .map(|(subtitle_index, line)| parse_embedded_subtitle_stream(line, subtitle_index))
-        .collect::<Vec<_>>();
-    if streams.is_empty() {
-        vec![EmbeddedSubtitleStream {
-            subtitle_index: Some(0),
-            ..EmbeddedSubtitleStream::default()
-        }]
-    } else {
-        streams
-    }
+        .collect()
 }
 
 fn parse_embedded_subtitle_stream(line: &str, subtitle_index: usize) -> EmbeddedSubtitleStream {
@@ -257,12 +245,59 @@ fn parse_embedded_subtitle_stream(line: &str, subtitle_index: usize) -> Embedded
     stream
 }
 
-fn subtitle_label(language: Option<&str>, title: Option<&str>, fallback: &str) -> String {
-    let language = language.map(language_label).unwrap_or(fallback);
-    match title.filter(|title| !title.trim().is_empty()) {
-        Some(title) => format!("{language} — {title}"),
-        None => language.to_string(),
+fn external_subtitle_label(path: &Path, language: Option<&str>) -> String {
+    let mut details = Vec::new();
+    if let Some(language) = language {
+        details.push(language.to_string());
     }
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        details.push(extension.to_ascii_lowercase());
+    }
+
+    if details.is_empty() {
+        "External".to_string()
+    } else {
+        format!("External ({})", details.join(" "))
+    }
+}
+
+fn embedded_subtitle_label(stream: &EmbeddedSubtitleStream) -> String {
+    let primary = stream
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            stream
+                .language
+                .as_deref()
+                .map(language_label)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "Embedded".to_string());
+
+    let mut details = Vec::new();
+    if let Some(language) = stream.language.as_deref() {
+        details.push(language.to_string());
+    }
+    if let Some(codec) = stream.codec.as_deref().filter(|codec| !codec.is_empty()) {
+        details.push(codec.to_string());
+    }
+
+    let mut label = primary;
+    if !details.is_empty() {
+        label.push_str(" (");
+        label.push_str(&details.join(" "));
+        label.push(')');
+    }
+    if stream.default {
+        label.push_str(" [default]");
+    }
+    if stream.forced {
+        label.push_str(" [forced]");
+    }
+    label
 }
 
 fn embedded_subtitle_temp_path(subtitle_index: usize, extension: &str) -> PathBuf {
@@ -287,7 +322,7 @@ fn subtitle_temp_path(label: &str, subtitle_index: usize, extension: &str) -> Pa
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect::<String>();
     env::temp_dir().join(format!(
-        "rigoberto-subtitle-{label}-{}-{subtitle_index}-{nonce}.{extension}",
+        "verno-subtitle-{label}-{}-{subtitle_index}-{nonce}.{extension}",
         process::id(),
     ))
 }
@@ -1390,7 +1425,7 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond ha
     #[test]
     fn recognizes_text_and_bitmap_embedded_subtitle_codecs() {
         let ass = parse_embedded_subtitle_stream(
-            "index=4|codec_name=ass|tag:language=eng|tag:title=English",
+            "index=4|codec_name=ass|tag:language=eng|tag:title=English|disposition:default=1",
             0,
         );
         let pgs = parse_embedded_subtitle_stream(
@@ -1399,7 +1434,28 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond ha
         );
 
         assert!(ass.is_text());
+        assert_eq!(ass.label(), "English (en ass) [default]");
         assert!(!pgs.is_text());
+    }
+
+    #[test]
+    fn embedded_subtitle_labels_use_title_with_language_and_codec_details() {
+        let cc = parse_embedded_subtitle_stream(
+            "index=5|codec_name=ass|tag:language=eng|tag:title=English(CC)",
+            1,
+        );
+        let portuguese = parse_embedded_subtitle_stream(
+            "index=6|codec_name=ass|tag:language=por|tag:title=Portuguese(Brazil)",
+            2,
+        );
+        let spanish = parse_embedded_subtitle_stream(
+            "index=7|codec_name=ass|tag:language=spa|tag:title=Spanish(Latin_America)",
+            3,
+        );
+
+        assert_eq!(cc.label(), "English(CC) (en ass)");
+        assert_eq!(portuguese.label(), "Portuguese(Brazil) (pt ass)");
+        assert_eq!(spanish.label(), "Spanish(Latin_America) (es ass)");
     }
 
     #[test]
@@ -1440,7 +1496,7 @@ One
     #[test]
     fn sidecar_path_uses_srt_extension_for_local_files() {
         let temp_dir =
-            std::env::temp_dir().join(format!("rigoberto-subtitle-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("verno-subtitle-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp_dir);
         fs::create_dir(&temp_dir).expect("temp dir should be created");
         let media = temp_dir.join("movie.mp4");
@@ -1456,7 +1512,7 @@ One
     #[test]
     fn sidecar_path_uses_supported_text_subtitle_extensions() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-subtitle-extension-test-{}",
+            "verno-subtitle-extension-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1520,13 +1576,36 @@ But I told them it was not.
     }
 
     #[test]
+    fn external_subtitle_label_keeps_source_and_detected_language() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "verno-external-subtitle-label-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let subtitle = temp_dir.join("movie.srt");
+        fs::write(
+            &subtitle,
+            "1\n00:00:01,000 --> 00:00:03,000\nこれは日本語の字幕です。\n",
+        )
+        .expect("subtitle fixture should be written");
+
+        let track = SubtitleTrack::load(&subtitle).expect("external subtitle should load");
+
+        assert_eq!(track.language(), Some("ja"));
+        assert_eq!(track.label(), "External (ja srt)");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn loads_embedded_srt_subtitle_when_ffmpeg_is_available() {
         if Command::new("ffmpeg").arg("-version").output().is_err() {
             return;
         }
 
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-embedded-subtitle-test-{}",
+            "verno-embedded-subtitle-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1591,7 +1670,7 @@ But I told them it was not.
         }
 
         let temp_dir = std::env::temp_dir().join(format!(
-            "rigoberto-embedded-ass-subtitle-test-{}",
+            "verno-embedded-ass-subtitle-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);

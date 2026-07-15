@@ -1,8 +1,8 @@
-# rigoberto
+# verno
 
 Video player for Kitty-compatible terminals.
 
-Rigoberto renders video frames with the Kitty graphics protocol and plays audio through PulseAudio.
+Verno renders video frames with the Kitty graphics protocol and plays audio through PulseAudio.
 It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resampling.
 
 ## Requirements
@@ -38,7 +38,7 @@ Controls:
 - Space or right click pauses/resumes playback.
 - `m` toggles mute.
 - `v` toggles subtitles.
-- Left/right arrows seek backward/forward by 5 seconds.
+- Left/right arrows seek backward/forward with duration-aware steps.
 - Click or drag the progress bar to seek.
 - `q` quits.
 

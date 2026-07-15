@@ -10,7 +10,7 @@ mod terminal;
 
 fn main() {
     if let Err(error) = app::run() {
-        eprintln!("rigoberto: {error:#}");
+        eprintln!("verno: {error:#}");
         std::process::exit(1);
     }
 }
