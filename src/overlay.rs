@@ -233,6 +233,7 @@ struct OverlayMetrics {
     time_x: u32,
     text_size: u32,
     fallback_text_scale: u32,
+    panel_right: u32,
 }
 
 impl OverlayMetrics {
@@ -267,6 +268,7 @@ impl OverlayMetrics {
         let panel_y = top.saturating_add(outer_y.min(height.saturating_sub(1) / 2));
         let panel_height = panel_height.min(height.saturating_sub(outer_y).max(1));
         let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1) / 2);
+        let panel_right = width.saturating_sub(inset_x);
         let inner_pad = horizontal_padding_for_text(text_size);
         let inner_x = inset_x
             .saturating_add(inner_pad)
@@ -329,6 +331,7 @@ impl OverlayMetrics {
             time_x,
             text_size,
             fallback_text_scale,
+            panel_right,
         }
     }
 }
@@ -479,7 +482,7 @@ fn render_overlay_rgb(
                 width,
                 height,
                 metrics,
-                metrics.audio_x,
+                track_picker_anchor_x(metrics),
                 &state.audio_labels,
                 state.selected_audio,
                 false,
@@ -501,7 +504,7 @@ fn render_overlay_rgb(
                 width,
                 height,
                 metrics,
-                metrics.subtitle_x,
+                track_picker_anchor_x(metrics),
                 &state.subtitle_labels,
                 state.selected_subtitle,
                 true,
@@ -845,7 +848,7 @@ fn draw_track_picker(
             radius: f64::from(radius),
         },
         PANEL_COLOR,
-        232,
+        188,
     );
 
     let pad = picker_padding(metrics);
@@ -1072,11 +1075,12 @@ fn audio_picker_action(
     audio_count: usize,
 ) -> Option<AudioPickerAction> {
     if picker_open {
+        let anchor_x = track_picker_anchor_x(metrics);
         let picker = track_picker_rect(
             metrics,
-            metrics.audio_x,
+            anchor_x,
             audio_count,
-            track_picker_max_width(metrics, metrics.audio_x),
+            track_picker_max_width(metrics, anchor_x),
             false,
         );
         for index in 0..audio_count {
@@ -1097,11 +1101,12 @@ fn subtitle_picker_action(
     subtitle_count: usize,
 ) -> Option<SubtitlePickerAction> {
     if picker_open {
+        let anchor_x = track_picker_anchor_x(metrics);
         let picker = track_picker_rect(
             metrics,
-            metrics.subtitle_x,
+            anchor_x,
             subtitle_count,
-            track_picker_max_width(metrics, metrics.subtitle_x),
+            track_picker_max_width(metrics, anchor_x),
             true,
         );
         for index in 0..subtitle_count {
@@ -1145,6 +1150,10 @@ fn icon_button_rect(x: u32, metrics: OverlayMetrics) -> HitboxRect {
     }
 }
 
+fn track_picker_anchor_x(metrics: OverlayMetrics) -> u32 {
+    metrics.panel_right.saturating_sub(metrics.control_size)
+}
+
 fn track_picker_rect(
     metrics: OverlayMetrics,
     anchor_x: u32,
@@ -1163,8 +1172,8 @@ fn track_picker_rect(
         .max(picker_width);
     let left = right.saturating_sub(picker_width);
     let bottom = metrics
-        .control_y
-        .saturating_sub(control_gap_for_text(metrics.text_size));
+        .panel_y
+        .saturating_sub(track_picker_gap_for_text(metrics.text_size));
     let top = bottom.saturating_sub(picker_height);
     HitboxRect {
         left,
@@ -1367,6 +1376,13 @@ fn control_gap_for_text(text_size: u32) -> u32 {
     match text_size {
         18.. => scaled_normal_pixels(10, text_size),
         _ => 8,
+    }
+}
+
+fn track_picker_gap_for_text(text_size: u32) -> u32 {
+    match text_size {
+        18.. => scaled_normal_pixels(8, text_size),
+        _ => 6,
     }
 }
 
@@ -2564,21 +2580,23 @@ mod tests {
     #[test]
     fn subtitle_picker_width_expands_and_clamps_to_canvas() {
         let metrics = test_metrics_with_subtitles(320, 180);
-        let short = track_picker_width(metrics, metrics.subtitle_x, 20);
-        let long = track_picker_width(metrics, metrics.subtitle_x, 600);
+        let anchor_x = track_picker_anchor_x(metrics);
+        let short = track_picker_width(metrics, anchor_x, 20);
+        let long = track_picker_width(metrics, anchor_x, 600);
 
         assert!(long > short);
-        assert_eq!(long, track_picker_max_width(metrics, metrics.subtitle_x));
+        assert_eq!(long, track_picker_max_width(metrics, anchor_x));
     }
 
     #[test]
     fn subtitle_picker_selects_track_and_off_rows() {
         let metrics = test_metrics_with_subtitles(320, 180);
+        let anchor_x = track_picker_anchor_x(metrics);
         let picker = track_picker_rect(
             metrics,
-            metrics.subtitle_x,
+            anchor_x,
             2,
-            track_picker_max_width(metrics, metrics.subtitle_x),
+            track_picker_max_width(metrics, anchor_x),
             true,
         );
         let first = track_picker_track_rect(metrics, picker, 0);
@@ -2606,11 +2624,12 @@ mod tests {
     #[test]
     fn audio_picker_selects_track_rows_without_off_row() {
         let metrics = test_metrics_with_audio_and_subtitles(320, 180);
+        let anchor_x = track_picker_anchor_x(metrics);
         let picker = track_picker_rect(
             metrics,
-            metrics.audio_x,
+            anchor_x,
             2,
-            track_picker_max_width(metrics, metrics.audio_x),
+            track_picker_max_width(metrics, anchor_x),
             false,
         );
         let first = track_picker_track_rect(metrics, picker, 0);
