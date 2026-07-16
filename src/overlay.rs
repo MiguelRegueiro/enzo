@@ -10,6 +10,7 @@ const TRACK_COLOR: [u8; 3] = [82, 82, 91];
 const ACCENT_COLOR: [u8; 3] = [239, 68, 68];
 const TEXT_COLOR: [u8; 3] = [250, 250, 250];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
+const ACRYLIC_BLUR_RADIUS: u32 = 12;
 const MIN_SCALE_PERCENT: u32 = 100;
 const MAX_SCALE_PERCENT: u32 = 125;
 
@@ -403,20 +404,14 @@ fn render_overlay_rgb(
         .saturating_sub(metrics.inset_x.saturating_mul(2))
         .max(1);
     let panel_radius = rounded_radius(panel_width, metrics.panel_height, metrics.text_size);
-    fill_rounded_rect(
-        frame,
-        width,
-        height,
-        RoundedRect {
-            x: f64::from(metrics.inset_x),
-            y: f64::from(metrics.panel_y),
-            width: f64::from(panel_width),
-            height: f64::from(metrics.panel_height),
-            radius: f64::from(panel_radius),
-        },
-        PANEL_COLOR,
-        188,
-    );
+    let panel_rect = RoundedRect {
+        x: f64::from(metrics.inset_x),
+        y: f64::from(metrics.panel_y),
+        width: f64::from(panel_width),
+        height: f64::from(metrics.panel_height),
+        radius: f64::from(panel_radius),
+    };
+    fill_acrylic_rounded_rect(frame, width, height, panel_rect, PANEL_COLOR, 188);
 
     let bar_radius = rounded_radius(
         metrics.bar_width,
@@ -568,7 +563,7 @@ fn draw_top_message(
     };
     let panel_radius = rounded_radius(panel_width, panel_height, text_size / 3);
 
-    fill_rounded_rect(
+    fill_acrylic_rounded_rect(
         frame,
         width,
         height,
@@ -838,7 +833,7 @@ fn draw_track_picker(
         picker.bottom.saturating_sub(picker.top),
         metrics.text_size / 3,
     );
-    fill_rounded_rect(
+    fill_acrylic_rounded_rect(
         frame,
         width,
         height,
@@ -1514,6 +1509,179 @@ fn fill_rounded_rect(
     }
 }
 
+fn fill_acrylic_rounded_rect(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: RoundedRect,
+    color: [u8; 3],
+    alpha: u8,
+) {
+    blur_rounded_rect(frame, width, height, rect, ACRYLIC_BLUR_RADIUS);
+    fill_rounded_rect(frame, width, height, rect, color, alpha);
+}
+
+fn blur_rounded_rect(frame: &mut [u8], width: u32, height: u32, rect: RoundedRect, radius: u32) {
+    if width == 0 || height == 0 || rect.width <= 0.0 || rect.height <= 0.0 || radius == 0 {
+        return;
+    }
+
+    let min_x = rect.x.floor().max(0.0) as u32;
+    let max_x = (rect.x + rect.width).ceil().min(f64::from(width)) as u32;
+    let min_y = rect.y.floor().max(0.0) as u32;
+    let max_y = (rect.y + rect.height).ceil().min(f64::from(height)) as u32;
+    if min_x >= max_x || min_y >= max_y {
+        return;
+    }
+
+    let sample_left = min_x.saturating_sub(radius);
+    let sample_top = min_y.saturating_sub(radius);
+    let sample_right = max_x.saturating_add(radius).min(width);
+    let sample_bottom = max_y.saturating_add(radius).min(height);
+    let sample_width = sample_right.saturating_sub(sample_left);
+    let sample_height = sample_bottom.saturating_sub(sample_top);
+    if sample_width == 0 || sample_height == 0 {
+        return;
+    }
+
+    let sample_len = (sample_width as usize)
+        .saturating_mul(sample_height as usize)
+        .saturating_mul(3);
+    let mut source = vec![0_u8; sample_len];
+    for y in 0..sample_height {
+        let source_start = rgb_offset(width, sample_left, sample_top + y);
+        let source_end = source_start + sample_width as usize * 3;
+        let target_start = (y * sample_width * 3) as usize;
+        let target_end = target_start + sample_width as usize * 3;
+        source[target_start..target_end].copy_from_slice(&frame[source_start..source_end]);
+    }
+
+    let mut horizontal = vec![0_u8; source.len()];
+    let mut blurred = vec![0_u8; source.len()];
+    horizontal_box_blur_rgb(
+        &source,
+        &mut horizontal,
+        sample_width,
+        sample_height,
+        radius,
+    );
+    vertical_box_blur_rgb(
+        &horizontal,
+        &mut blurred,
+        sample_width,
+        sample_height,
+        radius,
+    );
+
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let coverage = rounded_rect_coverage(f64::from(x) + 0.5, f64::from(y) + 0.5, rect);
+            if coverage <= 0.0 {
+                continue;
+            }
+
+            let source_offset = rgb_offset(sample_width, x - sample_left, y - sample_top);
+            let target_offset = rgb_offset(width, x, y);
+            let blurred_pixel = [
+                blurred[source_offset],
+                blurred[source_offset + 1],
+                blurred[source_offset + 2],
+            ];
+            blend_pixel(
+                frame,
+                target_offset,
+                blurred_pixel,
+                (coverage * 255.0).round() as u8,
+            );
+        }
+    }
+}
+
+fn horizontal_box_blur_rgb(source: &[u8], target: &mut [u8], width: u32, height: u32, radius: u32) {
+    let width = width as usize;
+    let height = height as usize;
+    let radius = radius as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    for y in 0..height {
+        let row_start = y * width * 3;
+        let mut left = 0_usize;
+        let mut right = 0_usize;
+        let mut sum = [0_u32; 3];
+
+        for x in 0..width {
+            let wanted_left = x.saturating_sub(radius);
+            let wanted_right = (x + radius).min(width - 1);
+
+            while right <= wanted_right {
+                let offset = row_start + right * 3;
+                sum[0] += u32::from(source[offset]);
+                sum[1] += u32::from(source[offset + 1]);
+                sum[2] += u32::from(source[offset + 2]);
+                right += 1;
+            }
+
+            while left < wanted_left {
+                let offset = row_start + left * 3;
+                sum[0] -= u32::from(source[offset]);
+                sum[1] -= u32::from(source[offset + 1]);
+                sum[2] -= u32::from(source[offset + 2]);
+                left += 1;
+            }
+
+            let count = (right - left) as u32;
+            let target_offset = row_start + x * 3;
+            target[target_offset] = (sum[0] / count) as u8;
+            target[target_offset + 1] = (sum[1] / count) as u8;
+            target[target_offset + 2] = (sum[2] / count) as u8;
+        }
+    }
+}
+
+fn vertical_box_blur_rgb(source: &[u8], target: &mut [u8], width: u32, height: u32, radius: u32) {
+    let width = width as usize;
+    let height = height as usize;
+    let radius = radius as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    for x in 0..width {
+        let mut top = 0_usize;
+        let mut bottom = 0_usize;
+        let mut sum = [0_u32; 3];
+
+        for y in 0..height {
+            let wanted_top = y.saturating_sub(radius);
+            let wanted_bottom = (y + radius).min(height - 1);
+
+            while bottom <= wanted_bottom {
+                let offset = (bottom * width + x) * 3;
+                sum[0] += u32::from(source[offset]);
+                sum[1] += u32::from(source[offset + 1]);
+                sum[2] += u32::from(source[offset + 2]);
+                bottom += 1;
+            }
+
+            while top < wanted_top {
+                let offset = (top * width + x) * 3;
+                sum[0] -= u32::from(source[offset]);
+                sum[1] -= u32::from(source[offset + 1]);
+                sum[2] -= u32::from(source[offset + 2]);
+                top += 1;
+            }
+
+            let count = (bottom - top) as u32;
+            let target_offset = (y * width + x) * 3;
+            target[target_offset] = (sum[0] / count) as u8;
+            target[target_offset + 1] = (sum[1] / count) as u8;
+            target[target_offset + 2] = (sum[2] / count) as u8;
+        }
+    }
+}
+
 fn fill_circle(
     frame: &mut [u8],
     width: u32,
@@ -2048,6 +2216,44 @@ mod tests {
         assert!(frame[offset] > 200);
         assert!(frame[offset + 1] < 120);
         assert!(frame[offset + 2] < 120);
+    }
+
+    #[test]
+    fn acrylic_blur_softens_pixels_inside_rounded_rect_only() {
+        let width = 80;
+        let height = 40;
+        let mut frame = vec![0_u8; (width * height * 3) as usize];
+        for y in 0..height {
+            for x in width / 2..width {
+                let offset = rgb_offset(width, x, y);
+                frame[offset] = 240;
+                frame[offset + 1] = 240;
+                frame[offset + 2] = 240;
+            }
+        }
+
+        blur_rounded_rect(
+            &mut frame,
+            width,
+            height,
+            RoundedRect {
+                x: 20.0,
+                y: 20.0,
+                width: 40.0,
+                height: 12.0,
+                radius: 4.0,
+            },
+            6,
+        );
+
+        let softened_offset = rgb_offset(width, 38, 26);
+        assert!(frame[softened_offset] > 0);
+        assert!(frame[softened_offset] < 240);
+
+        let outside_offset = rgb_offset(width, 38, 5);
+        assert_eq!(frame[outside_offset], 0);
+        assert_eq!(frame[outside_offset + 1], 0);
+        assert_eq!(frame[outside_offset + 2], 0);
     }
 
     #[test]
