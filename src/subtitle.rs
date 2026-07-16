@@ -322,7 +322,7 @@ fn subtitle_temp_path(label: &str, subtitle_index: usize, extension: &str) -> Pa
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect::<String>();
     env::temp_dir().join(format!(
-        "verno-subtitle-{label}-{}-{subtitle_index}-{nonce}.{extension}",
+        "enzo-subtitle-{label}-{}-{subtitle_index}-{nonce}.{extension}",
         process::id(),
     ))
 }
@@ -1496,7 +1496,7 @@ One
     #[test]
     fn sidecar_path_uses_srt_extension_for_local_files() {
         let temp_dir =
-            std::env::temp_dir().join(format!("verno-subtitle-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("enzo-subtitle-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&temp_dir);
         fs::create_dir(&temp_dir).expect("temp dir should be created");
         let media = temp_dir.join("movie.mp4");
@@ -1512,7 +1512,7 @@ One
     #[test]
     fn sidecar_path_uses_supported_text_subtitle_extensions() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-subtitle-extension-test-{}",
+            "enzo-subtitle-extension-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1578,7 +1578,7 @@ But I told them it was not.
     #[test]
     fn external_subtitle_label_keeps_source_and_detected_language() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-external-subtitle-label-test-{}",
+            "enzo-external-subtitle-label-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1605,7 +1605,7 @@ But I told them it was not.
         }
 
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-embedded-subtitle-test-{}",
+            "enzo-embedded-subtitle-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);
@@ -1670,7 +1670,7 @@ But I told them it was not.
         }
 
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-embedded-ass-subtitle-test-{}",
+            "enzo-embedded-ass-subtitle-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&temp_dir);

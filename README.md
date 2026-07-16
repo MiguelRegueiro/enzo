@@ -1,8 +1,8 @@
-# verno
+# enzo
 
 Video player for Kitty-compatible terminals.
 
-Verno renders video frames with the Kitty graphics protocol and plays audio through PulseAudio.
+Enzo renders video frames with the Kitty graphics protocol and plays audio through PulseAudio.
 It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resampling.
 
 ## Requirements

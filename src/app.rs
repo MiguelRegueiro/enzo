@@ -84,7 +84,7 @@ pub(crate) fn run() -> Result<()> {
     let font_system = FontSystem::discover();
     if !config.force && !looks_like_kitty() {
         bail!(
-            "Verno targets Kitty graphics; run from kitty or pass --force if your terminal is compatible"
+            "Enzo targets Kitty graphics; run from kitty or pass --force if your terminal is compatible"
         );
     }
 
@@ -1529,10 +1529,10 @@ fn join_positionals(positionals: Vec<OsString>) -> Option<PathBuf> {
 fn print_help() {
     println!(
         "\
-verno - video player for Kitty-compatible terminals
+enzo - video player for Kitty-compatible terminals
 
 Usage:
-  verno [--force] [--sub-file subtitle] [video-or-url]
+  enzo [--force] [--sub-file subtitle] [video-or-url]
 
 Controls:
   Drop file/URL      play from launcher
@@ -1733,7 +1733,7 @@ mod tests {
     #[test]
     fn launcher_drop_uses_same_media_and_sidecar_path_as_argument() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-app-drop-subtitle-test-{}",
+            "enzo-app-drop-subtitle-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1757,7 +1757,7 @@ mod tests {
     #[test]
     fn playback_drop_accepts_subtitle_file() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-app-playback-subtitle-drop-test-{}",
+            "enzo-app-playback-subtitle-drop-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn playback_drop_normalizes_duplicate_subtitle_paths() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-app-playback-subtitle-dup-test-{}",
+            "enzo-app-playback-subtitle-dup-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1800,7 +1800,7 @@ mod tests {
     #[test]
     fn playback_drop_ignores_non_subtitle_file() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-app-playback-video-drop-test-{}",
+            "enzo-app-playback-video-drop-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1830,7 +1830,7 @@ mod tests {
     #[test]
     fn parse_args_accepts_sub_file() {
         let temp_dir =
-            std::env::temp_dir().join(format!("verno-app-subtitle-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("enzo-app-subtitle-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir(&temp_dir).expect("temp dir should be created");
         let sub_file = temp_dir.join("movie.srt");
@@ -2007,7 +2007,7 @@ mod tests {
     #[test]
     fn invalid_media_does_not_invent_pending_embedded_subtitles() {
         let temp_dir = std::env::temp_dir().join(format!(
-            "verno-no-embedded-subtitle-test-{}",
+            "enzo-no-embedded-subtitle-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -2027,7 +2027,7 @@ mod tests {
     #[test]
     fn sidecar_subtitle_stays_loaded_before_background_embedded_tracks() {
         let temp_dir =
-            std::env::temp_dir().join(format!("verno-sidecar-load-{}", std::process::id()));
+            std::env::temp_dir().join(format!("enzo-sidecar-load-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
         let media = temp_dir.join("movie.mkv");

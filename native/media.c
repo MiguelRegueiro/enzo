@@ -256,7 +256,7 @@ static int pulse_output_open(RigPulseOutput *output, char *err, size_t err_len) 
     }
 
     pa_mainloop_api *api = pa_threaded_mainloop_get_api(output->mainloop);
-    output->context = pa_context_new(api, "verno");
+    output->context = pa_context_new(api, "enzo");
     if (output->context == NULL) {
         set_error(err, err_len, "failed to allocate PulseAudio context");
         pulse_output_close(output);
