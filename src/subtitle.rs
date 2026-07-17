@@ -296,8 +296,40 @@ fn embedded_subtitle_label(stream: &EmbeddedSubtitleStream) -> String {
 }
 
 fn load_subtitle_text(path: &Path) -> Result<String> {
-    fs::read_to_string(path)
-        .with_context(|| format!("failed to read subtitle file {}", path.display()))
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read subtitle file {}", path.display()))?;
+    decode_subtitle_text(&bytes)
+        .with_context(|| format!("failed to decode subtitle file {}", path.display()))
+}
+
+fn decode_subtitle_text(bytes: &[u8]) -> Result<String> {
+    if let Some(bytes) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8(bytes.to_vec()).context("subtitle file is not valid UTF-8");
+    }
+    if let Some(bytes) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_utf16_subtitle(bytes, true);
+    }
+    if let Some(bytes) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_utf16_subtitle(bytes, false);
+    }
+    String::from_utf8(bytes.to_vec()).context("subtitle file is not valid UTF-8")
+}
+
+fn decode_utf16_subtitle(bytes: &[u8], little_endian: bool) -> Result<String> {
+    if !bytes.len().is_multiple_of(2) {
+        bail!("UTF-16 subtitle file has an odd byte count");
+    }
+    let units = bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    String::from_utf16(&units).context("subtitle file is not valid UTF-16")
 }
 
 fn path_extension_is(path: &Path, expected: &str) -> bool {
@@ -1663,6 +1695,31 @@ But I told them it was not.
 
         assert_eq!(track.language(), Some("ja"));
         assert_eq!(track.label(), "External (ja srt)");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn loads_utf16le_external_subtitle_with_bom() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("enzo-utf16-subtitle-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let subtitle = temp_dir.join("movie.srt");
+        let text = "1\r\n00:00:01,000 --> 00:00:03,000\r\nWax on, wax off.\r\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        fs::write(&subtitle, bytes).expect("subtitle fixture should be written");
+
+        let track = SubtitleTrack::load(&subtitle).expect("UTF-16 subtitle should load");
+
+        assert_eq!(track.label(), "External (srt)");
+        assert_eq!(
+            track.active_lines(Duration::from_secs(1)),
+            Some(vec![String::from("Wax on, wax off.")])
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
