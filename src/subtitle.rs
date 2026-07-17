@@ -166,6 +166,10 @@ impl EmbeddedSubtitleStream {
         embedded_subtitle_label(self)
     }
 
+    pub(crate) fn subtitle_index(&self) -> Option<usize> {
+        self.subtitle_index
+    }
+
     pub(crate) fn is_text(&self) -> bool {
         self.codec
             .as_deref()

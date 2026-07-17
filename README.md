@@ -32,6 +32,28 @@ Run without a path to open the drop target:
 cargo run --release
 ```
 
+Enzo resumes local, seekable videos from their last saved position and restores the
+selected audio and subtitle tracks. It clears the saved entry when playback reaches
+the end. Inputs that cannot seek, such as pipes and some URLs, are never saved.
+
+Resume data is stored under `$XDG_STATE_HOME/enzo/watch_later` (or
+`~/.local/state/enzo/watch_later`). The store contains only compact state records,
+uses private permissions, removes interrupted temporary writes, and limits each
+record to 64 KiB. Exact-path records are retained until playback completes or the
+store is cleared; moved-file recovery examines at most 512 recent records.
+
+Use `--no-resume` to play without reading or writing resume state:
+
+```sh
+cargo run --release -- --no-resume /path/to/video.mp4
+```
+
+Use `--clear-resume` to remove all Enzo resume records and exit:
+
+```sh
+cargo run --release -- --clear-resume
+```
+
 Controls:
 
 - Drop a file or URL on the launcher to play it.

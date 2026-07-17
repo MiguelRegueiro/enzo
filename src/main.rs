@@ -5,6 +5,8 @@ mod font_system;
 mod input;
 mod media;
 mod overlay;
+mod resume;
+mod shutdown;
 mod subtitle;
 mod terminal;
 

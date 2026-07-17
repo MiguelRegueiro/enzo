@@ -24,6 +24,7 @@ struct RigVideoInfo {
     fps: c_double,
     duration: c_double,
     has_audio: c_int,
+    seekable: c_int,
 }
 
 #[repr(C)]
@@ -82,6 +83,7 @@ pub(crate) struct VideoInfo {
     pub(crate) fps: f64,
     pub(crate) duration: Option<Duration>,
     pub(crate) has_audio: bool,
+    pub(crate) seekable: bool,
 }
 
 pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
@@ -92,6 +94,7 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
         fps: 0.0,
         duration: 0.0,
         has_audio: 0,
+        seekable: 0,
     };
     let mut error = ErrorBuffer::new();
 
@@ -118,6 +121,7 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
             .filter(|duration| *duration > 0.0)
             .map(Duration::from_secs_f64),
         has_audio: info.has_audio != 0,
+        seekable: info.seekable != 0,
     })
 }
 
@@ -401,10 +405,6 @@ pub(crate) struct VideoDecoder {
 }
 
 impl VideoDecoder {
-    pub(crate) fn spawn(path: &Path, width: u32, height: u32, fps: f64) -> Result<Self> {
-        Self::spawn_at(path, width, height, fps, Duration::ZERO, false)
-    }
-
     pub(crate) fn spawn_at(
         path: &Path,
         width: u32,
@@ -757,14 +757,6 @@ pub(crate) struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub(crate) fn spawn(
-        path: &Path,
-        audio_stream_index: Option<usize>,
-        muted: bool,
-    ) -> Result<Self> {
-        Self::spawn_at(path, audio_stream_index, Duration::ZERO, false, muted)
-    }
-
     pub(crate) fn spawn_at(
         path: &Path,
         audio_stream_index: Option<usize>,

@@ -1,10 +1,12 @@
+mod cli;
+mod layout;
+mod resume_integration;
+mod subtitle_tracks;
+
 use std::{
     env,
-    ffi::OsString,
-    fs,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -12,7 +14,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    drop_target::{draw_drop_target, is_remote_url_text, media_candidates_from_text},
+    drop_target::draw_drop_target,
     font_system::FontSystem,
     input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
     media::{AudioPlayer, FrameStatus, VideoDecoder, load_audio_tracks, probe_video},
@@ -20,23 +22,29 @@ use crate::{
         AudioPickerAction, HitboxRect, OverlayHitContext, OverlayHitPoint, OverlayState,
         PlaybackOverlay, SubtitlePickerAction,
     },
-    subtitle::{
-        EmbeddedSubtitleStream, SubtitleRenderer, SubtitleTrack, embedded_subtitle_streams,
-        load_embedded_subtitle_track, sidecar_subtitle_path,
-    },
+    resume::ResumeTracker,
+    shutdown,
+    subtitle::{SubtitleRenderer, SubtitleTrack},
     terminal::{
-        ImageArea, KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
+        KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, TerminalGuard,
         clear_screen_and_images, enable_tmux_passthrough, inside_tmux, looks_like_kitty,
-        terminal_pixel_size, write_kitty_rgb_frame,
+        write_kitty_rgb_frame,
     },
 };
 
-const MAX_DECODE_WIDTH: u32 = 1920;
-const MAX_DECODE_HEIGHT: u32 = 1080;
-const MAX_CANVAS_WIDTH: u32 = 1920;
-const MAX_CANVAS_HEIGHT: u32 = 1200;
-const NORMAL_OVERLAY_SCALE_PERCENT: u32 = 100;
-const MAX_OVERLAY_SCALE_PERCENT: u32 = 125;
+use cli::{media_path_from_drop_text, parse_args};
+use layout::{CanvasFrame, TargetFrame, terminal_target_and_canvas};
+use resume_integration::{
+    restore_audio_selection, restore_subtitle_selection, resume_available, selected_audio_stream,
+    selected_audio_stream_choice, sync_resume_audio, sync_resume_subtitle,
+};
+use subtitle_tracks::{
+    PlaybackSubtitleTrack, active_subtitle_track, external_subtitle_indices,
+    initial_external_subtitle_paths, load_dropped_subtitle_track, load_initial_subtitle_tracks,
+    normalized_subtitle_path, spawn_embedded_subtitle_loader, subtitle_labels,
+    subtitle_path_from_drop_text,
+};
+
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
@@ -50,37 +58,21 @@ struct StatusMessage {
     visible_until: Instant,
 }
 
-struct PlaybackSubtitleTrack {
-    label: String,
-    track: Option<SubtitleTrack>,
-}
-
-impl PlaybackSubtitleTrack {
-    fn loaded(track: SubtitleTrack) -> Self {
-        Self {
-            label: track.label().to_string(),
-            track: Some(track),
-        }
-    }
-
-    fn pending(label: String) -> Self {
-        Self { label, track: None }
-    }
-}
-
-struct PendingEmbeddedSubtitle {
-    index: usize,
-    fallback_index: usize,
-    stream: EmbeddedSubtitleStream,
-}
-
-struct LoadedEmbeddedSubtitle {
-    index: usize,
-    track: Option<SubtitleTrack>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlaybackOutcome {
+    Quit,
+    Completed,
+    Interrupted,
 }
 
 pub(crate) fn run() -> Result<()> {
     let config = parse_args(env::args_os().skip(1))?;
+    if config.clear_resume {
+        let removed = ResumeTracker::clear_all().context("failed to clear saved playback state")?;
+        println!("Cleared {removed} saved playback state file(s).");
+        return Ok(());
+    }
+    shutdown::install_signal_handlers().context("failed to install shutdown handlers")?;
     let font_system = FontSystem::discover();
     if !config.force && !looks_like_kitty() {
         bail!(
@@ -94,21 +86,40 @@ pub(crate) fn run() -> Result<()> {
 
     if let Some(path) = config.path {
         let _terminal = TerminalGuard::enter()?;
-        play_media(path, config.sub_file.as_deref(), &font_system)
+        play_media(
+            path,
+            config.sub_file.as_deref(),
+            config.resume_enabled,
+            &font_system,
+        )
     } else {
-        run_drop_target(config.sub_file.as_deref(), &font_system)
+        run_drop_target(
+            config.sub_file.as_deref(),
+            config.resume_enabled,
+            &font_system,
+        )
     }
 }
 
-fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
+fn run_drop_target(
+    sub_file: Option<&Path>,
+    resume_enabled: bool,
+    font_system: &FontSystem,
+) -> Result<()> {
     let _terminal = TerminalGuard::enter()?;
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let mut status = None::<String>;
 
     loop {
+        if shutdown::requested() {
+            return Ok(());
+        }
         draw_drop_target(&mut out, status.as_deref())?;
         let input = read_drop_events()?;
+        if shutdown::requested() {
+            return Ok(());
+        }
         if input.command == DropCommand::Quit {
             return Ok(());
         }
@@ -121,7 +132,7 @@ fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<
                 clear_screen_and_images(&mut out)?;
                 out.flush()?;
                 drop(out);
-                return play_media(path, sub_file, font_system);
+                return play_media(path, sub_file, resume_enabled, font_system);
             }
             Err(error) => {
                 status = Some(error.to_string());
@@ -130,23 +141,35 @@ fn run_drop_target(sub_file: Option<&Path>, font_system: &FontSystem) -> Result<
     }
 }
 
-fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) -> Result<()> {
+fn play_media(
+    path: PathBuf,
+    sub_file: Option<&Path>,
+    resume_enabled: bool,
+    font_system: &FontSystem,
+) -> Result<()> {
     let source = probe_video(&path)
         .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
-    let (mut subtitle_tracks, embedded_subtitle_jobs) =
-        load_initial_subtitle_tracks(&path, sub_file)?;
+    let mut resume = ResumeTracker::open(
+        &path,
+        source.duration,
+        resume_available(resume_enabled, source.seekable),
+    );
+    let restored = resume.restored().cloned();
+    let (initial_subtitle_paths, mut restored_external_subtitle_missing) =
+        initial_external_subtitle_paths(&path, sub_file, restored.as_ref());
+    let initial_subtitles = load_initial_subtitle_tracks(&path, &initial_subtitle_paths)?;
+    restored_external_subtitle_missing |= initial_subtitles.restored_external_load_failed;
+    let mut subtitle_tracks = initial_subtitles.tracks;
     let mut subtitle_labels = subtitle_labels(&subtitle_tracks);
-    let mut selected_subtitle = (!subtitle_tracks.is_empty()).then_some(0_usize);
-    let mut external_subtitle_paths = Vec::<(PathBuf, usize)>::new();
-    if let (Some(path), true) = (
-        external_subtitle_path(&path, sub_file),
-        subtitle_tracks
-            .first()
-            .is_some_and(|track| track.track.is_some()),
-    ) {
-        external_subtitle_paths.push((normalized_subtitle_path(&path), 0));
-    }
-    let embedded_subtitle_rx = spawn_embedded_subtitle_loader(path.clone(), embedded_subtitle_jobs);
+    let mut selected_subtitle = restore_subtitle_selection(
+        &subtitle_tracks,
+        restored.as_ref(),
+        initial_subtitles.restored_external_index,
+    )
+    .unwrap_or_else(|| (!subtitle_tracks.is_empty()).then_some(0_usize));
+    let mut external_subtitle_paths = external_subtitle_indices(&subtitle_tracks);
+    let embedded_subtitle_rx =
+        spawn_embedded_subtitle_loader(path.clone(), initial_subtitles.embedded_jobs);
     let mut audio_tracks = load_audio_tracks(&path);
     if audio_tracks.is_empty() && source.has_audio {
         audio_tracks.push(crate::media::AudioTrack::default_track());
@@ -155,25 +178,42 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
         .iter()
         .map(|track| Box::leak(track.label().to_string().into_boxed_str()) as &'static str)
         .collect::<Vec<_>>();
-    let mut selected_audio = (!audio_tracks.is_empty()).then_some(0_usize);
+    let mut selected_audio = restore_audio_selection(&audio_tracks, restored.as_ref())
+        .unwrap_or_else(|| (!audio_tracks.is_empty()).then_some(0_usize));
     let mut audio_picker_open = false;
     let mut subtitle_picker_open = false;
     let media_title = media_title(&path);
     let (mut target, mut canvas) = terminal_target_and_canvas(source.width, source.height);
+    let start_position = restored
+        .as_ref()
+        .and_then(|restored| restored.position)
+        .unwrap_or(Duration::ZERO);
 
-    let mut decoder = VideoDecoder::spawn(&path, target.width, target.height, source.fps)?;
+    let mut decoder = VideoDecoder::spawn_at(
+        &path,
+        target.width,
+        target.height,
+        source.fps,
+        start_position,
+        false,
+    )?;
     let mut muted = false;
+    let selected_audio_stream = selected_audio_stream_choice(&audio_tracks, selected_audio);
     let mut audio = if source.has_audio {
-        Some(AudioPlayer::spawn(
-            &path,
-            selected_audio_stream(&audio_tracks, selected_audio),
-            muted,
-        )?)
+        selected_audio_stream
+            .map(|stream_index| {
+                AudioPlayer::spawn_at(&path, stream_index, start_position, false, muted)
+            })
+            .transpose()?
     } else {
         None
     };
-    let mut audio_done = !source.has_audio;
+    let mut audio_done = !source.has_audio || selected_audio_stream.is_none();
     let playback_started_at = Instant::now();
+
+    resume.set_position(start_position);
+    sync_resume_audio(&mut resume, &audio_tracks, selected_audio);
+    sync_resume_subtitle(&mut resume, &path, &subtitle_tracks, selected_subtitle);
 
     let stdout = io::stdout();
     let mut out =
@@ -196,17 +236,38 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
     let mut video_ended = false;
     let frame_interval = frame_interval(source.fps);
     let mut next_frame_at = playback_started_at;
-    let mut playback_position = Duration::ZERO;
+    let mut playback_position = start_position;
     let mut paused = false;
     let mut overlay_visible_until = None::<Instant>;
     let mut last_drawn_overlay_visible = false;
     let mut last_drawn_status_visible = false;
-    let mut status_message = None::<StatusMessage>;
+    let mut status_message = if restored_external_subtitle_missing {
+        Some(StatusMessage {
+            text: "SAVED SUBTITLE MISSING",
+            visible_until: playback_started_at + STATUS_VISIBLE_FOR,
+        })
+    } else {
+        resume.take_error().map(|_| StatusMessage {
+            text: "RESUME STATE UNAVAILABLE",
+            visible_until: playback_started_at + STATUS_VISIBLE_FOR,
+        })
+    };
     let mut scrub_position = None::<Duration>;
     let mut keyboard_seek_commit_at = None::<Instant>;
     let mut mouse_scrub_commit_at = None::<Instant>;
+    let mut playback_outcome = PlaybackOutcome::Interrupted;
 
     loop {
+        if shutdown::requested() {
+            break;
+        }
+        resume.maybe_checkpoint(Instant::now());
+        if resume.take_error().is_some() {
+            status_message = Some(StatusMessage {
+                text: "RESUME SAVE FAILED",
+                visible_until: Instant::now() + STATUS_VISIBLE_FOR,
+            });
+        }
         poll_audio(&mut audio, &mut audio_done)?;
 
         let input = read_input_events()?;
@@ -248,13 +309,19 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
 
         if let Some(text) = input.text.as_deref() {
             match subtitle_path_from_drop_text(text) {
-                Ok(Some(path)) => {
-                    let key = normalized_subtitle_path(&path);
+                Ok(Some(subtitle_path)) => {
+                    let key = normalized_subtitle_path(&subtitle_path);
                     if let Some(index) = external_subtitle_paths
                         .iter()
                         .find_map(|(loaded_path, index)| (loaded_path == &key).then_some(*index))
                     {
                         selected_subtitle = Some(index);
+                        sync_resume_subtitle(
+                            &mut resume,
+                            &path,
+                            &subtitle_tracks,
+                            selected_subtitle,
+                        );
                         subtitle_picker_open = false;
                         subtitle_renderer = SubtitleRenderer::new(
                             font_system,
@@ -268,14 +335,23 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                         redraw_current_frame = have_frame;
                     } else {
-                        match load_dropped_subtitle_track(&path) {
+                        match load_dropped_subtitle_track(&subtitle_path) {
                             Ok(track) => {
                                 let index = subtitle_tracks.len();
                                 subtitle_labels
                                     .push(Box::leak(track.label().to_string().into_boxed_str()));
-                                subtitle_tracks.push(PlaybackSubtitleTrack::loaded(track));
+                                subtitle_tracks.push(PlaybackSubtitleTrack::loaded_external(
+                                    normalized_subtitle_path(&subtitle_path),
+                                    track,
+                                ));
                                 external_subtitle_paths.push((key, index));
                                 selected_subtitle = Some(index);
+                                sync_resume_subtitle(
+                                    &mut resume,
+                                    &path,
+                                    &subtitle_tracks,
+                                    selected_subtitle,
+                                );
                                 subtitle_picker_open = false;
                                 subtitle_renderer = SubtitleRenderer::new(
                                     font_system,
@@ -313,7 +389,10 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
         }
 
         match input.command {
-            PlaybackCommand::Quit => break,
+            PlaybackCommand::Quit => {
+                playback_outcome = PlaybackOutcome::Quit;
+                break;
+            }
             PlaybackCommand::TogglePause => {
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                 toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
@@ -339,12 +418,14 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     });
                 } else if selected_subtitle.is_some() {
                     selected_subtitle = None;
+                    sync_resume_subtitle(&mut resume, &path, &subtitle_tracks, selected_subtitle);
                     status_message = Some(StatusMessage {
                         text: "SUBTITLES OFF",
                         visible_until: input_at + STATUS_VISIBLE_FOR,
                     });
                 } else {
                     selected_subtitle = Some(0);
+                    sync_resume_subtitle(&mut resume, &path, &subtitle_tracks, selected_subtitle);
                     subtitle_renderer = SubtitleRenderer::new(
                         font_system,
                         active_subtitle_track(&subtitle_tracks, selected_subtitle)
@@ -362,6 +443,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 let base_position = scrub_position.unwrap_or(playback_position);
                 let seek_target = seek_position(base_position, seconds, source.duration);
                 if is_end_seek(seek_target, source.duration) {
+                    playback_outcome = PlaybackOutcome::Completed;
                     break;
                 }
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
@@ -372,12 +454,13 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                         &mut decoder,
                         &mut audio,
                         &mut audio_done,
-                        selected_audio_stream(&audio_tracks, selected_audio),
+                        selected_audio_stream_choice(&audio_tracks, selected_audio),
                         seek_target,
                         paused,
                         muted,
                     )?;
                     playback_position = seek_target;
+                    resume.set_position(playback_position);
                     scrub_position = None;
                     video_ended = false;
                     next_frame_at = Instant::now();
@@ -505,6 +588,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                             }
                             AudioPickerAction::SelectTrack(index) => {
                                 selected_audio = Some(index);
+                                sync_resume_audio(&mut resume, &audio_tracks, selected_audio);
                                 audio_picker_open = false;
                                 switch_audio_track(
                                     &path,
@@ -533,6 +617,12 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                             }
                             SubtitlePickerAction::SelectTrack(index) => {
                                 selected_subtitle = Some(index);
+                                sync_resume_subtitle(
+                                    &mut resume,
+                                    &path,
+                                    &subtitle_tracks,
+                                    selected_subtitle,
+                                );
                                 subtitle_picker_open = false;
                                 subtitle_renderer = SubtitleRenderer::new(
                                     font_system,
@@ -551,6 +641,12 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                             }
                             SubtitlePickerAction::SelectOff => {
                                 selected_subtitle = None;
+                                sync_resume_subtitle(
+                                    &mut resume,
+                                    &path,
+                                    &subtitle_tracks,
+                                    selected_subtitle,
+                                );
                                 subtitle_picker_open = false;
                             }
                         }
@@ -631,6 +727,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
         if let Some(seek_target) = pointer_seek_target {
             keyboard_seek_commit_at = None;
             if is_end_seek(seek_target, source.duration) {
+                playback_outcome = PlaybackOutcome::Completed;
                 break;
             }
             seek_playback(
@@ -639,12 +736,13 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 &mut decoder,
                 &mut audio,
                 &mut audio_done,
-                selected_audio_stream(&audio_tracks, selected_audio),
+                selected_audio_stream_choice(&audio_tracks, selected_audio),
                 seek_target,
                 paused,
                 muted,
             )?;
             playback_position = seek_target;
+            resume.set_position(playback_position);
             video_ended = false;
             next_frame_at = Instant::now();
             redraw_current_frame = false;
@@ -659,12 +757,13 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                     &mut decoder,
                     &mut audio,
                     &mut audio_done,
-                    selected_audio_stream(&audio_tracks, selected_audio),
+                    selected_audio_stream_choice(&audio_tracks, selected_audio),
                     seek_target,
                     paused,
                     muted,
                 )?;
                 playback_position = seek_target;
+                resume.set_position(playback_position);
                 video_ended = false;
                 next_frame_at = Instant::now();
                 redraw_current_frame = false;
@@ -729,6 +828,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             match decoder.read_latest_frame(&mut frame)? {
                 FrameStatus::NewFrame { pts } => {
                     playback_position = pts;
+                    resume.set_position(playback_position);
                     let state = overlay_state(
                         playback_position,
                         scrub_position,
@@ -774,6 +874,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
             }
             out.flush()?;
             thread::sleep(Duration::from_millis(15));
+            resume.maybe_checkpoint(Instant::now());
             continue;
         }
 
@@ -781,12 +882,14 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
         if now < next_frame_at {
             out.flush()?;
             thread::sleep((next_frame_at - now).min(Duration::from_millis(5)));
+            resume.maybe_checkpoint(Instant::now());
             continue;
         }
 
         match decoder.read_latest_frame(&mut frame)? {
             FrameStatus::NewFrame { pts } => {
                 playback_position = pts;
+                resume.set_position(playback_position);
                 let state = overlay_state(
                     playback_position,
                     scrub_position,
@@ -835,6 +938,7 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
                 video_ended = true;
                 if let Some(duration) = source.duration {
                     playback_position = duration;
+                    resume.set_position(playback_position);
                 }
                 if have_frame {
                     let state = overlay_state(
@@ -880,14 +984,21 @@ fn play_media(path: PathBuf, sub_file: Option<&Path>, font_system: &FontSystem) 
         }
 
         if video_ended && audio_done {
+            playback_outcome = PlaybackOutcome::Completed;
             break;
         }
     }
 
-    decoder.stop()?;
-    if let Some(audio) = audio.as_mut() {
-        audio.stop()?;
-    }
+    let resume_result = match playback_outcome {
+        PlaybackOutcome::Completed => resume.clear(),
+        PlaybackOutcome::Quit | PlaybackOutcome::Interrupted => resume.save_now(),
+    };
+
+    let decoder_result = decoder.stop();
+    let audio_result = audio.as_mut().map(AudioPlayer::stop).transpose();
+    resume_result.context("failed to persist playback state")?;
+    decoder_result?;
+    audio_result?;
     Ok(())
 }
 
@@ -1014,13 +1125,13 @@ fn seek_playback(
     decoder: &mut VideoDecoder,
     audio: &mut Option<AudioPlayer>,
     audio_done: &mut bool,
-    audio_stream_index: Option<usize>,
+    audio_stream: Option<Option<usize>>,
     position: Duration,
     paused: bool,
     muted: bool,
 ) -> Result<()> {
     decoder.seek(position);
-    if has_audio {
+    if has_audio && let Some(audio_stream_index) = audio_stream {
         if let Some(audio) = audio.as_mut() {
             audio.seek(position);
             audio.set_paused(paused);
@@ -1035,6 +1146,11 @@ fn seek_playback(
             )?);
         }
         *audio_done = false;
+    } else {
+        if let Some(mut player) = audio.take() {
+            player.stop()?;
+        }
+        *audio_done = true;
     }
     Ok(())
 }
@@ -1104,16 +1220,6 @@ fn media_title(path: &Path) -> &'static str {
     Box::leak(text.into_boxed_str())
 }
 
-fn selected_audio_stream(
-    tracks: &[crate::media::AudioTrack],
-    selected_audio: Option<usize>,
-) -> Option<usize> {
-    selected_audio
-        .and_then(|index| tracks.get(index))
-        .map(|track| track.stream_index())
-        .filter(|stream_index| *stream_index != usize::MAX)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn switch_audio_track(
     path: &Path,
@@ -1141,13 +1247,6 @@ fn switch_audio_track(
         .transpose()?;
     *audio_done = selected_audio.is_none();
     Ok(())
-}
-
-fn active_subtitle_track(
-    tracks: &[PlaybackSubtitleTrack],
-    selected_subtitle: Option<usize>,
-) -> Option<&SubtitleTrack> {
-    selected_subtitle.and_then(|index| tracks.get(index)?.track.as_ref())
 }
 
 fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
@@ -1300,941 +1399,5 @@ fn poll_audio(audio: &mut Option<AudioPlayer>, audio_done: &mut bool) -> Result<
     Ok(())
 }
 
-fn load_initial_subtitle_tracks(
-    media_path: &Path,
-    sub_file: Option<&Path>,
-) -> Result<(Vec<PlaybackSubtitleTrack>, Vec<PendingEmbeddedSubtitle>)> {
-    let mut tracks = Vec::new();
-    if let Some(path) = external_subtitle_path(media_path, sub_file) {
-        tracks.push(PlaybackSubtitleTrack::loaded(SubtitleTrack::load(&path)?));
-    }
-
-    let mut jobs = Vec::new();
-    for (fallback_index, stream) in embedded_subtitle_streams(media_path)
-        .into_iter()
-        .enumerate()
-    {
-        if !stream.is_text() {
-            continue;
-        }
-        let index = tracks.len();
-        tracks.push(PlaybackSubtitleTrack::pending(stream.label()));
-        jobs.push(PendingEmbeddedSubtitle {
-            index,
-            fallback_index,
-            stream,
-        });
-    }
-    Ok((tracks, jobs))
-}
-
-fn subtitle_labels(tracks: &[PlaybackSubtitleTrack]) -> Vec<&'static str> {
-    tracks
-        .iter()
-        .map(|track| Box::leak(track.label.clone().into_boxed_str()) as &'static str)
-        .collect()
-}
-
-fn spawn_embedded_subtitle_loader(
-    media_path: PathBuf,
-    jobs: Vec<PendingEmbeddedSubtitle>,
-) -> mpsc::Receiver<LoadedEmbeddedSubtitle> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        for job in jobs {
-            let track = load_embedded_subtitle_track(&media_path, &job.stream, job.fallback_index)
-                .ok()
-                .flatten();
-            if sender
-                .send(LoadedEmbeddedSubtitle {
-                    index: job.index,
-                    track,
-                })
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-    receiver
-}
-
-fn external_subtitle_path(media_path: &Path, sub_file: Option<&Path>) -> Option<PathBuf> {
-    sub_file
-        .map(Path::to_path_buf)
-        .or_else(|| sidecar_subtitle_path(media_path))
-}
-
-fn normalized_subtitle_path(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn subtitle_path_from_drop_text(text: &str) -> Result<Option<PathBuf>> {
-    for candidate in media_candidates_from_text(text) {
-        if !is_supported_subtitle_path(&candidate) {
-            continue;
-        }
-        validate_subtitle_path(&candidate)?;
-        return Ok(Some(candidate));
-    }
-    Ok(None)
-}
-
-fn load_dropped_subtitle_track(path: &Path) -> Result<SubtitleTrack> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("External");
-    Ok(SubtitleTrack::load(path)?.with_label(format!("External — {file_name}")))
-}
-
-fn path_extension_is(path: &Path, expected: &str) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
-}
-
-fn is_supported_subtitle_path(path: &Path) -> bool {
-    ["srt", "ass", "ssa", "vtt"]
-        .iter()
-        .any(|extension| path_extension_is(path, extension))
-}
-
-struct Config {
-    path: Option<PathBuf>,
-    force: bool,
-    sub_file: Option<PathBuf>,
-}
-
-fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Config> {
-    let args = args.collect::<Vec<_>>();
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        print_help();
-        std::process::exit(0);
-    }
-
-    let mut force = false;
-    let mut sub_file = None::<PathBuf>;
-    let mut positionals = Vec::<OsString>::new();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        if arg == "--force" {
-            force = true;
-            continue;
-        }
-        if arg == "--sub-file" {
-            let value = args
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("--sub-file requires a path"))?;
-            let path = PathBuf::from(value);
-            validate_subtitle_path(&path)?;
-            sub_file = Some(path);
-            continue;
-        }
-        let arg_text = arg.to_string_lossy();
-        if let Some(value) = arg_text.strip_prefix("--sub-file=") {
-            let path = PathBuf::from(value);
-            validate_subtitle_path(&path)?;
-            sub_file = Some(path);
-            continue;
-        }
-
-        if arg_text.starts_with('-') && positionals.is_empty() {
-            bail!("unknown argument: {}", arg_text);
-        }
-        drop(arg_text);
-
-        positionals.push(arg);
-    }
-
-    let path = join_positionals(positionals)
-        .map(media_path_from_argument)
-        .transpose()?;
-
-    Ok(Config {
-        path,
-        force,
-        sub_file,
-    })
-}
-
-fn media_path_from_argument(path: PathBuf) -> Result<PathBuf> {
-    let text = path.as_os_str().to_string_lossy();
-    let path = media_candidates_from_text(&text)
-        .into_iter()
-        .next()
-        .unwrap_or(path);
-    validate_media_path(&path)?;
-    Ok(path)
-}
-
-fn media_path_from_drop_text(text: &str) -> Result<PathBuf> {
-    let candidates = media_candidates_from_text(text);
-    if candidates.is_empty() {
-        bail!("drop a video file or URL to play");
-    }
-
-    let mut last_error = None::<String>;
-    for candidate in candidates {
-        match validate_media_path(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(error) => last_error = Some(error.to_string()),
-        }
-    }
-
-    bail!(
-        "{}",
-        last_error.unwrap_or_else(|| "drop a video file or URL to play".to_string())
-    )
-}
-
-fn validate_media_path(path: &Path) -> Result<()> {
-    let text = path.as_os_str().to_string_lossy();
-    if is_remote_url_text(&text) {
-        return Ok(());
-    }
-    if !path.exists() {
-        bail!(
-            "video does not exist: {}. If the path contains spaces, quote it.",
-            path.display()
-        );
-    }
-    if !path.is_file() {
-        bail!("video path is not a file: {}", path.display());
-    }
-    Ok(())
-}
-
-fn validate_subtitle_path(path: &Path) -> Result<()> {
-    if !path.exists() {
-        bail!("subtitle file does not exist: {}", path.display());
-    }
-    if !path.is_file() {
-        bail!("subtitle path is not a file: {}", path.display());
-    }
-    Ok(())
-}
-
-fn join_positionals(positionals: Vec<OsString>) -> Option<PathBuf> {
-    let mut iter = positionals.into_iter();
-    let first = iter.next()?;
-    let mut path = first;
-    for part in iter {
-        path.push(" ");
-        path.push(part);
-    }
-    Some(PathBuf::from(path))
-}
-
-fn print_help() {
-    println!(
-        "\
-enzo - video player for Kitty-compatible terminals
-
-Usage:
-  enzo [--force] [--sub-file subtitle] [video-or-url]
-
-Controls:
-  Drop file/URL      play from launcher
-  Space, right click  pause/play
-  m                  mute/unmute
-  v                  subtitles on/off
-  Left, Right         seek backward/forward
-  q                  quit
-"
-    );
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TargetFrame {
-    width: u32,
-    height: u32,
-}
-
-impl TargetFrame {
-    fn frame_len(self) -> usize {
-        self.width as usize * self.height as usize * 3
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CanvasFrame {
-    width: u32,
-    height: u32,
-    terminal_width: u32,
-    terminal_height: u32,
-    video_x: u32,
-    video_y: u32,
-    video_width: u32,
-    video_height: u32,
-    overlay_scale_percent: u32,
-    area: ImageArea,
-}
-
-impl CanvasFrame {
-    fn frame_len(self) -> usize {
-        self.width as usize * self.height as usize * 3
-    }
-}
-
-fn terminal_target_and_canvas(source_width: u32, source_height: u32) -> (TargetFrame, CanvasFrame) {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let cols = cols.max(1);
-    let rows = rows.max(1);
-    let (pixel_width, pixel_height) = terminal_pixel_size(cols, rows);
-    let target = target_for_bounds(source_width, source_height, pixel_width, pixel_height);
-    let canvas = canvas_for_terminal(
-        source_width,
-        source_height,
-        cols,
-        rows,
-        pixel_width,
-        pixel_height,
-    );
-    (target, canvas)
-}
-
-fn canvas_for_terminal(
-    source_width: u32,
-    source_height: u32,
-    cols: u16,
-    rows: u16,
-    pixel_width: u32,
-    pixel_height: u32,
-) -> CanvasFrame {
-    let canvas = cap_pixels(
-        pixel_width.max(1),
-        pixel_height.max(1),
-        MAX_CANVAS_WIDTH,
-        MAX_CANVAS_HEIGHT,
-    );
-    let video = fit_pixels(source_width, source_height, canvas.width, canvas.height);
-    let video_x = canvas.width.saturating_sub(video.width) / 2;
-    let video_y = canvas.height.saturating_sub(video.height) / 2;
-    let overlay_scale_percent =
-        overlay_scale_percent(pixel_width, pixel_height, canvas.width, canvas.height);
-
-    CanvasFrame {
-        width: canvas.width,
-        height: canvas.height,
-        terminal_width: pixel_width.max(1),
-        terminal_height: pixel_height.max(1),
-        video_x,
-        video_y,
-        video_width: video.width,
-        video_height: video.height,
-        overlay_scale_percent,
-        area: ImageArea {
-            x: 0,
-            y: 0,
-            cols,
-            rows,
-        },
-    }
-}
-
-fn target_for_bounds(
-    source_width: u32,
-    source_height: u32,
-    pixel_width: u32,
-    pixel_height: u32,
-) -> TargetFrame {
-    let max_width = pixel_width.min(MAX_DECODE_WIDTH).min(source_width).max(1);
-    let max_height = pixel_height
-        .min(MAX_DECODE_HEIGHT)
-        .min(source_height)
-        .max(1);
-    let capped = fit_pixels(source_width, source_height, max_width, max_height);
-
-    TargetFrame {
-        width: capped.width.max(1),
-        height: capped.height.max(1),
-    }
-}
-
-#[derive(Clone, Copy)]
-struct PixelSize {
-    width: u32,
-    height: u32,
-}
-
-fn fit_pixels(source_width: u32, source_height: u32, max_width: u32, max_height: u32) -> PixelSize {
-    let source_aspect = f64::from(source_width.max(1)) / f64::from(source_height.max(1));
-    let max_aspect = f64::from(max_width.max(1)) / f64::from(max_height.max(1));
-
-    let (width, height) = if max_aspect > source_aspect {
-        (
-            (f64::from(max_height) * source_aspect).round() as u32,
-            max_height,
-        )
-    } else {
-        (
-            max_width,
-            (f64::from(max_width) / source_aspect).round() as u32,
-        )
-    };
-
-    PixelSize {
-        width: width.max(1),
-        height: height.max(1),
-    }
-}
-
-fn cap_pixels(width: u32, height: u32, max_width: u32, max_height: u32) -> PixelSize {
-    fit_pixels(
-        width,
-        height,
-        width.min(max_width).max(1),
-        height.min(max_height).max(1),
-    )
-}
-
-fn overlay_scale_percent(
-    pixel_width: u32,
-    pixel_height: u32,
-    canvas_width: u32,
-    canvas_height: u32,
-) -> u32 {
-    let width_scale = f64::from(pixel_width.max(1)) / f64::from(canvas_width.max(1));
-    let height_scale = f64::from(pixel_height.max(1)) / f64::from(canvas_height.max(1));
-    let canvas_scale = width_scale.max(height_scale).max(1.0);
-    let boost = ((canvas_scale - 1.0) * 40.0).round() as u32;
-
-    NORMAL_OVERLAY_SCALE_PERCENT
-        .saturating_add(boost)
-        .clamp(NORMAL_OVERLAY_SCALE_PERCENT, MAX_OVERLAY_SCALE_PERCENT)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn joins_shell_split_path_parts() {
-        let path = join_positionals(vec![
-            OsString::from("/tmp/La"),
-            OsString::from("fascinante"),
-            OsString::from("historia.mp4"),
-        ])
-        .expect("path should be reconstructed");
-
-        assert_eq!(path, PathBuf::from("/tmp/La fascinante historia.mp4"));
-    }
-
-    #[test]
-    fn parse_args_accepts_launcher_without_path() {
-        let config = parse_args(Vec::<OsString>::new().into_iter()).expect("args should parse");
-
-        assert_eq!(config.path, None);
-        assert!(!config.force);
-        assert_eq!(config.sub_file, None);
-    }
-
-    #[test]
-    fn launcher_drop_uses_same_media_and_sidecar_path_as_argument() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "enzo-app-drop-subtitle-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
-        let media = temp_dir.join("Fabricated City.mkv");
-        let sidecar = temp_dir.join("Fabricated City.srt");
-        std::fs::write(&media, "video").expect("video should be written");
-        std::fs::write(&sidecar, "subtitle").expect("subtitle should be written");
-
-        let from_arg = media_path_from_argument(media.clone()).expect("arg media should parse");
-        let from_drop = media_path_from_drop_text(&media.display().to_string())
-            .expect("drop media should parse");
-
-        assert_eq!(from_drop, from_arg);
-        assert_eq!(sidecar_subtitle_path(&from_arg), Some(sidecar.clone()));
-        assert_eq!(sidecar_subtitle_path(&from_drop), Some(sidecar));
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn playback_drop_accepts_subtitle_file() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "enzo-app-playback-subtitle-drop-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
-        let sub_file = temp_dir.join("Movie Signs.eng.ass");
-        std::fs::write(&sub_file, "subtitle").expect("subtitle should be written");
-
-        let from_drop = subtitle_path_from_drop_text(&format!("file://{}", sub_file.display()))
-            .expect("drop subtitle should parse");
-
-        assert_eq!(from_drop, Some(sub_file));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn playback_drop_normalizes_duplicate_subtitle_paths() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "enzo-app-playback-subtitle-dup-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
-        let sub_file = temp_dir.join("movie.srt");
-        std::fs::write(&sub_file, "subtitle").expect("subtitle should be written");
-
-        let plain = subtitle_path_from_drop_text(&sub_file.display().to_string())
-            .expect("plain subtitle should parse")
-            .expect("plain subtitle should exist");
-        let file_url = subtitle_path_from_drop_text(&format!("file://{}", sub_file.display()))
-            .expect("file url subtitle should parse")
-            .expect("file url subtitle should exist");
-
-        assert_eq!(
-            normalized_subtitle_path(&plain),
-            normalized_subtitle_path(&file_url)
-        );
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn playback_drop_ignores_non_subtitle_file() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "enzo-app-playback-video-drop-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
-        let media = temp_dir.join("Movie.mkv");
-        std::fs::write(&media, "video").expect("video should be written");
-
-        let from_drop = subtitle_path_from_drop_text(&media.display().to_string())
-            .expect("video drop should not error");
-
-        assert_eq!(from_drop, None);
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn parse_args_accepts_remote_url() {
-        let config = parse_args(vec![OsString::from("https://example.com/video.mp4")].into_iter())
-            .expect("url should parse");
-
-        assert_eq!(
-            config.path,
-            Some(PathBuf::from("https://example.com/video.mp4"))
-        );
-        assert_eq!(config.sub_file, None);
-    }
-
-    #[test]
-    fn parse_args_accepts_sub_file() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("enzo-app-subtitle-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
-        let sub_file = temp_dir.join("movie.srt");
-        std::fs::write(&sub_file, "").expect("subtitle should be written");
-
-        let config = parse_args(
-            vec![
-                OsString::from("--sub-file"),
-                sub_file.clone().into_os_string(),
-                OsString::from("https://example.com/video.mp4"),
-            ]
-            .into_iter(),
-        )
-        .expect("args should parse");
-
-        assert_eq!(
-            config.path,
-            Some(PathBuf::from("https://example.com/video.mp4"))
-        );
-        assert_eq!(config.sub_file, Some(sub_file));
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn target_caps_large_sources_at_1080p() {
-        let target = target_for_bounds(3840, 2160, 3840, 2160);
-
-        assert_eq!(target.width, 1920);
-        assert_eq!(target.height, 1080);
-    }
-
-    #[test]
-    fn target_does_not_upscale_small_sources() {
-        let target = target_for_bounds(1280, 720, 3840, 2160);
-
-        assert_eq!(target.width, 1280);
-        assert_eq!(target.height, 720);
-    }
-
-    #[test]
-    fn target_preserves_aspect_inside_1080p_cap() {
-        let target = target_for_bounds(2560, 1080, 3840, 2160);
-
-        assert_eq!(target.width, 1920);
-        assert_eq!(target.height, 810);
-    }
-
-    #[test]
-    fn seek_backward_saturates_at_start() {
-        assert_eq!(
-            seek_position(Duration::from_secs(3), -5, None),
-            Duration::ZERO
-        );
-    }
-
-    #[test]
-    fn seek_forward_clamps_to_duration() {
-        assert_eq!(
-            seek_position(Duration::from_secs(18), 5, Some(Duration::from_secs(20))),
-            Duration::from_secs(20)
-        );
-    }
-
-    #[test]
-    fn keyboard_seek_step_scales_with_video_duration() {
-        assert_eq!(keyboard_seek_seconds(1, Some(Duration::from_secs(600))), 5);
-        assert_eq!(
-            keyboard_seek_seconds(1, Some(Duration::from_secs(7200))),
-            36
-        );
-        assert_eq!(
-            keyboard_seek_seconds(-2, Some(Duration::from_secs(7200))),
-            -72
-        );
-        assert_eq!(
-            keyboard_seek_seconds(1, Some(Duration::from_secs(24 * 60 * 60))),
-            60
-        );
-    }
-
-    #[test]
-    fn exact_duration_seek_is_end_seek() {
-        assert!(is_end_seek(
-            Duration::from_secs(20),
-            Some(Duration::from_secs(20))
-        ));
-    }
-
-    #[test]
-    fn before_duration_seek_is_not_end_seek() {
-        assert!(!is_end_seek(
-            Duration::from_secs(19),
-            Some(Duration::from_secs(20))
-        ));
-    }
-
-    #[test]
-    fn overlay_is_visible_while_paused() {
-        let now = Instant::now();
-
-        assert!(overlay_visible(true, false, None, now));
-    }
-
-    #[test]
-    fn overlay_visibility_expires_when_playing() {
-        let now = Instant::now();
-
-        assert!(overlay_visible(
-            false,
-            false,
-            Some(now + Duration::from_secs(1)),
-            now
-        ));
-        assert!(!overlay_visible(
-            false,
-            false,
-            Some(now - Duration::from_secs(1)),
-            now
-        ));
-    }
-
-    #[test]
-    fn overlay_is_visible_while_scrubbing() {
-        let now = Instant::now();
-
-        assert!(overlay_visible(false, true, None, now));
-    }
-
-    #[test]
-    fn overlay_state_uses_scrub_position() {
-        let state = overlay_state(
-            Duration::from_secs(10),
-            Some(Duration::from_secs(30)),
-            Some(Duration::from_secs(60)),
-            false,
-            None,
-            None,
-            false,
-            None,
-            false,
-            Vec::new(),
-            false,
-            None,
-            false,
-            Vec::new(),
-            "movie.mp4",
-        );
-
-        assert_eq!(state.position, Duration::from_secs(30));
-        assert!(state.visible);
-        assert_eq!(state.status_message, None);
-        assert_eq!(state.media_title, Some("movie.mp4"));
-    }
-
-    #[test]
-    fn selected_audio_stream_uses_default_when_probe_metadata_is_missing() {
-        let tracks = vec![crate::media::AudioTrack::default_track()];
-
-        assert_eq!(selected_audio_stream(&tracks, Some(0)), None);
-    }
-
-    #[test]
-    fn pending_subtitle_tracks_keep_picker_label_without_active_track() {
-        let tracks = vec![PlaybackSubtitleTrack::pending(
-            "English — Embedded".to_string(),
-        )];
-        let labels = subtitle_labels(&tracks);
-
-        assert_eq!(labels, vec!["English — Embedded"]);
-        assert!(active_subtitle_track(&tracks, Some(0)).is_none());
-    }
-
-    #[test]
-    fn invalid_media_does_not_invent_pending_embedded_subtitles() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "enzo-no-embedded-subtitle-test-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
-        let media = temp_dir.join("movie.mp4");
-        std::fs::write(&media, b"not really video").expect("media placeholder should be written");
-
-        let (tracks, jobs) = load_initial_subtitle_tracks(&media, None)
-            .expect("subtitle discovery should tolerate videos without subtitle streams");
-
-        assert!(tracks.is_empty());
-        assert!(jobs.is_empty());
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn sidecar_subtitle_stays_loaded_before_background_embedded_tracks() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("enzo-sidecar-load-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
-        let media = temp_dir.join("movie.mkv");
-        let subtitle = temp_dir.join("movie.srt");
-        std::fs::write(&media, b"not really video").expect("media placeholder should be written");
-        std::fs::write(&subtitle, "1\n00:00:00,000 --> 00:00:01,000\nhello\n")
-            .expect("subtitle should be written");
-
-        let (tracks, jobs) =
-            load_initial_subtitle_tracks(&media, None).expect("sidecar subtitle should load");
-
-        assert_eq!(tracks.len(), jobs.len() + 1);
-        assert!(active_subtitle_track(&tracks, Some(0)).is_some());
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn canvas_uses_terminal_letterbox_space() {
-        let canvas = canvas_for_terminal(1280, 536, 80, 24, 1920, 1080);
-
-        assert_eq!(
-            canvas,
-            CanvasFrame {
-                width: 1920,
-                height: 1080,
-                terminal_width: 1920,
-                terminal_height: 1080,
-                video_x: 0,
-                video_y: 138,
-                video_width: 1920,
-                video_height: 804,
-                overlay_scale_percent: 100,
-                area: ImageArea {
-                    x: 0,
-                    y: 0,
-                    cols: 80,
-                    rows: 24,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn canvas_caps_high_density_terminals() {
-        let canvas = canvas_for_terminal(1280, 536, 120, 40, 2880, 1800);
-
-        assert_eq!(
-            canvas,
-            CanvasFrame {
-                width: 1920,
-                height: 1200,
-                terminal_width: 2880,
-                terminal_height: 1800,
-                video_x: 0,
-                video_y: 198,
-                video_width: 1920,
-                video_height: 804,
-                overlay_scale_percent: 120,
-                area: ImageArea {
-                    x: 0,
-                    y: 0,
-                    cols: 120,
-                    rows: 40,
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn mouse_position_maps_terminal_cell_to_canvas_pixel() {
-        let canvas = CanvasFrame {
-            width: 1920,
-            height: 1080,
-            terminal_width: 1920,
-            terminal_height: 1080,
-            video_x: 0,
-            video_y: 138,
-            video_width: 1920,
-            video_height: 804,
-            overlay_scale_percent: 100,
-            area: ImageArea {
-                x: 0,
-                y: 0,
-                cols: 80,
-                rows: 24,
-            },
-        };
-
-        let point = mouse_canvas_position(40, 20, canvas).expect("point should be inside");
-
-        assert_eq!(point.x, 972);
-        assert_eq!(point.cell.left, point.x);
-        assert_eq!(point.cell.right, point.x);
-        assert_eq!(point.cell.top, 922);
-        assert_eq!(point.cell.bottom, 922);
-    }
-
-    #[test]
-    fn mouse_position_maps_pixel_mouse_to_canvas_pixel() {
-        let canvas = CanvasFrame {
-            width: 1920,
-            height: 1200,
-            terminal_width: 2880,
-            terminal_height: 1800,
-            video_x: 0,
-            video_y: 198,
-            video_width: 1920,
-            video_height: 804,
-            overlay_scale_percent: 120,
-            area: ImageArea {
-                x: 0,
-                y: 0,
-                cols: 120,
-                rows: 40,
-            },
-        };
-
-        let point = mouse_canvas_position(1440, 1500, canvas).expect("point should be inside");
-
-        assert_eq!(point.x, 960);
-        assert_eq!(point.cell.left, 960);
-        assert_eq!(point.cell.top, 1000);
-        assert_eq!(point.cell.right, 960);
-        assert_eq!(point.cell.bottom, 1000);
-    }
-
-    #[test]
-    fn copy_video_places_frame_inside_canvas() {
-        let target = TargetFrame {
-            width: 2,
-            height: 2,
-        };
-        let canvas = CanvasFrame {
-            width: 4,
-            height: 4,
-            terminal_width: 4,
-            terminal_height: 4,
-            video_x: 1,
-            video_y: 1,
-            video_width: 2,
-            video_height: 2,
-            overlay_scale_percent: 100,
-            area: ImageArea {
-                x: 0,
-                y: 0,
-                cols: 4,
-                rows: 4,
-            },
-        };
-        let frame = vec![
-            1, 2, 3, 4, 5, 6, //
-            7, 8, 9, 10, 11, 12,
-        ];
-        let mut canvas_frame = vec![0_u8; canvas.frame_len()];
-
-        copy_video_into_canvas(&frame, target, &mut canvas_frame, canvas);
-
-        let row_bytes = canvas.width as usize * 3;
-        assert_eq!(
-            &canvas_frame[row_bytes + 3..row_bytes + 9],
-            &[1, 2, 3, 4, 5, 6]
-        );
-        assert_eq!(
-            &canvas_frame[row_bytes * 2 + 3..row_bytes * 2 + 9],
-            &[7, 8, 9, 10, 11, 12]
-        );
-        assert_eq!(&canvas_frame[..3], &[0, 0, 0]);
-    }
-
-    #[test]
-    fn copy_video_scales_frame_inside_canvas() {
-        let target = TargetFrame {
-            width: 2,
-            height: 1,
-        };
-        let canvas = CanvasFrame {
-            width: 4,
-            height: 2,
-            terminal_width: 4,
-            terminal_height: 2,
-            video_x: 0,
-            video_y: 0,
-            video_width: 4,
-            video_height: 2,
-            overlay_scale_percent: 100,
-            area: ImageArea {
-                x: 0,
-                y: 0,
-                cols: 4,
-                rows: 2,
-            },
-        };
-        let frame = vec![1, 2, 3, 7, 8, 9];
-        let mut canvas_frame = vec![0_u8; canvas.frame_len()];
-
-        copy_video_into_canvas(&frame, target, &mut canvas_frame, canvas);
-
-        assert_eq!(&canvas_frame[..12], &[1, 2, 3, 1, 2, 3, 7, 8, 9, 7, 8, 9]);
-        assert_eq!(&canvas_frame[12..24], &[1, 2, 3, 1, 2, 3, 7, 8, 9, 7, 8, 9]);
-    }
-
-    #[test]
-    fn progress_ratio_seek_uses_duration() {
-        assert_eq!(
-            seek_from_progress_ratio(0.25, Some(Duration::from_secs(80))),
-            Some(Duration::from_secs(20))
-        );
-    }
-}
+mod tests;
