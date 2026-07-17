@@ -17,6 +17,64 @@ fn seek_forward_clamps_to_duration() {
     );
 }
 
+fn pending_seek_for_test(position: Duration) -> PendingSeek {
+    PendingSeek {
+        video_generation: 1,
+        video_target: position,
+        video_pts: None,
+        video_frame_displayed: false,
+        audio_generation: Some(1),
+        audio_target: Some(position),
+        release_requested: true,
+    }
+}
+
+#[test]
+fn keyboard_seek_waits_for_a_displayed_preview_before_retargeting() {
+    let mut pending = pending_seek_for_test(Duration::from_secs(10));
+    pending.hold();
+    let target = Some(Duration::from_secs(20));
+
+    assert_eq!(keyboard_preview_target(Some(&pending), target, true), None);
+
+    pending.video_pts = Some(Duration::from_secs(10));
+    pending.mark_video_frame_displayed(Duration::from_secs(10));
+
+    assert_eq!(
+        keyboard_preview_target(Some(&pending), target, true),
+        target
+    );
+}
+
+#[test]
+fn committed_seek_does_not_launch_an_intermediate_preview() {
+    let mut pending = pending_seek_for_test(Duration::from_secs(10));
+    pending.hold();
+    pending.video_pts = Some(Duration::from_secs(10));
+    pending.mark_video_frame_displayed(Duration::from_secs(10));
+    pending.request_release();
+
+    assert_eq!(
+        keyboard_preview_target(Some(&pending), Some(Duration::from_secs(20)), true),
+        None
+    );
+}
+
+#[test]
+fn rendered_preview_is_recorded_even_if_it_arrives_between_polls() {
+    let mut pending = pending_seek_for_test(Duration::from_secs(10));
+    pending.hold();
+
+    pending.mark_video_frame_displayed(Duration::from_secs(10));
+
+    assert_eq!(pending.video_pts, Some(Duration::from_secs(10)));
+    assert!(pending.video_frame_displayed);
+    assert_eq!(
+        keyboard_preview_target(Some(&pending), Some(Duration::from_secs(20)), true),
+        Some(Duration::from_secs(20))
+    );
+}
+
 #[test]
 fn exact_duration_seek_is_end_seek() {
     assert!(is_end_seek(

@@ -59,9 +59,38 @@ struct StatusMessage {
 
 struct PendingSeek {
     video_generation: i32,
+    video_target: Duration,
     video_pts: Option<Duration>,
+    video_frame_displayed: bool,
     audio_generation: Option<i32>,
     audio_target: Option<Duration>,
+    release_requested: bool,
+}
+
+impl PendingSeek {
+    fn hold(&mut self) {
+        self.release_requested = false;
+    }
+
+    fn request_release(&mut self) {
+        self.release_requested = true;
+    }
+
+    fn retarget_video(&mut self, decoder: &mut VideoDecoder, position: Duration) {
+        self.video_generation = decoder.seek(position);
+        self.video_target = position;
+        self.video_pts = None;
+        self.video_frame_displayed = false;
+    }
+
+    fn mark_video_frame_displayed(&mut self, pts: Duration) {
+        if self.video_pts.is_none() {
+            self.video_pts = Some(pts);
+        }
+        if self.video_pts == Some(pts) {
+            self.video_frame_displayed = true;
+        }
+    }
 }
 
 struct MediaInfoOverlay {
@@ -324,9 +353,12 @@ fn play_media(
     let mut mouse_scrub_commit_at = None::<Instant>;
     let mut pending_seek = Some(PendingSeek {
         video_generation: decoder.seek_generation(),
+        video_target: start_position,
         video_pts: None,
+        video_frame_displayed: false,
         audio_generation: audio.as_ref().map(AudioPlayer::seek_generation),
         audio_target: audio.as_ref().map(|_| start_position),
+        release_requested: true,
     });
     let mut playback_outcome = PlaybackOutcome::Interrupted;
 
@@ -538,7 +570,7 @@ fn play_media(
                 }
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                 if keyboard_seek_commit_at.is_none_or(|deadline| input_at >= deadline) {
-                    pending_seek = Some(seek_playback(
+                    let mut seek = seek_playback(
                         &path,
                         source.has_audio,
                         &mut decoder,
@@ -548,20 +580,29 @@ fn play_media(
                         seek_target,
                         paused,
                         muted,
-                    )?);
-                    playback_position = seek_target;
-                    resume.set_position(playback_position);
-                    scrub_position = None;
+                    )?;
+                    seek.hold();
+                    pending_seek = Some(seek);
                     video_ended = false;
                     next_frame_at = Instant::now();
-                    keyboard_seek_commit_at = Some(input_at + KEYBOARD_SEEK_COMMIT_AFTER);
                     redraw_current_frame = false;
                 } else {
-                    scrub_position = Some(seek_target);
                     redraw_current_frame = have_frame;
                 }
+                scrub_position = Some(seek_target);
+                keyboard_seek_commit_at = Some(input_at + KEYBOARD_SEEK_COMMIT_AFTER);
             }
             PlaybackCommand::None => {}
+        }
+
+        if advance_keyboard_seek_preview(
+            &mut pending_seek,
+            &mut decoder,
+            scrub_position,
+            keyboard_seek_commit_at.is_some(),
+        ) {
+            next_frame_at = Instant::now();
+            redraw_current_frame = false;
         }
 
         let (current_target, current_canvas) =
@@ -603,6 +644,7 @@ fn play_media(
             last_drawn_media_info_visible = false;
             last_drawn_media_info_fps_visible = false;
             scrub_position = None;
+            keyboard_seek_commit_at = None;
             video_ended = false;
             next_frame_at = Instant::now();
         }
@@ -672,8 +714,15 @@ fn play_media(
             subtitles_available: !subtitle_tracks.is_empty(),
             subtitle_count: subtitle_tracks.len(),
         };
-        if !input.mouse_events.is_empty() {
-            keyboard_seek_commit_at = None;
+        if !input.mouse_events.is_empty()
+            && keyboard_seek_commit_at.take().is_some()
+            && let (Some(seek), Some(seek_target)) = (pending_seek.as_mut(), scrub_position.take())
+        {
+            if seek.video_target != seek_target {
+                seek.retarget_video(&mut decoder, seek_target);
+            }
+            seek.request_release();
+            next_frame_at = Instant::now();
         }
         for mouse in input.mouse_events {
             let seek_target = match mouse {
@@ -869,19 +918,24 @@ fn play_media(
         if keyboard_seek_commit_at.is_some_and(|deadline| Instant::now() >= deadline) {
             keyboard_seek_commit_at = None;
             if let Some(seek_target) = scrub_position.take() {
-                pending_seek = Some(seek_playback(
-                    &path,
-                    source.has_audio,
-                    &mut decoder,
-                    &mut audio,
-                    &mut audio_done,
-                    selected_audio_stream_choice(&audio_tracks, selected_audio),
-                    seek_target,
-                    paused,
-                    muted,
-                )?);
-                playback_position = seek_target;
-                resume.set_position(playback_position);
+                if let Some(seek) = pending_seek.as_mut() {
+                    if seek.video_target != seek_target {
+                        seek.retarget_video(&mut decoder, seek_target);
+                    }
+                    seek.request_release();
+                } else {
+                    pending_seek = Some(seek_playback(
+                        &path,
+                        source.has_audio,
+                        &mut decoder,
+                        &mut audio,
+                        &mut audio_done,
+                        selected_audio_stream_choice(&audio_tracks, selected_audio),
+                        seek_target,
+                        paused,
+                        muted,
+                    )?);
+                }
                 video_ended = false;
                 next_frame_at = Instant::now();
                 redraw_current_frame = false;
@@ -995,6 +1049,13 @@ fn play_media(
                     last_drawn_media_info_visible = state.media_info.is_some();
                     last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
                     redraw_current_frame = false;
+                    mark_pending_seek_frame_displayed(&mut pending_seek, pts);
+                    advance_keyboard_seek_preview(
+                        &mut pending_seek,
+                        &mut decoder,
+                        scrub_position,
+                        keyboard_seek_commit_at.is_some(),
+                    );
                 }
                 FrameStatus::NoFrame => {}
                 FrameStatus::Ended => {
@@ -1060,6 +1121,15 @@ fn play_media(
                 last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
                 redraw_current_frame = false;
                 out.flush()?;
+                mark_pending_seek_frame_displayed(&mut pending_seek, pts);
+                if advance_keyboard_seek_preview(
+                    &mut pending_seek,
+                    &mut decoder,
+                    scrub_position,
+                    keyboard_seek_commit_at.is_some(),
+                ) {
+                    next_frame_at = Instant::now();
+                }
                 advance_frame_clock(&mut next_frame_at, frame_interval);
             }
             FrameStatus::NoFrame => {
@@ -1290,9 +1360,12 @@ fn seek_playback(
     decoder.set_audio_clock(audio.as_ref());
     Ok(PendingSeek {
         video_generation,
+        video_target: position,
         video_pts: None,
+        video_frame_displayed: false,
         audio_generation,
         audio_target: audio_generation.map(|_| position),
+        release_requested: true,
     })
 }
 
@@ -1313,6 +1386,10 @@ fn progress_pending_seek(
         return false;
     };
     seek.video_pts = Some(video_pts);
+
+    if !seek.release_requested {
+        return false;
+    }
 
     if let Some(player) = audio.as_ref()
         && seek.audio_target != Some(video_pts)
@@ -1338,6 +1415,44 @@ fn progress_pending_seek(
     }
     decoder.release_seek(seek.video_generation, false);
     *pending = None;
+    true
+}
+
+fn mark_pending_seek_frame_displayed(pending: &mut Option<PendingSeek>, pts: Duration) {
+    if let Some(seek) = pending.as_mut() {
+        seek.mark_video_frame_displayed(pts);
+    }
+}
+
+fn keyboard_preview_target(
+    pending: Option<&PendingSeek>,
+    scrub_position: Option<Duration>,
+    keyboard_seek_active: bool,
+) -> Option<Duration> {
+    let seek = pending?;
+    let target = scrub_position?;
+    (keyboard_seek_active
+        && !seek.release_requested
+        && seek.video_frame_displayed
+        && seek.video_target != target)
+        .then_some(target)
+}
+
+fn advance_keyboard_seek_preview(
+    pending: &mut Option<PendingSeek>,
+    decoder: &mut VideoDecoder,
+    scrub_position: Option<Duration>,
+    keyboard_seek_active: bool,
+) -> bool {
+    let Some(target) =
+        keyboard_preview_target(pending.as_ref(), scrub_position, keyboard_seek_active)
+    else {
+        return false;
+    };
+    let Some(seek) = pending.as_mut() else {
+        return false;
+    };
+    seek.retarget_video(decoder, target);
     true
 }
 
