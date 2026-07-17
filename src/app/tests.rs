@@ -75,6 +75,74 @@ fn held_preview_needs_exact_retarget_even_when_target_matches() {
     assert!(pending.needs_exact_retarget_for_release(Duration::from_secs(10)));
 }
 
+fn target_for_test(width: u32, height: u32) -> TargetFrame {
+    TargetFrame { width, height }
+}
+
+fn canvas_for_test(width: u32, height: u32) -> CanvasFrame {
+    CanvasFrame {
+        width,
+        height,
+        terminal_width: width,
+        terminal_height: height,
+        video_x: 0,
+        video_y: 0,
+        video_width: width,
+        video_height: height,
+        overlay_scale_percent: 100,
+        area: ImageArea {
+            x: 0,
+            y: 0,
+            cols: 80,
+            rows: 24,
+        },
+    }
+}
+
+#[test]
+fn resize_layout_waits_for_stable_size_and_resets_on_drag() {
+    let active = (target_for_test(640, 360), canvas_for_test(640, 360));
+    let first = (target_for_test(800, 450), canvas_for_test(800, 450));
+    let final_size = (target_for_test(960, 540), canvas_for_test(960, 540));
+    let now = Instant::now();
+    let mut pending = None;
+
+    assert_eq!(
+        settled_resize_layout(active.0, active.1, first.0, first.1, &mut pending, now),
+        None
+    );
+    assert_eq!(
+        settled_resize_layout(
+            active.0,
+            active.1,
+            final_size.0,
+            final_size.1,
+            &mut pending,
+            now + RESIZE_SETTLE_FOR,
+        ),
+        None
+    );
+    assert_eq!(
+        settled_resize_layout(
+            active.0,
+            active.1,
+            final_size.0,
+            final_size.1,
+            &mut pending,
+            now + RESIZE_SETTLE_FOR * 2,
+        ),
+        Some(final_size)
+    );
+}
+
+#[test]
+fn paused_resize_restart_uses_displayed_position() {
+    assert_eq!(
+        resize_restart_position(Duration::from_secs(30), None, true, None),
+        Duration::from_secs(30)
+    );
+}
+
 #[test]
 fn rendered_preview_is_recorded_even_if_it_arrives_between_polls() {
     let mut pending = pending_seek_for_test(Duration::from_secs(10));

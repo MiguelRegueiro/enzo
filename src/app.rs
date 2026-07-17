@@ -50,6 +50,7 @@ const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const MEDIA_INFO_VISIBLE_FOR: Duration = Duration::from_secs(4);
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const MOUSE_SCRUB_COMMIT_AFTER: Duration = Duration::from_millis(120);
+const RESIZE_SETTLE_FOR: Duration = Duration::from_millis(140);
 
 #[derive(Clone, Copy)]
 struct StatusMessage {
@@ -105,6 +106,13 @@ struct MediaInfoOverlay {
     content: MediaInfo,
     visible_until: Option<Instant>,
     pinned: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PendingResize {
+    target: TargetFrame,
+    canvas: CanvasFrame,
+    observed_at: Instant,
 }
 
 impl MediaInfoOverlay {
@@ -368,6 +376,7 @@ fn play_media(
         audio_target: audio.as_ref().map(|_| start_position),
         release_requested: true,
     });
+    let mut pending_resize = None::<PendingResize>;
     let mut playback_outcome = PlaybackOutcome::Interrupted;
 
     loop {
@@ -614,36 +623,51 @@ fn play_media(
             redraw_current_frame = false;
         }
 
-        let (current_target, current_canvas) =
+        let (observed_target, observed_canvas) =
             terminal_target_and_canvas(source.width, source.height);
+        let resize_ready = settled_resize_layout(
+            target,
+            canvas,
+            observed_target,
+            observed_canvas,
+            &mut pending_resize,
+            Instant::now(),
+        );
+        let (current_target, current_canvas) = resize_ready.unwrap_or((target, canvas));
+        if pending_resize.is_some() && resize_ready.is_none() {
+            out.flush()?;
+            thread::sleep(Duration::from_millis(8));
+            resume.maybe_checkpoint(Instant::now());
+            continue;
+        }
+
         if current_target != target {
-            if let Some(audio) = audio.as_mut() {
-                audio.set_paused(true);
-            }
+            let resize_position =
+                resize_restart_position(playback_position, source.duration, paused, audio.as_ref());
 
             decoder.stop()?;
+            frame.resize(current_target.frame_len(), 0);
             target = current_target;
-            frame.resize(target.frame_len(), 0);
             decoder = VideoDecoder::spawn_at(
                 &path,
                 target.width,
                 target.height,
                 source.fps,
-                playback_position,
+                resize_position,
                 true,
             )?;
-            pending_seek = Some(seek_playback(
-                &path,
-                source.has_audio,
-                &mut decoder,
-                &mut audio,
-                &mut audio_done,
-                selected_audio_stream_choice(&audio_tracks, selected_audio),
-                playback_position,
-                true,
-                paused,
-                muted,
-            )?);
+            decoder.set_audio_clock(audio.as_ref());
+            pending_seek = Some(PendingSeek {
+                video_generation: decoder.seek_generation(),
+                video_target: resize_position,
+                video_pts: None,
+                video_frame_displayed: false,
+                audio_generation: None,
+                audio_target: None,
+                release_requested: true,
+            });
+            playback_position = resize_position;
+            resume.set_position(playback_position);
 
             clear_screen_and_images(&mut out)?;
             previous_image_id = None;
@@ -668,7 +692,7 @@ fn play_media(
             last_drawn_status_visible = false;
             last_drawn_media_info_visible = false;
             last_drawn_media_info_fps_visible = false;
-            if paused && have_frame {
+            if have_frame {
                 let state = overlay_state(
                     playback_position,
                     scrub_position,
@@ -1220,6 +1244,55 @@ fn play_media(
     Ok(())
 }
 
+fn settled_resize_layout(
+    active_target: TargetFrame,
+    active_canvas: CanvasFrame,
+    observed_target: TargetFrame,
+    observed_canvas: CanvasFrame,
+    pending: &mut Option<PendingResize>,
+    now: Instant,
+) -> Option<(TargetFrame, CanvasFrame)> {
+    if observed_target == active_target && observed_canvas == active_canvas {
+        *pending = None;
+        return None;
+    }
+
+    match pending {
+        Some(resize) if resize.target == observed_target && resize.canvas == observed_canvas => {
+            if now.duration_since(resize.observed_at) >= RESIZE_SETTLE_FOR {
+                *pending = None;
+                Some((observed_target, observed_canvas))
+            } else {
+                None
+            }
+        }
+        _ => {
+            *pending = Some(PendingResize {
+                target: observed_target,
+                canvas: observed_canvas,
+                observed_at: now,
+            });
+            None
+        }
+    }
+}
+
+fn resize_restart_position(
+    playback_position: Duration,
+    duration: Option<Duration>,
+    paused: bool,
+    audio: Option<&AudioPlayer>,
+) -> Duration {
+    let position = if paused {
+        playback_position
+    } else {
+        audio
+            .and_then(AudioPlayer::playback_position)
+            .unwrap_or(playback_position)
+    };
+    duration.map_or(position, |duration| position.min(duration))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_frame(
     out: &mut impl Write,
@@ -1409,7 +1482,8 @@ fn progress_pending_seek(
         return false;
     }
 
-    if let Some(player) = audio.as_ref()
+    if seek.audio_generation.is_some()
+        && let Some(player) = audio.as_ref()
         && seek.audio_target != Some(video_pts)
     {
         player.set_paused(true);

@@ -1486,6 +1486,11 @@ impl AudioPlayer {
             .store(generation, Ordering::Release);
     }
 
+    pub(crate) fn playback_position(&self) -> Option<Duration> {
+        let micros = self.playback_micros.load(Ordering::Acquire);
+        (micros >= 0).then(|| Duration::from_micros(micros as u64))
+    }
+
     fn playback_clock(&self) -> Arc<AtomicI64> {
         Arc::clone(&self.playback_micros)
     }
