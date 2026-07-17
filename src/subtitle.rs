@@ -72,7 +72,7 @@ impl SubtitleTrack {
     fn active_lines(&self, position: Duration) -> Option<Vec<String>> {
         let mut lines = Vec::new();
         let end = self.cues.partition_point(|cue| cue.start <= position);
-        for cue in self.cues[..end].iter().rev() {
+        for cue in &self.cues[..end] {
             if position >= cue.end {
                 continue;
             }
@@ -82,7 +82,6 @@ impl SubtitleTrack {
                 }
             }
         }
-        lines.reverse();
         (!lines.is_empty()).then_some(lines)
     }
 }
@@ -1495,6 +1494,31 @@ One
             Some(vec![String::from("One")])
         );
         assert!(track.active_lines(Duration::from_millis(2000)).is_none());
+    }
+
+    #[test]
+    fn active_lines_preserves_two_line_order() {
+        let track = SubtitleTrack {
+            cues: parse_srt(
+                "\
+1
+00:00:01,000 --> 00:00:02,000
+First line
+Second line
+",
+            )
+            .expect("srt should parse"),
+            language: None,
+            label: String::from("Subtitles"),
+        };
+
+        assert_eq!(
+            track.active_lines(Duration::from_millis(1000)),
+            Some(vec![
+                String::from("First line"),
+                String::from("Second line"),
+            ])
+        );
     }
 
     #[test]
