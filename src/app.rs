@@ -76,8 +76,16 @@ impl PendingSeek {
         self.release_requested = true;
     }
 
-    fn retarget_video(&mut self, decoder: &mut VideoDecoder, position: Duration) {
-        self.video_generation = decoder.seek(position);
+    fn needs_exact_retarget_for_release(&self, position: Duration) -> bool {
+        self.video_target != position || !self.release_requested
+    }
+
+    fn retarget_video(&mut self, decoder: &mut VideoDecoder, position: Duration, exact: bool) {
+        self.video_generation = if exact {
+            decoder.seek(position)
+        } else {
+            decoder.preview_seek(position)
+        };
         self.video_target = position;
         self.video_pts = None;
         self.video_frame_displayed = false;
@@ -578,6 +586,7 @@ fn play_media(
                         &mut audio_done,
                         selected_audio_stream_choice(&audio_tracks, selected_audio),
                         seek_target,
+                        true,
                         paused,
                         muted,
                     )?;
@@ -631,6 +640,7 @@ fn play_media(
                 &mut audio_done,
                 selected_audio_stream_choice(&audio_tracks, selected_audio),
                 playback_position,
+                true,
                 paused,
                 muted,
             )?);
@@ -718,8 +728,8 @@ fn play_media(
             && keyboard_seek_commit_at.take().is_some()
             && let (Some(seek), Some(seek_target)) = (pending_seek.as_mut(), scrub_position.take())
         {
-            if seek.video_target != seek_target {
-                seek.retarget_video(&mut decoder, seek_target);
+            if seek.needs_exact_retarget_for_release(seek_target) {
+                seek.retarget_video(&mut decoder, seek_target, true);
             }
             seek.request_release();
             next_frame_at = Instant::now();
@@ -756,6 +766,7 @@ fn play_media(
                                     &mut audio_done,
                                     selected_audio_stream_choice(&audio_tracks, selected_audio),
                                     playback_position,
+                                    true,
                                     paused,
                                     muted,
                                 )?);
@@ -905,6 +916,7 @@ fn play_media(
                 &mut audio_done,
                 selected_audio_stream_choice(&audio_tracks, selected_audio),
                 seek_target,
+                true,
                 paused,
                 muted,
             )?);
@@ -919,8 +931,8 @@ fn play_media(
             keyboard_seek_commit_at = None;
             if let Some(seek_target) = scrub_position.take() {
                 if let Some(seek) = pending_seek.as_mut() {
-                    if seek.video_target != seek_target {
-                        seek.retarget_video(&mut decoder, seek_target);
+                    if seek.needs_exact_retarget_for_release(seek_target) {
+                        seek.retarget_video(&mut decoder, seek_target, true);
                     }
                     seek.request_release();
                 } else {
@@ -932,6 +944,7 @@ fn play_media(
                         &mut audio_done,
                         selected_audio_stream_choice(&audio_tracks, selected_audio),
                         seek_target,
+                        true,
                         paused,
                         muted,
                     )?);
@@ -1333,10 +1346,15 @@ fn seek_playback(
     audio_done: &mut bool,
     audio_stream: Option<Option<usize>>,
     position: Duration,
+    exact_video_seek: bool,
     paused: bool,
     muted: bool,
 ) -> Result<PendingSeek> {
-    let video_generation = decoder.seek(position);
+    let video_generation = if exact_video_seek {
+        decoder.seek(position)
+    } else {
+        decoder.preview_seek(position)
+    };
     let mut audio_generation = None;
     if has_audio && let Some(audio_stream_index) = audio_stream {
         if let Some(audio) = audio.as_mut() {
@@ -1452,7 +1470,7 @@ fn advance_keyboard_seek_preview(
     let Some(seek) = pending.as_mut() else {
         return false;
     };
-    seek.retarget_video(decoder, target);
+    seek.retarget_video(decoder, target, false);
     true
 }
 

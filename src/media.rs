@@ -139,6 +139,7 @@ unsafe extern "C" {
     fn rig_video_decoder_seek(
         decoder: *mut RigVideoDecoderOpaque,
         seconds: c_double,
+        exact: c_int,
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
@@ -816,12 +817,13 @@ impl NativeVideoDecoder {
         }
     }
 
-    fn seek(&mut self, position: Duration) -> Result<()> {
+    fn seek(&mut self, position: Duration, exact: bool) -> Result<()> {
         let mut error = ErrorBuffer::new();
         let status = unsafe {
             rig_video_decoder_seek(
                 self.0,
                 position.as_secs_f64(),
+                c_int::from(exact),
                 error.as_mut_ptr(),
                 error.len(),
             )
@@ -862,6 +864,7 @@ pub(crate) struct VideoDecoder {
     pause: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
+    seek_exact: Arc<AtomicI32>,
     released_seek_generation: Arc<AtomicI32>,
     master_clock: Arc<Mutex<Option<Arc<AtomicI64>>>>,
     frame_thread: Option<thread::JoinHandle<()>>,
@@ -890,6 +893,8 @@ impl VideoDecoder {
         let seek_generation_thread = Arc::clone(&seek_generation);
         let seek_micros = Arc::new(AtomicI64::new(duration_micros_i64(position)));
         let seek_micros_thread = Arc::clone(&seek_micros);
+        let seek_exact = Arc::new(AtomicI32::new(1));
+        let seek_exact_thread = Arc::clone(&seek_exact);
         let initial_seek_generation = seek_generation.load(Ordering::Relaxed);
         let released_seek_generation = Arc::new(AtomicI32::new(initial_seek_generation));
         let released_seek_generation_thread = Arc::clone(&released_seek_generation);
@@ -906,6 +911,7 @@ impl VideoDecoder {
                 pause_thread,
                 seek_generation_thread,
                 seek_micros_thread,
+                seek_exact_thread,
                 released_seek_generation_thread,
                 master_clock_thread,
             );
@@ -919,6 +925,7 @@ impl VideoDecoder {
             pause,
             seek_generation,
             seek_micros,
+            seek_exact,
             released_seek_generation,
             master_clock,
             frame_thread: Some(frame_thread),
@@ -976,7 +983,16 @@ impl VideoDecoder {
     }
 
     pub(crate) fn seek(&mut self, position: Duration) -> i32 {
+        self.seek_with_exactness(position, true)
+    }
+
+    pub(crate) fn preview_seek(&mut self, position: Duration) -> i32 {
+        self.seek_with_exactness(position, false)
+    }
+
+    fn seek_with_exactness(&mut self, position: Duration, exact: bool) -> i32 {
         self.pause.store(1, Ordering::Release);
+        self.seek_exact.store(i32::from(exact), Ordering::Release);
         self.seek_micros
             .store(duration_micros_i64(position), Ordering::Release);
         let generation = self
@@ -1032,6 +1048,7 @@ fn run_video_decode_thread(
     pause: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
+    seek_exact: Arc<AtomicI32>,
     released_seek_generation: Arc<AtomicI32>,
     master_clock: Arc<Mutex<Option<Arc<AtomicI64>>>>,
 ) {
@@ -1050,13 +1067,17 @@ fn run_video_decode_thread(
             break;
         }
 
-        if let Some(position) =
-            take_seek_request(&seek_generation, &seek_micros, &mut seen_seek_generation)
-        {
+        if let Some(request) = take_seek_request(
+            &seek_generation,
+            &seek_micros,
+            &seek_exact,
+            &mut seen_seek_generation,
+        ) {
             if let Err(error) = seek_video_thread(
                 &mut native,
                 &latest_frame,
-                position,
+                request.position,
+                request.exact,
                 &mut started_at,
                 &mut fallback_pts,
             ) {
@@ -1072,6 +1093,7 @@ fn run_video_decode_thread(
                 &pause,
                 &seek_generation,
                 &seek_micros,
+                &seek_exact,
                 &mut seen_seek_generation,
             ) {
                 PauseWait::Ready(paused_for) => {
@@ -1085,12 +1107,13 @@ fn run_video_decode_thread(
                         started_at += paused_for;
                     }
                 }
-                PauseWait::Seek(position, paused_for) => {
+                PauseWait::Seek(request, paused_for) => {
                     started_at += paused_for;
                     if let Err(error) = seek_video_thread(
                         &mut native,
                         &latest_frame,
-                        position,
+                        request.position,
+                        request.exact,
                         &mut started_at,
                         &mut fallback_pts,
                     ) {
@@ -1141,18 +1164,20 @@ fn run_video_decode_thread(
                     &pause,
                     &seek_generation,
                     &seek_micros,
+                    &seek_exact,
                     &mut seen_seek_generation,
                 ) {
                     PauseWait::Ready(paused_for) => {
                         started_at += paused_for;
                         due_at += paused_for;
                     }
-                    PauseWait::Seek(position, paused_for) => {
+                    PauseWait::Seek(request, paused_for) => {
                         started_at += paused_for;
                         if let Err(error) = seek_video_thread(
                             &mut native,
                             &latest_frame,
-                            position,
+                            request.position,
+                            request.exact,
                             &mut started_at,
                             &mut fallback_pts,
                         ) {
@@ -1194,13 +1219,17 @@ fn run_video_decode_thread(
             }
         }
 
-        if let Some(position) =
-            take_seek_request(&seek_generation, &seek_micros, &mut seen_seek_generation)
-        {
+        if let Some(request) = take_seek_request(
+            &seek_generation,
+            &seek_micros,
+            &seek_exact,
+            &mut seen_seek_generation,
+        ) {
             if let Err(error) = seek_video_thread(
                 &mut native,
                 &latest_frame,
-                position,
+                request.position,
+                request.exact,
                 &mut started_at,
                 &mut fallback_pts,
             ) {
@@ -1230,9 +1259,14 @@ fn master_clock_position(master_clock: &Mutex<Option<Arc<AtomicI64>>>) -> Option
     (micros >= 0).then(|| Duration::from_micros(micros as u64))
 }
 
+struct SeekRequest {
+    position: Duration,
+    exact: bool,
+}
+
 enum PauseWait {
     Ready(Duration),
-    Seek(Duration, Duration),
+    Seek(SeekRequest, Duration),
     Stopped,
 }
 
@@ -1241,6 +1275,7 @@ fn wait_while_paused(
     pause: &AtomicI32,
     seek_generation: &AtomicI32,
     seek_micros: &AtomicI64,
+    seek_exact: &AtomicI32,
     seen_seek_generation: &mut i32,
 ) -> PauseWait {
     if pause.load(Ordering::Relaxed) == 0 {
@@ -1252,10 +1287,13 @@ fn wait_while_paused(
         if stop.load(Ordering::Relaxed) != 0 {
             return PauseWait::Stopped;
         }
-        if let Some(position) =
-            take_seek_request(seek_generation, seek_micros, seen_seek_generation)
-        {
-            return PauseWait::Seek(position, paused_at.elapsed());
+        if let Some(request) = take_seek_request(
+            seek_generation,
+            seek_micros,
+            seek_exact,
+            seen_seek_generation,
+        ) {
+            return PauseWait::Seek(request, paused_at.elapsed());
         }
         thread::sleep(Duration::from_millis(5));
     }
@@ -1265,25 +1303,30 @@ fn wait_while_paused(
 fn take_seek_request(
     seek_generation: &AtomicI32,
     seek_micros: &AtomicI64,
+    seek_exact: &AtomicI32,
     seen_seek_generation: &mut i32,
-) -> Option<Duration> {
-    let generation = seek_generation.load(Ordering::Relaxed);
+) -> Option<SeekRequest> {
+    let generation = seek_generation.load(Ordering::Acquire);
     if generation == *seen_seek_generation {
         return None;
     }
     *seen_seek_generation = generation;
     let micros = seek_micros.load(Ordering::Relaxed).max(0) as u64;
-    Some(Duration::from_micros(micros))
+    Some(SeekRequest {
+        position: Duration::from_micros(micros),
+        exact: seek_exact.load(Ordering::Acquire) != 0,
+    })
 }
 
 fn seek_video_thread(
     native: &mut NativeVideoDecoder,
     latest_frame: &Arc<Mutex<LatestFrame>>,
     position: Duration,
+    exact: bool,
     started_at: &mut Instant,
     fallback_pts: &mut f64,
 ) -> Result<()> {
-    native.seek(position)?;
+    native.seek(position, exact)?;
     reset_frame_state(latest_frame);
     *started_at = Instant::now() - position;
     *fallback_pts = position.as_secs_f64();
@@ -1808,6 +1851,46 @@ mod tests {
         assert!(decoder.seek_frame(superseded).is_none());
         assert!(latest_pts >= Duration::from_millis(950));
         assert!(latest_pts < Duration::from_millis(1_100));
+        decoder.stop().expect("video decoder should stop");
+        let _ = std::fs::remove_file(media);
+    }
+
+    #[test]
+    fn preview_video_seek_publishes_keyframe_without_exact_catchup() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let media = std::env::temp_dir().join(format!(
+            "enzo-preview-video-seek-test-{}.mkv",
+            std::process::id()
+        ));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=320x180:duration=8:rate=30")
+            .args(["-c:v", "mpeg4", "-g", "240"])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let mut decoder = VideoDecoder::spawn_at(&media, 64, 36, 30.0, Duration::ZERO, true)
+            .expect("video decoder should start");
+        let generation = decoder.preview_seek(Duration::from_millis(7_500));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pts = loop {
+            if let Some(pts) = decoder.seek_frame(generation) {
+                break pts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "preview seek frame should become ready"
+            );
+            thread::sleep(Duration::from_millis(2));
+        };
+
+        assert!(pts < Duration::from_millis(7_000));
         decoder.stop().expect("video decoder should stop");
         let _ = std::fs::remove_file(media);
     }

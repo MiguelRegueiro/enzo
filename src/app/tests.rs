@@ -61,6 +61,21 @@ fn committed_seek_does_not_launch_an_intermediate_preview() {
 }
 
 #[test]
+fn held_preview_needs_exact_retarget_even_when_target_matches() {
+    let mut pending = pending_seek_for_test(Duration::from_secs(5));
+    pending.hold();
+    pending.video_pts = Some(Duration::ZERO);
+    pending.mark_video_frame_displayed(Duration::ZERO);
+
+    assert!(pending.needs_exact_retarget_for_release(Duration::from_secs(5)));
+    assert!(pending.needs_exact_retarget_for_release(Duration::from_secs(10)));
+
+    pending.request_release();
+    assert!(!pending.needs_exact_retarget_for_release(Duration::from_secs(5)));
+    assert!(pending.needs_exact_retarget_for_release(Duration::from_secs(10)));
+}
+
+#[test]
 fn rendered_preview_is_recorded_even_if_it_arrives_between_polls() {
     let mut pending = pending_seek_for_test(Duration::from_secs(10));
     pending.hold();

@@ -1576,6 +1576,7 @@ int rig_video_decoder_next(
 int rig_video_decoder_seek(
     RigVideoDecoder *decoder,
     double seconds,
+    int exact,
     char *err,
     size_t err_len
 ) {
@@ -1609,7 +1610,7 @@ int rig_video_decoder_seek(
     decoder->flushing = 0;
     decoder->frame_index = (int64_t)(seconds / decoder->fallback_interval);
     decoder->seek_target = seconds;
-    decoder->has_seek_target = 1;
+    decoder->has_seek_target = exact != 0;
     return 0;
 }
 
