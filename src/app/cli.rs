@@ -165,7 +165,8 @@ Controls:
   v                  subtitles on/off
   i                  show media information
   I                  pin/unpin media information
-  Left, Right         seek backward/forward
+  Left, Right         seek backward/forward by 5 seconds
+  Down, Up            seek backward/forward by 60 seconds
   q                  quit
 "
     );

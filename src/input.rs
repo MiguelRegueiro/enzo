@@ -12,7 +12,7 @@ pub(crate) enum PlaybackCommand {
     ToggleSubtitles,
     ShowMediaInfo,
     ToggleMediaInfo,
-    SeekBy(i32),
+    SeekBySeconds(i32),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,6 +42,16 @@ pub(crate) enum DropCommand {
     Quit,
 }
 
+fn seek_seconds_for_key(key: &KeyCode) -> Option<i32> {
+    match key {
+        KeyCode::Left => Some(-5),
+        KeyCode::Right => Some(5),
+        KeyCode::Down => Some(-60),
+        KeyCode::Up => Some(60),
+        _ => None,
+    }
+}
+
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
@@ -49,7 +59,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         mouse_events: Vec::new(),
         text: None,
     };
-    let mut seek_delta = 0_i32;
+    let mut seek_seconds = 0_i32;
     while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
         match event::read().context("failed to read terminal input")? {
             Event::Key(key) => {
@@ -75,11 +85,8 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 if matches!(key.code, KeyCode::Char('I')) {
                     input.command = PlaybackCommand::ToggleMediaInfo;
                 }
-                if matches!(key.code, KeyCode::Right) {
-                    seek_delta = seek_delta.saturating_add(1);
-                }
-                if matches!(key.code, KeyCode::Left) {
-                    seek_delta = seek_delta.saturating_sub(1);
+                if let Some(seconds) = seek_seconds_for_key(&key.code) {
+                    seek_seconds = seek_seconds.saturating_add(seconds);
                 }
             }
             Event::Mouse(mouse) => {
@@ -116,8 +123,8 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         }
     }
 
-    if seek_delta != 0 && input.command == PlaybackCommand::None {
-        input.command = PlaybackCommand::SeekBy(seek_delta);
+    if seek_seconds != 0 && input.command == PlaybackCommand::None {
+        input.command = PlaybackCommand::SeekBySeconds(seek_seconds);
     }
 
     Ok(input)
@@ -152,5 +159,24 @@ pub(crate) fn read_drop_events() -> Result<DropInput> {
         if !event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
             return Ok(input);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_keys_map_to_fixed_seek_durations() {
+        assert_eq!(seek_seconds_for_key(&KeyCode::Left), Some(-5));
+        assert_eq!(seek_seconds_for_key(&KeyCode::Right), Some(5));
+        assert_eq!(seek_seconds_for_key(&KeyCode::Down), Some(-60));
+        assert_eq!(seek_seconds_for_key(&KeyCode::Up), Some(60));
+    }
+
+    #[test]
+    fn non_seek_keys_have_no_seek_duration() {
+        assert_eq!(seek_seconds_for_key(&KeyCode::Char('q')), None);
+        assert_eq!(seek_seconds_for_key(&KeyCode::Enter), None);
     }
 }

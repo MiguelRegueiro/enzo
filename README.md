@@ -61,7 +61,8 @@ Controls:
 - `m` toggles mute.
 - `v` toggles subtitles.
 - `i` shows media information temporarily; `I` pins or unpins it.
-- Left/right arrows seek backward/forward with duration-aware steps.
+- Left/right arrows seek backward/forward by 5 seconds.
+- Down/up arrows seek backward/forward by 60 seconds.
 - Click or drag the progress bar to seek.
 - `q` quits.
 

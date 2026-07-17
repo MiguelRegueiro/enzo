@@ -50,7 +50,6 @@ const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const MEDIA_INFO_VISIBLE_FOR: Duration = Duration::from_secs(4);
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const MOUSE_SCRUB_COMMIT_AFTER: Duration = Duration::from_millis(120);
-const KEYBOARD_SEEK_SECONDS: i32 = 5;
 
 #[derive(Clone, Copy)]
 struct StatusMessage {
@@ -530,8 +529,7 @@ fn play_media(
                 media_info.toggle();
                 redraw_current_frame = have_frame;
             }
-            PlaybackCommand::SeekBy(steps) => {
-                let seconds = keyboard_seek_seconds(steps);
+            PlaybackCommand::SeekBySeconds(seconds) => {
                 let base_position = scrub_position.unwrap_or(playback_position);
                 let seek_target = seek_position(base_position, seconds, source.duration);
                 if is_end_seek(seek_target, source.duration) {
@@ -1599,10 +1597,6 @@ fn seek_position(current: Duration, seconds: i32, duration: Option<Duration>) ->
     };
 
     duration.map_or(target, |duration| target.min(duration))
-}
-
-fn keyboard_seek_seconds(steps: i32) -> i32 {
-    steps.saturating_mul(KEYBOARD_SEEK_SECONDS)
 }
 
 fn is_end_seek(target: Duration, duration: Option<Duration>) -> bool {
