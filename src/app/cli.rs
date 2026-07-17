@@ -163,6 +163,8 @@ Controls:
   Space, right click  pause/play
   m                  mute/unmute
   v                  subtitles on/off
+  i                  show media information
+  I                  pin/unpin media information
   Left, Right         seek backward/forward
   q                  quit
 "

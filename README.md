@@ -60,6 +60,7 @@ Controls:
 - Space or right click pauses/resumes playback.
 - `m` toggles mute.
 - `v` toggles subtitles.
+- `i` shows media information temporarily; `I` pins or unpins it.
 - Left/right arrows seek backward/forward with duration-aware steps.
 - Click or drag the progress bar to seek.
 - `q` quits.

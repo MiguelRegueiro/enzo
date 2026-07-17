@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     font::FontRenderer,
@@ -30,11 +30,51 @@ pub(crate) struct OverlayState {
     pub(crate) subtitle_labels: Vec<&'static str>,
     pub(crate) status_message: Option<&'static str>,
     pub(crate) media_title: Option<&'static str>,
+    pub(crate) media_info: Option<MediaInfoState>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MediaInfo {
+    file: Arc<str>,
+    video: Arc<str>,
+    audio: Arc<[Arc<str>]>,
+}
+
+impl MediaInfo {
+    pub(crate) fn new(file: String, video: String, audio: Vec<String>) -> Self {
+        Self {
+            file: Arc::from(file),
+            video: Arc::from(video),
+            audio: audio
+                .into_iter()
+                .map(Arc::<str>::from)
+                .collect::<Vec<_>>()
+                .into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MediaInfoState {
+    pub(crate) info: MediaInfo,
+    pub(crate) selected_audio: Option<usize>,
+    pub(crate) display_width: u32,
+    pub(crate) display_height: u32,
+    pub(crate) display_paused: bool,
+    pub(crate) display_fps: Option<f64>,
 }
 
 pub(crate) struct PlaybackOverlay {
     scratch: String,
+    acrylic: AcrylicScratch,
     font: Option<FontRenderer>,
+}
+
+#[derive(Default)]
+struct AcrylicScratch {
+    source: Vec<u8>,
+    horizontal: Vec<u8>,
+    blurred: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -83,6 +123,7 @@ impl PlaybackOverlay {
     pub(crate) fn new(fonts: &FontSystem) -> Self {
         Self {
             scratch: String::new(),
+            acrylic: AcrylicScratch::default(),
             font: fonts
                 .resolve_all(FontRole::Ui)
                 .find_map(|path| FontRenderer::open_path(path, 18)),
@@ -106,6 +147,7 @@ impl PlaybackOverlay {
             scale_percent,
             state,
             &mut self.scratch,
+            &mut self.acrylic,
             self.font.as_mut(),
         );
     }
@@ -376,12 +418,13 @@ fn render_overlay_rgb(
     scale_percent: u32,
     state: OverlayState,
     scratch: &mut String,
+    acrylic: &mut AcrylicScratch,
     font: Option<&mut FontRenderer>,
 ) {
     if width == 0 || height == 0 || frame.len() < (width as usize * height as usize * 3) {
         return;
     }
-    if !state.visible && state.status_message.is_none() {
+    if !state.visible && state.status_message.is_none() && state.media_info.is_none() {
         return;
     }
 
@@ -393,10 +436,9 @@ fn render_overlay_rgb(
         .map(|font| font.line_height())
         .unwrap_or(7 * fallback_text_scale);
 
-    let title_visible = state.visible && state.media_title.is_some();
-    if state.visible
-        && let Some(title) = state.media_title
-    {
+    let title_visible =
+        (state.visible || state.media_info.is_some()) && state.media_title.is_some();
+    if title_visible && let Some(title) = state.media_title {
         draw_top_message(
             font.as_deref_mut(),
             frame,
@@ -406,7 +448,8 @@ fn render_overlay_rgb(
             fallback_text_scale,
             text_height,
             title,
-            false,
+            0,
+            acrylic,
         );
     }
 
@@ -420,7 +463,23 @@ fn render_overlay_rgb(
             fallback_text_scale,
             text_height,
             message,
-            title_visible,
+            u32::from(title_visible),
+            acrylic,
+        );
+    }
+
+    if let Some(info) = state.media_info.as_ref() {
+        draw_media_info_panel(
+            font.as_deref_mut(),
+            frame,
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            info,
+            u32::from(title_visible) + u32::from(state.status_message.is_some()),
+            acrylic,
         );
     }
 
@@ -451,7 +510,7 @@ fn render_overlay_rgb(
         height: f64::from(metrics.panel_height),
         radius: f64::from(panel_radius),
     };
-    fill_acrylic_rounded_rect(frame, width, height, panel_rect, PANEL_COLOR, 188);
+    fill_acrylic_rounded_rect(frame, width, height, panel_rect, PANEL_COLOR, 188, acrylic);
 
     let bar_radius = rounded_radius(
         metrics.bar_width,
@@ -523,6 +582,7 @@ fn render_overlay_rgb(
                 &state.audio_labels,
                 state.selected_audio,
                 false,
+                acrylic,
             );
         }
     }
@@ -545,6 +605,7 @@ fn render_overlay_rgb(
                 &state.subtitle_labels,
                 state.selected_subtitle,
                 true,
+                acrylic,
             );
         }
     }
@@ -572,18 +633,14 @@ fn draw_top_message(
     fallback_scale: u32,
     text_height: u32,
     text: &str,
-    stacked: bool,
+    stack_index: u32,
+    acrylic: &mut AcrylicScratch,
 ) {
     let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
-    let base_y = top_message_y(height, text_size);
+    let inset_y = top_message_stack_y(height, text_size, text_height, stack_index);
     let pad_x = (horizontal_padding_for_text(text_size) / 2).max(6);
     let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
     let natural_panel_height = text_height.saturating_add(pad_y.saturating_mul(2));
-    let inset_y = if stacked {
-        stacked_top_message_y(height, text_size, text_height)
-    } else {
-        base_y
-    };
     let text_width = font
         .as_mut()
         .map(|font| font.text_width(text))
@@ -608,6 +665,7 @@ fn draw_top_message(
         },
         PANEL_COLOR,
         202,
+        acrylic,
     );
 
     draw_overlay_text(
@@ -624,15 +682,189 @@ fn draw_top_message(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+fn draw_media_info_panel(
+    mut font: Option<&mut FontRenderer>,
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    text_size: u32,
+    fallback_scale: u32,
+    text_height: u32,
+    info: &MediaInfoState,
+    stack_index: u32,
+    acrylic: &mut AcrylicScratch,
+) {
+    let mut rows = vec![
+        ("FILE", info.info.file.to_string()),
+        ("DISPLAY", display_info_text(info)),
+        ("VIDEO", info.info.video.to_string()),
+    ];
+    if !info.info.audio.is_empty() {
+        let audio = info
+            .selected_audio
+            .and_then(|index| info.info.audio.get(index))
+            .map_or_else(|| "None".to_string(), ToString::to_string);
+        rows.push(("AUDIO", audio));
+    }
+
+    let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
+    let inset_y = top_message_stack_y(height, text_size, text_height, stack_index);
+    let pad_x = (horizontal_padding_for_text(text_size) / 2).max(6);
+    let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
+    let column_gap = pad_x;
+    let row_gap = (pad_y / 2).max(2);
+    let max_panel_width = width.saturating_sub(inset_x.saturating_mul(2)).max(1);
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| overlay_text_width(&mut font, label, fallback_scale))
+        .max()
+        .unwrap_or(0);
+    let max_value_width = max_panel_width
+        .saturating_sub(pad_x.saturating_mul(2))
+        .saturating_sub(label_width)
+        .saturating_sub(column_gap)
+        .max(1);
+    for (_, value) in &mut rows {
+        *value = fit_overlay_text(&mut font, value, fallback_scale, max_value_width);
+    }
+    let value_width = rows
+        .iter()
+        .map(|(_, value)| overlay_text_width(&mut font, value, fallback_scale))
+        .max()
+        .unwrap_or(0);
+    let panel_width = pad_x
+        .saturating_mul(2)
+        .saturating_add(label_width)
+        .saturating_add(column_gap)
+        .saturating_add(value_width)
+        .min(max_panel_width);
+    let content_height = text_height
+        .saturating_mul(rows.len() as u32)
+        .saturating_add(row_gap.saturating_mul(rows.len().saturating_sub(1) as u32));
+    let panel_height = content_height
+        .saturating_add(pad_y.saturating_mul(2))
+        .min(height.saturating_sub(inset_y).max(1));
+    let panel_x = inset_x;
+    let radius = rounded_radius(panel_width, panel_height, text_size / 3);
+
+    fill_acrylic_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(panel_x),
+            y: f64::from(inset_y),
+            width: f64::from(panel_width),
+            height: f64::from(panel_height),
+            radius: f64::from(radius),
+        },
+        PANEL_COLOR,
+        202,
+        acrylic,
+    );
+
+    let value_x = panel_x
+        .saturating_add(pad_x)
+        .saturating_add(label_width)
+        .saturating_add(column_gap);
+    for (index, (label, value)) in rows.iter().enumerate() {
+        let y = inset_y
+            .saturating_add(pad_y)
+            .saturating_add((text_height + row_gap).saturating_mul(index as u32));
+        draw_overlay_text(
+            font.as_deref_mut(),
+            frame,
+            width,
+            height,
+            panel_x.saturating_add(pad_x),
+            y,
+            fallback_scale,
+            label,
+            TEXT_COLOR,
+            174,
+        );
+        draw_overlay_text(
+            font.as_deref_mut(),
+            frame,
+            width,
+            height,
+            value_x,
+            y,
+            fallback_scale,
+            value,
+            TEXT_COLOR,
+            244,
+        );
+    }
+}
+
+fn display_info_text(info: &MediaInfoState) -> String {
+    let output = format!("Kitty · {}×{}", info.display_width, info.display_height);
+    if info.display_paused {
+        return format!("{output} · paused");
+    }
+    info.display_fps
+        .map_or(output.clone(), |fps| format!("{output} · {fps:.1} fps"))
+}
+
+fn fit_overlay_text(
+    font: &mut Option<&mut FontRenderer>,
+    text: &str,
+    fallback_scale: u32,
+    max_width: u32,
+) -> String {
+    if overlay_text_width(font, text, fallback_scale) <= max_width {
+        return text.to_string();
+    }
+
+    let suffix = "...";
+    if overlay_text_width(font, suffix, fallback_scale) > max_width {
+        return suffix.to_string();
+    }
+
+    let boundaries = text
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .collect::<Vec<_>>();
+    let mut fits_through = 0_usize;
+    let mut does_not_fit_from = boundaries.len().saturating_sub(1);
+    while fits_through < does_not_fit_from {
+        let candidate_chars = fits_through + (does_not_fit_from - fits_through).div_ceil(2);
+        let candidate = format!("{}{suffix}", &text[..boundaries[candidate_chars]]);
+        if overlay_text_width(font, &candidate, fallback_scale) <= max_width {
+            fits_through = candidate_chars;
+        } else {
+            does_not_fit_from = candidate_chars.saturating_sub(1);
+        }
+    }
+
+    format!("{}{suffix}", &text[..boundaries[fits_through]])
+}
+
+fn overlay_text_width(
+    font: &mut Option<&mut FontRenderer>,
+    text: &str,
+    fallback_scale: u32,
+) -> u32 {
+    font.as_deref_mut()
+        .map(|font| font.text_width(text))
+        .unwrap_or_else(|| bitmap_text_width(text, fallback_scale))
+}
+
 fn top_message_y(height: u32, text_size: u32) -> u32 {
     outer_padding_for_text(text_size).min(height.saturating_sub(1))
 }
 
-fn stacked_top_message_y(height: u32, text_size: u32, text_height: u32) -> u32 {
+fn top_message_stack_y(height: u32, text_size: u32, text_height: u32, stack_index: u32) -> u32 {
     let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
     top_message_y(height, text_size)
-        .saturating_add(text_height)
-        .saturating_add(pad_y.saturating_mul(3))
+        .saturating_add(
+            text_height
+                .saturating_add(pad_y.saturating_mul(3))
+                .saturating_mul(stack_index),
+        )
         .min(height.saturating_sub(1))
 }
 
@@ -860,6 +1092,7 @@ fn draw_track_picker(
     labels: &[&str],
     selected_track: Option<usize>,
     include_off: bool,
+    acrylic: &mut AcrylicScratch,
 ) {
     let max_label_width = labels
         .iter()
@@ -888,6 +1121,7 @@ fn draw_track_picker(
         },
         PANEL_COLOR,
         188,
+        acrylic,
     );
 
     let pad = picker_padding(metrics);
@@ -1661,14 +1895,45 @@ fn fill_acrylic_rounded_rect(
     rect: RoundedRect,
     color: [u8; 3],
     alpha: u8,
+    scratch: &mut AcrylicScratch,
 ) {
-    blur_rounded_rect(frame, width, height, rect, ACRYLIC_BLUR_RADIUS);
-    fill_rounded_rect(frame, width, height, rect, color, alpha);
+    if !blur_rounded_rect_impl(
+        frame,
+        width,
+        height,
+        rect,
+        ACRYLIC_BLUR_RADIUS,
+        Some((color, alpha)),
+        scratch,
+    ) {
+        fill_rounded_rect(frame, width, height, rect, color, alpha);
+    }
 }
 
-fn blur_rounded_rect(frame: &mut [u8], width: u32, height: u32, rect: RoundedRect, radius: u32) {
+#[cfg(test)]
+fn blur_rounded_rect(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: RoundedRect,
+    radius: u32,
+    scratch: &mut AcrylicScratch,
+) {
+    blur_rounded_rect_impl(frame, width, height, rect, radius, None, scratch);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blur_rounded_rect_impl(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: RoundedRect,
+    radius: u32,
+    tint: Option<([u8; 3], u8)>,
+    scratch: &mut AcrylicScratch,
+) -> bool {
     if width == 0 || height == 0 || rect.width <= 0.0 || rect.height <= 0.0 || radius == 0 {
-        return;
+        return false;
     }
 
     let min_x = rect.x.floor().max(0.0) as u32;
@@ -1676,7 +1941,7 @@ fn blur_rounded_rect(frame: &mut [u8], width: u32, height: u32, rect: RoundedRec
     let min_y = rect.y.floor().max(0.0) as u32;
     let max_y = (rect.y + rect.height).ceil().min(f64::from(height)) as u32;
     if min_x >= max_x || min_y >= max_y {
-        return;
+        return false;
     }
 
     let sample_left = min_x.saturating_sub(radius);
@@ -1686,13 +1951,20 @@ fn blur_rounded_rect(frame: &mut [u8], width: u32, height: u32, rect: RoundedRec
     let sample_width = sample_right.saturating_sub(sample_left);
     let sample_height = sample_bottom.saturating_sub(sample_top);
     if sample_width == 0 || sample_height == 0 {
-        return;
+        return false;
     }
 
     let sample_len = (sample_width as usize)
         .saturating_mul(sample_height as usize)
         .saturating_mul(3);
-    let mut source = vec![0_u8; sample_len];
+    let AcrylicScratch {
+        source,
+        horizontal,
+        blurred,
+    } = scratch;
+    source.resize(sample_len, 0);
+    horizontal.resize(sample_len, 0);
+    blurred.resize(sample_len, 0);
     for y in 0..sample_height {
         let source_start = rgb_offset(width, sample_left, sample_top + y);
         let source_end = source_start + sample_width as usize * 3;
@@ -1701,22 +1973,8 @@ fn blur_rounded_rect(frame: &mut [u8], width: u32, height: u32, rect: RoundedRec
         source[target_start..target_end].copy_from_slice(&frame[source_start..source_end]);
     }
 
-    let mut horizontal = vec![0_u8; source.len()];
-    let mut blurred = vec![0_u8; source.len()];
-    horizontal_box_blur_rgb(
-        &source,
-        &mut horizontal,
-        sample_width,
-        sample_height,
-        radius,
-    );
-    vertical_box_blur_rgb(
-        &horizontal,
-        &mut blurred,
-        sample_width,
-        sample_height,
-        radius,
-    );
+    horizontal_box_blur_rgb(source, horizontal, sample_width, sample_height, radius);
+    vertical_box_blur_rgb(horizontal, blurred, sample_width, sample_height, radius);
 
     for y in min_y..max_y {
         for x in min_x..max_x {
@@ -1738,8 +1996,17 @@ fn blur_rounded_rect(frame: &mut [u8], width: u32, height: u32, rect: RoundedRec
                 blurred_pixel,
                 (coverage * 255.0).round() as u8,
             );
+            if let Some((color, alpha)) = tint {
+                blend_pixel(
+                    frame,
+                    target_offset,
+                    color,
+                    (coverage * f64::from(alpha)).round() as u8,
+                );
+            }
         }
     }
+    true
 }
 
 fn horizontal_box_blur_rgb(source: &[u8], target: &mut [u8], width: u32, height: u32, radius: u32) {
@@ -2064,6 +2331,7 @@ fn fill_solid_rect(
 }
 
 fn glyph(ch: char) -> Option<[u8; 7]> {
+    let ch = ch.to_ascii_uppercase();
     Some(match ch {
         '0' => [
             0b11111, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b11111,
@@ -2104,11 +2372,35 @@ fn glyph(ch: char) -> Option<[u8; 7]> {
         '-' => [
             0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000,
         ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110,
+        ],
+        ',' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110, 0b00100,
+        ],
+        '·' => [
+            0b00000, 0b00000, 0b00110, 0b00110, 0b00000, 0b00000, 0b00000,
+        ],
+        '×' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001,
+        ],
+        '|' => [
+            0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        '(' => [
+            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010,
+        ],
+        ')' => [
+            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000,
+        ],
         'A' => [
             0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
         ],
         'B' => [
             0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
         ],
         'D' => [
             0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
@@ -2119,8 +2411,20 @@ fn glyph(ch: char) -> Option<[u8; 7]> {
         'F' => [
             0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
         ],
+        'G' => [
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
         'I' => [
             0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+        ],
+        'J' => [
+            0b00001, 0b00001, 0b00001, 0b00001, 0b10001, 0b10001, 0b01110,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
         ],
         'L' => [
             0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
@@ -2137,6 +2441,12 @@ fn glyph(ch: char) -> Option<[u8; 7]> {
         'P' => [
             0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
         ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
         'S' => [
             0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
         ],
@@ -2145,6 +2455,21 @@ fn glyph(ch: char) -> Option<[u8; 7]> {
         ],
         'U' => [
             0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+        ],
+        'X' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
         ],
         ' ' => [0; 7],
         _ => return None,
@@ -2229,6 +2554,7 @@ mod tests {
         let height = 180;
         let mut frame = vec![20_u8; (width * height * 3) as usize];
         let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
 
         render_overlay_rgb(
             &mut frame,
@@ -2251,8 +2577,10 @@ mod tests {
                 subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
+                media_info: None,
             },
             &mut scratch,
+            &mut acrylic,
             None,
         );
 
@@ -2273,6 +2601,7 @@ mod tests {
         let height = 180;
         let mut frame = vec![20_u8; (width * height * 3) as usize];
         let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
 
         render_overlay_rgb(
             &mut frame,
@@ -2295,8 +2624,10 @@ mod tests {
                 subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
+                media_info: None,
             },
             &mut scratch,
+            &mut acrylic,
             None,
         );
 
@@ -2318,6 +2649,7 @@ mod tests {
         let mut frame = vec![20_u8; (width * height * 3) as usize];
         let before_top = frame[..(width * 20 * 3) as usize].to_vec();
         let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
 
         render_overlay_rgb(
             &mut frame,
@@ -2340,8 +2672,10 @@ mod tests {
                 subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
+                media_info: None,
             },
             &mut scratch,
+            &mut acrylic,
             None,
         );
 
@@ -2379,6 +2713,7 @@ mod tests {
                 frame[offset + 2] = 240;
             }
         }
+        let mut acrylic = AcrylicScratch::default();
 
         blur_rounded_rect(
             &mut frame,
@@ -2392,6 +2727,7 @@ mod tests {
                 radius: 4.0,
             },
             6,
+            &mut acrylic,
         );
 
         let softened_offset = rgb_offset(width, 38, 26);
@@ -2405,8 +2741,123 @@ mod tests {
     }
 
     #[test]
+    fn fused_acrylic_pass_matches_separate_blur_and_tint() {
+        let width = 96;
+        let height = 48;
+        let source = (0_u32..width * height * 3)
+            .map(|index| (index.wrapping_mul(37) % 251) as u8)
+            .collect::<Vec<_>>();
+        let rect = RoundedRect {
+            x: 11.25,
+            y: 7.5,
+            width: 68.5,
+            height: 29.25,
+            radius: 6.0,
+        };
+        let mut expected = source.clone();
+        let mut expected_scratch = AcrylicScratch::default();
+        blur_rounded_rect(
+            &mut expected,
+            width,
+            height,
+            rect,
+            ACRYLIC_BLUR_RADIUS,
+            &mut expected_scratch,
+        );
+        fill_rounded_rect(&mut expected, width, height, rect, PANEL_COLOR, 202);
+
+        let mut actual = source;
+        let mut actual_scratch = AcrylicScratch::default();
+        fill_acrylic_rounded_rect(
+            &mut actual,
+            width,
+            height,
+            rect,
+            PANEL_COLOR,
+            202,
+            &mut actual_scratch,
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn acrylic_workspace_reuses_capacity_without_changing_pixels() {
+        let width = 128;
+        let height = 72;
+        let large_rect = RoundedRect {
+            x: 4.0,
+            y: 4.0,
+            width: 116.0,
+            height: 60.0,
+            radius: 8.0,
+        };
+        let small_rect = RoundedRect {
+            x: 20.0,
+            y: 16.0,
+            width: 52.0,
+            height: 24.0,
+            radius: 5.0,
+        };
+        let source = (0_u32..width * height * 3)
+            .map(|index| (index.wrapping_mul(19) % 253) as u8)
+            .collect::<Vec<_>>();
+        let mut reused = AcrylicScratch::default();
+        let mut warmup = source.clone();
+        blur_rounded_rect(
+            &mut warmup,
+            width,
+            height,
+            large_rect,
+            ACRYLIC_BLUR_RADIUS,
+            &mut reused,
+        );
+        let capacities = (
+            reused.source.capacity(),
+            reused.horizontal.capacity(),
+            reused.blurred.capacity(),
+        );
+
+        let mut actual = source.clone();
+        blur_rounded_rect(
+            &mut actual,
+            width,
+            height,
+            small_rect,
+            ACRYLIC_BLUR_RADIUS,
+            &mut reused,
+        );
+        let mut expected = source;
+        blur_rounded_rect(
+            &mut expected,
+            width,
+            height,
+            small_rect,
+            ACRYLIC_BLUR_RADIUS,
+            &mut AcrylicScratch::default(),
+        );
+
+        assert_eq!(actual, expected);
+        assert_eq!(
+            (
+                reused.source.capacity(),
+                reused.horizontal.capacity(),
+                reused.blurred.capacity(),
+            ),
+            capacities
+        );
+    }
+
+    #[test]
     fn text_width_counts_spacing_between_glyphs_only() {
         assert_eq!(bitmap_text_width("12", 2), 22);
+    }
+
+    #[test]
+    fn bitmap_fallback_supports_media_info_text() {
+        let text = "Source: E-AC-3 · Stereo · 48 kHz | Output: PCM S16 · Stereo · 48 kHz / H.264 · 513×289 · 24.0 fps · HDR (PQ)";
+
+        assert!(text.chars().all(|character| glyph(character).is_some()));
     }
 
     #[test]
@@ -2416,6 +2867,7 @@ mod tests {
         let mut frame = vec![20_u8; (width * height * 3) as usize];
         let before = frame.clone();
         let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
 
         render_overlay_rgb(
             &mut frame,
@@ -2438,8 +2890,10 @@ mod tests {
                 subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: None,
+                media_info: None,
             },
             &mut scratch,
+            &mut acrylic,
             None,
         );
 
@@ -2454,6 +2908,7 @@ mod tests {
         let before_top = frame[..(width * 40 * 3) as usize].to_vec();
         let before_bottom = frame[(width * 120 * 3) as usize..].to_vec();
         let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
 
         render_overlay_rgb(
             &mut frame,
@@ -2476,8 +2931,10 @@ mod tests {
                 subtitle_labels: Vec::new(),
                 status_message: Some("MUTE ON"),
                 media_title: None,
+                media_info: None,
             },
             &mut scratch,
+            &mut acrylic,
             None,
         );
 
@@ -2489,12 +2946,108 @@ mod tests {
     }
 
     #[test]
+    fn media_info_stacks_below_title_without_playback_controls() {
+        let width = 640;
+        let height = 360;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+        let before = frame.clone();
+        let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
+
+        render_overlay_rgb(
+            &mut frame,
+            width,
+            height,
+            height as u16,
+            100,
+            OverlayState {
+                position: Duration::from_secs(30),
+                duration: Some(Duration::from_secs(120)),
+                paused: false,
+                visible: false,
+                audio_available: false,
+                selected_audio: None,
+                audio_picker_open: false,
+                audio_labels: Vec::new(),
+                subtitles_available: false,
+                selected_subtitle: None,
+                subtitle_picker_open: false,
+                subtitle_labels: Vec::new(),
+                status_message: None,
+                media_title: Some("movie.mkv"),
+                media_info: Some(MediaInfoState {
+                    info: MediaInfo::new(
+                        "Matroska · 4.0 GiB".to_string(),
+                        "HEVC · Main 10 · 3840×2160 · 59.94 fps".to_string(),
+                        vec![
+                            "Source: E-AC-3 · 5.1 · 48 kHz | Output: PCM S16 · Stereo · 48 kHz"
+                                .to_string(),
+                        ],
+                    ),
+                    selected_audio: Some(0),
+                    display_width: 1280,
+                    display_height: 720,
+                    display_paused: false,
+                    display_fps: Some(29.8),
+                }),
+            },
+            &mut scratch,
+            &mut acrylic,
+            None,
+        );
+
+        assert_ne!(frame, before);
+        assert_eq!(
+            &frame[(width * 180 * 3) as usize..],
+            &before[(width * 180 * 3) as usize..]
+        );
+    }
+
+    #[test]
+    fn display_info_describes_output_backend_size_and_measured_rate() {
+        let playing = MediaInfoState {
+            info: MediaInfo::new(String::new(), String::new(), Vec::new()),
+            selected_audio: None,
+            display_width: 1280,
+            display_height: 720,
+            display_paused: false,
+            display_fps: Some(29.8),
+        };
+
+        assert_eq!(display_info_text(&playing), "Kitty · 1280×720 · 29.8 fps");
+
+        let paused = MediaInfoState {
+            display_paused: true,
+            ..playing
+        };
+        assert_eq!(display_info_text(&paused), "Kitty · 1280×720 · paused");
+    }
+
+    #[test]
+    fn overlay_text_truncation_keeps_the_longest_fitting_prefix() {
+        let mut font = None;
+        let max_width = bitmap_text_width("ABCDE...", 1);
+
+        assert_eq!(
+            fit_overlay_text(&mut font, "ABCDEFGHIJ", 1, max_width),
+            "ABCDE..."
+        );
+        assert_eq!(
+            fit_overlay_text(&mut font, "éééééééééé", 1, max_width),
+            "ééééé..."
+        );
+        assert_eq!(fit_overlay_text(&mut font, "ABCDE", 1, max_width), "ABCDE");
+        assert_eq!(fit_overlay_text(&mut font, "ABCDE", 1, 0), "...");
+    }
+
+    #[test]
     fn media_title_renders_with_playback_controls() {
         let width = 320;
         let height = 180;
         let mut frame = vec![20_u8; (width * height * 3) as usize];
         let before_top = frame[..(width * 40 * 3) as usize].to_vec();
         let mut scratch = String::new();
+        let mut acrylic = AcrylicScratch::default();
 
         render_overlay_rgb(
             &mut frame,
@@ -2517,8 +3070,10 @@ mod tests {
                 subtitle_labels: Vec::new(),
                 status_message: None,
                 media_title: Some("movie.mkv"),
+                media_info: None,
             },
             &mut scratch,
+            &mut acrylic,
             None,
         );
 
@@ -3034,7 +3589,7 @@ mod tests {
     }
 
     #[test]
-    fn stacked_status_starts_below_title_panel() {
+    fn top_message_stack_keeps_rows_below_each_other() {
         let height = 360;
         let text_size = 18;
         let text_height = 14;
@@ -3042,10 +3597,15 @@ mod tests {
         let title_bottom = top_message_y(height, text_size)
             .saturating_add(text_height)
             .saturating_add(pad_y.saturating_mul(2));
+        let row_pitch = text_height + pad_y * 3;
 
         assert_eq!(
-            stacked_top_message_y(height, text_size, text_height),
+            top_message_stack_y(height, text_size, text_height, 1),
             title_bottom + pad_y
+        );
+        assert_eq!(
+            top_message_stack_y(height, text_size, text_height, 2),
+            top_message_y(height, text_size) + row_pitch * 2
         );
     }
 

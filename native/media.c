@@ -26,6 +26,10 @@
 #define RIG_AUDIO_OUTPUT_RATE 48000
 #define RIG_AUDIO_OUTPUT_CHANNELS 2
 #define RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE 2
+#define RIG_INFO_TEXT_LEN 64
+#define RIG_HDR_NONE 0
+#define RIG_HDR_PQ 1
+#define RIG_HDR_HLG 2
 
 typedef struct RigVideoInfo {
     uint32_t width;
@@ -34,6 +38,10 @@ typedef struct RigVideoInfo {
     double duration;
     int has_audio;
     int seekable;
+    char codec[RIG_INFO_TEXT_LEN];
+    char profile[RIG_INFO_TEXT_LEN];
+    char container[RIG_INFO_TEXT_LEN];
+    int hdr;
 } RigVideoInfo;
 
 typedef struct RigVideoDecoder {
@@ -621,10 +629,13 @@ static double stream_fps(const AVStream *stream) {
     if (fps <= 0.0) {
         fps = 30.0;
     }
-    if (fps > 30.0) {
-        fps = 30.0;
-    }
     return fps;
+}
+
+static void copy_info_text(char *out, const char *text) {
+    if (text != NULL) {
+        snprintf(out, RIG_INFO_TEXT_LEN, "%s", text);
+    }
 }
 
 int rig_probe_video(const char *path, RigVideoInfo *out, char *err, size_t err_len) {
@@ -667,6 +678,19 @@ int rig_probe_video(const char *path, RigVideoInfo *out, char *err, size_t err_l
         format->duration > 0 &&
         format->pb != NULL &&
         (format->pb->seekable & AVIO_SEEKABLE_NORMAL) != 0;
+    copy_info_text(out->codec, avcodec_get_name(video->codecpar->codec_id));
+    copy_info_text(
+        out->profile,
+        avcodec_profile_name(video->codecpar->codec_id, video->codecpar->profile)
+    );
+    copy_info_text(out->container, format->iformat->name);
+    if (video->codecpar->color_trc == AVCOL_TRC_SMPTE2084) {
+        out->hdr = RIG_HDR_PQ;
+    } else if (video->codecpar->color_trc == AVCOL_TRC_ARIB_STD_B67) {
+        out->hdr = RIG_HDR_HLG;
+    } else {
+        out->hdr = RIG_HDR_NONE;
+    }
 
     avformat_close_input(&format);
     return 0;

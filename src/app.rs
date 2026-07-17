@@ -4,7 +4,7 @@ mod resume_integration;
 mod subtitle_tracks;
 
 use std::{
-    env,
+    env, fs,
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     thread,
@@ -17,10 +17,10 @@ use crate::{
     drop_target::draw_drop_target,
     font_system::FontSystem,
     input::{DropCommand, PlaybackCommand, PlaybackMouse, read_drop_events, read_input_events},
-    media::{AudioPlayer, FrameStatus, VideoDecoder, load_audio_tracks, probe_video},
+    media::{AudioPlayer, FrameStatus, VideoDecoder, VideoInfo, load_audio_tracks, probe_video},
     overlay::{
-        AudioPickerAction, HitboxRect, OverlayHitContext, OverlayHitPoint, OverlayState,
-        PlaybackOverlay, SubtitlePickerAction,
+        AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext,
+        OverlayHitPoint, OverlayState, PlaybackOverlay, SubtitlePickerAction,
     },
     resume::ResumeTracker,
     shutdown,
@@ -47,6 +47,7 @@ use subtitle_tracks::{
 
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
+const MEDIA_INFO_VISIBLE_FOR: Duration = Duration::from_secs(4);
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const MOUSE_SCRUB_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const KEYBOARD_SEEK_MIN_STEP: Duration = Duration::from_secs(5);
@@ -56,6 +57,56 @@ const KEYBOARD_SEEK_MAX_STEP: Duration = Duration::from_secs(60);
 struct StatusMessage {
     text: &'static str,
     visible_until: Instant,
+}
+
+struct MediaInfoOverlay {
+    content: MediaInfo,
+    visible_until: Option<Instant>,
+    pinned: bool,
+}
+
+impl MediaInfoOverlay {
+    fn new(content: MediaInfo) -> Self {
+        Self {
+            content,
+            visible_until: None,
+            pinned: false,
+        }
+    }
+
+    fn show(&mut self, now: Instant) {
+        self.visible_until = Some(now + MEDIA_INFO_VISIBLE_FOR);
+    }
+
+    fn toggle(&mut self) {
+        self.pinned = !self.pinned;
+        self.visible_until = None;
+    }
+
+    fn visible(&self, now: Instant) -> bool {
+        self.pinned || self.visible_until.is_some_and(|deadline| now < deadline)
+    }
+
+    fn state(
+        &self,
+        selected_audio: Option<usize>,
+        canvas: CanvasFrame,
+        decoder: &VideoDecoder,
+        paused: bool,
+        now: Instant,
+    ) -> Option<MediaInfoState> {
+        if !self.visible(now) {
+            return None;
+        }
+        Some(MediaInfoState {
+            info: self.content.clone(),
+            selected_audio,
+            display_width: canvas.video_width,
+            display_height: canvas.video_height,
+            display_paused: paused,
+            display_fps: media_info_display_fps(paused, decoder.display_fps(now)),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -178,6 +229,14 @@ fn play_media(
         .iter()
         .map(|track| Box::leak(track.label().to_string().into_boxed_str()) as &'static str)
         .collect::<Vec<_>>();
+    let mut media_info = MediaInfoOverlay::new(MediaInfo::new(
+        file_info_summary(&path, &source),
+        source.source_summary(),
+        audio_tracks
+            .iter()
+            .map(crate::media::AudioTrack::playback_summary)
+            .collect(),
+    ));
     let mut selected_audio = restore_audio_selection(&audio_tracks, restored.as_ref())
         .unwrap_or_else(|| (!audio_tracks.is_empty()).then_some(0_usize));
     let mut audio_picker_open = false;
@@ -241,6 +300,8 @@ fn play_media(
     let mut overlay_visible_until = None::<Instant>;
     let mut last_drawn_overlay_visible = false;
     let mut last_drawn_status_visible = false;
+    let mut last_drawn_media_info_visible = false;
+    let mut last_drawn_media_info_fps_visible = false;
     let mut status_message = if restored_external_subtitle_missing {
         Some(StatusMessage {
             text: "SAVED SUBTITLE MISSING",
@@ -438,6 +499,14 @@ fn play_media(
                 }
                 redraw_current_frame = have_frame;
             }
+            PlaybackCommand::ShowMediaInfo => {
+                media_info.show(input_at);
+                redraw_current_frame = have_frame;
+            }
+            PlaybackCommand::ToggleMediaInfo => {
+                media_info.toggle();
+                redraw_current_frame = have_frame;
+            }
             PlaybackCommand::SeekBy(steps) => {
                 let seconds = keyboard_seek_seconds(steps, source.duration);
                 let base_position = scrub_position.unwrap_or(playback_position);
@@ -503,6 +572,8 @@ fn play_media(
             redraw_current_frame = false;
             last_drawn_overlay_visible = false;
             last_drawn_status_visible = false;
+            last_drawn_media_info_visible = false;
+            last_drawn_media_info_fps_visible = false;
             scrub_position = None;
             video_ended = false;
             next_frame_at = Instant::now();
@@ -515,6 +586,8 @@ fn play_media(
             previous_image_id = None;
             last_drawn_overlay_visible = false;
             last_drawn_status_visible = false;
+            last_drawn_media_info_visible = false;
+            last_drawn_media_info_fps_visible = false;
             if paused && have_frame {
                 let state = overlay_state(
                     playback_position,
@@ -532,6 +605,7 @@ fn play_media(
                     subtitle_picker_open,
                     subtitle_labels.clone(),
                     media_title,
+                    media_info.state(selected_audio, canvas, &decoder, paused, Instant::now()),
                 );
                 draw_frame(
                     &mut out,
@@ -551,6 +625,8 @@ fn play_media(
                 )?;
                 last_drawn_overlay_visible = state.visible;
                 last_drawn_status_visible = state.status_message.is_some();
+                last_drawn_media_info_visible = state.media_info.is_some();
+                last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
                 redraw_current_frame = false;
             }
         }
@@ -780,9 +856,14 @@ fn play_media(
             Instant::now(),
         );
         let status_is_visible = status_text(status_message, Instant::now()).is_some();
+        let media_info_is_visible = media_info.visible(Instant::now());
+        let media_info_fps_is_visible = media_info_is_visible
+            && media_info_display_fps(paused, decoder.display_fps(Instant::now())).is_some();
         if have_frame
             && ((last_drawn_overlay_visible && !overlay_is_visible)
-                || (last_drawn_status_visible && !status_is_visible))
+                || (last_drawn_status_visible && !status_is_visible)
+                || (last_drawn_media_info_visible && !media_info_is_visible)
+                || (last_drawn_media_info_fps_visible && !media_info_fps_is_visible))
         {
             redraw_current_frame = true;
         }
@@ -804,6 +885,7 @@ fn play_media(
                 subtitle_picker_open,
                 subtitle_labels.clone(),
                 media_title,
+                media_info.state(selected_audio, canvas, &decoder, paused, Instant::now()),
             );
             draw_frame(
                 &mut out,
@@ -823,6 +905,8 @@ fn play_media(
             )?;
             last_drawn_overlay_visible = state.visible;
             last_drawn_status_visible = state.status_message.is_some();
+            last_drawn_media_info_visible = state.media_info.is_some();
+            last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
             redraw_current_frame = false;
             out.flush()?;
         }
@@ -848,6 +932,7 @@ fn play_media(
                         subtitle_picker_open,
                         subtitle_labels.clone(),
                         media_title,
+                        media_info.state(selected_audio, canvas, &decoder, paused, Instant::now()),
                     );
                     draw_frame(
                         &mut out,
@@ -868,6 +953,8 @@ fn play_media(
                     have_frame = true;
                     last_drawn_overlay_visible = state.visible;
                     last_drawn_status_visible = state.status_message.is_some();
+                    last_drawn_media_info_visible = state.media_info.is_some();
+                    last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
                     redraw_current_frame = false;
                 }
                 FrameStatus::NoFrame => {}
@@ -909,6 +996,7 @@ fn play_media(
                     subtitle_picker_open,
                     subtitle_labels.clone(),
                     media_title,
+                    media_info.state(selected_audio, canvas, &decoder, paused, Instant::now()),
                 );
                 draw_frame(
                     &mut out,
@@ -929,6 +1017,8 @@ fn play_media(
                 have_frame = true;
                 last_drawn_overlay_visible = state.visible;
                 last_drawn_status_visible = state.status_message.is_some();
+                last_drawn_media_info_visible = state.media_info.is_some();
+                last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
                 redraw_current_frame = false;
                 out.flush()?;
                 advance_frame_clock(&mut next_frame_at, frame_interval);
@@ -960,6 +1050,7 @@ fn play_media(
                         subtitle_picker_open,
                         subtitle_labels.clone(),
                         media_title,
+                        media_info.state(selected_audio, canvas, &decoder, paused, Instant::now()),
                     );
                     draw_frame(
                         &mut out,
@@ -979,6 +1070,8 @@ fn play_media(
                     )?;
                     last_drawn_overlay_visible = state.visible;
                     last_drawn_status_visible = state.status_message.is_some();
+                    last_drawn_media_info_visible = state.media_info.is_some();
+                    last_drawn_media_info_fps_visible = media_info_fps_visible(&state);
                     redraw_current_frame = false;
                 }
                 out.flush()?;
@@ -1192,6 +1285,7 @@ fn overlay_state(
     subtitle_picker_open: bool,
     subtitle_labels: Vec<&'static str>,
     media_title: &'static str,
+    media_info: Option<MediaInfoState>,
 ) -> OverlayState {
     let now = Instant::now();
     OverlayState {
@@ -1211,6 +1305,74 @@ fn overlay_state(
         subtitle_labels,
         status_message: status_text(status_message, now),
         media_title: Some(media_title),
+        media_info,
+    }
+}
+
+fn media_info_fps_visible(state: &OverlayState) -> bool {
+    state
+        .media_info
+        .as_ref()
+        .is_some_and(|info| info.display_fps.is_some())
+}
+
+fn media_info_display_fps(paused: bool, sampled_fps: Option<f64>) -> Option<f64> {
+    (!paused).then_some(sampled_fps).flatten()
+}
+
+fn file_info_summary(path: &Path, source: &VideoInfo) -> String {
+    let mut parts = Vec::new();
+    let path_text = path.to_string_lossy();
+    if let Some((scheme, _)) = path_text.split_once("://")
+        && scheme
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        parts.push(scheme.to_ascii_uppercase());
+    }
+    if let Some(container) = source.container.as_deref() {
+        parts.push(container_display_name(container));
+    }
+    if let Ok(metadata) = fs::metadata(path)
+        && metadata.is_file()
+    {
+        parts.push(format_file_size(metadata.len()));
+    }
+    if parts.is_empty() {
+        "Unknown".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+fn container_display_name(container: &str) -> String {
+    match container.split(',').next().unwrap_or(container) {
+        "matroska" => "Matroska".to_string(),
+        "mov" => "MP4 / MOV".to_string(),
+        "mpegts" => "MPEG-TS".to_string(),
+        "mpeg" => "MPEG".to_string(),
+        "avi" => "AVI".to_string(),
+        "flv" => "FLV".to_string(),
+        "ogg" => "Ogg".to_string(),
+        "hls" => "HLS".to_string(),
+        value => value.to_ascii_uppercase(),
+    }
+}
+
+fn format_file_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else if value >= 100.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 

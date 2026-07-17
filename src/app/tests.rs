@@ -43,6 +43,65 @@ fn exact_duration_seek_is_end_seek() {
 }
 
 #[test]
+fn media_info_visibility_supports_temporary_and_pinned_modes() {
+    let now = Instant::now();
+    let mut info = MediaInfoOverlay::new(MediaInfo::new(String::new(), String::new(), Vec::new()));
+
+    assert!(!info.visible(now));
+    info.show(now);
+    assert!(info.visible(now));
+    assert!(!info.visible(now + MEDIA_INFO_VISIBLE_FOR));
+    info.toggle();
+    assert!(info.visible(now + MEDIA_INFO_VISIBLE_FOR));
+}
+
+#[test]
+fn media_info_formats_compact_file_details() {
+    assert_eq!(container_display_name("matroska,webm"), "Matroska");
+    assert_eq!(container_display_name("mov,mp4,m4a"), "MP4 / MOV");
+    assert_eq!(format_file_size(900), "900 B");
+    assert_eq!(format_file_size(4 * 1024 * 1024 * 1024), "4.0 GiB");
+}
+
+#[test]
+fn media_info_display_rate_visibility_matches_rendered_state() {
+    let state = overlay_state(
+        Duration::ZERO,
+        None,
+        None,
+        false,
+        None,
+        None,
+        false,
+        None,
+        false,
+        Vec::new(),
+        false,
+        None,
+        false,
+        Vec::new(),
+        "movie.mp4",
+        Some(MediaInfoState {
+            info: MediaInfo::new(String::new(), String::new(), Vec::new()),
+            selected_audio: None,
+            display_width: 640,
+            display_height: 360,
+            display_paused: false,
+            display_fps: Some(24.0),
+        }),
+    );
+
+    assert!(media_info_fps_visible(&state));
+    let mut expired = state;
+    expired.media_info.as_mut().expect("media info").display_fps = None;
+    assert!(!media_info_fps_visible(&expired));
+
+    assert_eq!(media_info_display_fps(false, Some(24.0)), Some(24.0));
+    assert_eq!(media_info_display_fps(false, None), None);
+    assert_eq!(media_info_display_fps(true, Some(24.0)), None);
+}
+
+#[test]
 fn before_duration_seek_is_not_end_seek() {
     assert!(!is_end_seek(
         Duration::from_secs(19),
@@ -100,6 +159,7 @@ fn overlay_state_uses_scrub_position() {
         false,
         Vec::new(),
         "movie.mp4",
+        None,
     );
 
     assert_eq!(state.position, Duration::from_secs(30));

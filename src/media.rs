@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     ffi::{CString, c_char, c_double, c_int, c_uchar},
     io::{self, ErrorKind},
     os::unix::ffi::OsStrExt,
@@ -16,6 +17,11 @@ use anyhow::{Context, Result, anyhow, bail};
 
 const MAX_PLAYBACK_FPS: f64 = 30.0;
 const ERROR_BUFFER_LEN: usize = 4096;
+const INFO_TEXT_LEN: usize = 64;
+const HDR_PQ: c_int = 1;
+const HDR_HLG: c_int = 2;
+const AUDIO_OUTPUT_SUMMARY: &str = "PCM S16 · Stereo · 48 kHz";
+const DISPLAY_RATE_WINDOW: Duration = Duration::from_secs(2);
 
 #[repr(C)]
 struct RigVideoInfo {
@@ -25,6 +31,10 @@ struct RigVideoInfo {
     duration: c_double,
     has_audio: c_int,
     seekable: c_int,
+    codec: [c_char; INFO_TEXT_LEN],
+    profile: [c_char; INFO_TEXT_LEN],
+    container: [c_char; INFO_TEXT_LEN],
+    hdr: c_int,
 }
 
 #[repr(C)]
@@ -76,14 +86,19 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct VideoInfo {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) fps: f64,
+    pub(crate) source_fps: f64,
     pub(crate) duration: Option<Duration>,
     pub(crate) has_audio: bool,
     pub(crate) seekable: bool,
+    pub(crate) container: Option<String>,
+    codec: Option<String>,
+    profile: Option<String>,
+    hdr: Option<&'static str>,
 }
 
 pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
@@ -95,6 +110,10 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
         duration: 0.0,
         has_audio: 0,
         seekable: 0,
+        codec: [0; INFO_TEXT_LEN],
+        profile: [0; INFO_TEXT_LEN],
+        container: [0; INFO_TEXT_LEN],
+        hdr: 0,
     };
     let mut error = ErrorBuffer::new();
 
@@ -104,16 +123,17 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
         bail!("{}", error.message("failed to inspect video"));
     }
 
+    let source_fps = info
+        .fps
+        .is_finite()
+        .then_some(info.fps)
+        .filter(|fps| *fps > 0.0)
+        .unwrap_or(30.0);
     Ok(VideoInfo {
         width: info.width,
         height: info.height,
-        fps: info
-            .fps
-            .is_finite()
-            .then_some(info.fps)
-            .filter(|fps| *fps > 0.0)
-            .unwrap_or(30.0)
-            .min(MAX_PLAYBACK_FPS),
+        fps: source_fps.min(MAX_PLAYBACK_FPS),
+        source_fps,
         duration: info
             .duration
             .is_finite()
@@ -122,13 +142,53 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
             .map(Duration::from_secs_f64),
         has_audio: info.has_audio != 0,
         seekable: info.seekable != 0,
+        container: fixed_info_text(&info.container),
+        codec: fixed_info_text(&info.codec),
+        profile: fixed_info_text(&info.profile),
+        hdr: match info.hdr {
+            HDR_PQ => Some("HDR (PQ)"),
+            HDR_HLG => Some("HDR (HLG)"),
+            _ => None,
+        },
     })
+}
+
+impl VideoInfo {
+    pub(crate) fn source_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(codec) = self.codec.as_deref() {
+            parts.push(codec_display_name(codec));
+        }
+        if let Some(profile) = self.profile.as_deref() {
+            parts.push(profile.to_string());
+        }
+        parts.push(format!("{}×{}", self.width, self.height));
+        parts.push(format!("{} fps", format_rate(self.source_fps)));
+        if let Some(hdr) = self.hdr {
+            parts.push(hdr.to_string());
+        }
+        parts.join(" · ")
+    }
+}
+
+fn fixed_info_text(value: &[c_char; INFO_TEXT_LEN]) -> Option<String> {
+    let bytes = value
+        .iter()
+        .copied()
+        .take_while(|byte| *byte != 0)
+        .map(|byte| byte as u8)
+        .collect::<Vec<_>>();
+    non_empty(&String::from_utf8_lossy(&bytes))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AudioTrack {
     stream_index: usize,
     label: String,
+    codec: Option<String>,
+    channels: Option<u32>,
+    channel_layout: Option<String>,
+    sample_rate: Option<u32>,
 }
 
 impl AudioTrack {
@@ -136,6 +196,10 @@ impl AudioTrack {
         Self {
             stream_index: usize::MAX,
             label: "Default".to_string(),
+            codec: None,
+            channels: None,
+            channel_layout: None,
+            sample_rate: None,
         }
     }
 
@@ -146,6 +210,31 @@ impl AudioTrack {
     pub(crate) fn label(&self) -> &str {
         &self.label
     }
+
+    pub(crate) fn playback_summary(&self) -> String {
+        let mut source = Vec::new();
+        if let Some(codec) = self.codec.as_deref() {
+            source.push(codec_display_name(codec));
+        }
+        if let Some(channels) = audio_channel_label(self.channels, self.channel_layout.as_deref()) {
+            source.push(channels);
+        }
+        if let Some(sample_rate) = self.sample_rate {
+            source.push(format!(
+                "{} kHz",
+                format_rate(f64::from(sample_rate) / 1_000.0)
+            ));
+        }
+
+        if source.is_empty() {
+            format!("Output: {AUDIO_OUTPUT_SUMMARY}")
+        } else {
+            format!(
+                "Source: {} | Output: {AUDIO_OUTPUT_SUMMARY}",
+                source.join(" · ")
+            )
+        }
+    }
 }
 
 pub(crate) fn load_audio_tracks(path: &Path) -> Vec<AudioTrack> {
@@ -155,7 +244,7 @@ pub(crate) fn load_audio_tracks(path: &Path) -> Vec<AudioTrack> {
         .arg("-select_streams")
         .arg("a")
         .arg("-show_entries")
-        .arg("stream=index,codec_name,channels,channel_layout:stream_tags=language,title:stream_disposition=default")
+        .arg("stream=index,codec_name,channels,channel_layout,sample_rate:stream_tags=language,title:stream_disposition=default")
         .arg("-of")
         .arg("compact=p=0:nk=0")
         .arg(path)
@@ -183,6 +272,7 @@ struct AudioTrackProbe {
     title: Option<String>,
     channels: Option<u32>,
     channel_layout: Option<String>,
+    sample_rate: Option<u32>,
     default: bool,
 }
 
@@ -197,6 +287,7 @@ fn parse_audio_track(line: &str, fallback_index: usize) -> Option<AudioTrack> {
             "codec_name" => probe.codec = non_empty(value),
             "channels" => probe.channels = value.parse().ok(),
             "channel_layout" => probe.channel_layout = non_empty(value),
+            "sample_rate" => probe.sample_rate = value.parse().ok(),
             "tag:language" => probe.language = normalize_audio_language(value),
             "tag:title" => probe.title = non_empty(value),
             "disposition:default" => probe.default = value == "1",
@@ -208,7 +299,40 @@ fn parse_audio_track(line: &str, fallback_index: usize) -> Option<AudioTrack> {
     Some(AudioTrack {
         stream_index,
         label: audio_track_label(&probe, fallback_index),
+        codec: probe.codec,
+        channels: probe.channels,
+        channel_layout: probe.channel_layout,
+        sample_rate: probe.sample_rate,
     })
+}
+
+fn codec_display_name(codec: &str) -> String {
+    match codec.to_ascii_lowercase().as_str() {
+        "h264" => "H.264".to_string(),
+        "hevc" => "HEVC".to_string(),
+        "av1" => "AV1".to_string(),
+        "vp9" => "VP9".to_string(),
+        "aac" => "AAC".to_string(),
+        "ac3" => "AC-3".to_string(),
+        "eac3" => "E-AC-3".to_string(),
+        "dts" => "DTS".to_string(),
+        "flac" => "FLAC".to_string(),
+        "opus" => "Opus".to_string(),
+        other => other.to_uppercase(),
+    }
+}
+
+fn format_rate(value: f64) -> String {
+    if (value - value.round()).abs() < 0.005 {
+        format!("{value:.0}")
+    } else if value >= 100.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.3}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
 }
 
 fn audio_track_label(track: &AudioTrackProbe, fallback_index: usize) -> String {
@@ -308,6 +432,43 @@ pub(crate) enum FrameStatus {
     Ended,
 }
 
+#[derive(Default)]
+struct DisplayRate {
+    delivered_at: VecDeque<Instant>,
+}
+
+impl DisplayRate {
+    fn record(&mut self, now: Instant) {
+        self.delivered_at.push_back(now);
+        let cutoff = now.checked_sub(DISPLAY_RATE_WINDOW).unwrap_or(now);
+        while self
+            .delivered_at
+            .front()
+            .is_some_and(|sample| *sample < cutoff)
+        {
+            self.delivered_at.pop_front();
+        }
+    }
+
+    fn measured_at(&self, now: Instant) -> Option<f64> {
+        let cutoff = now.checked_sub(DISPLAY_RATE_WINDOW).unwrap_or(now);
+        let mut samples = self
+            .delivered_at
+            .iter()
+            .copied()
+            .filter(|sample| *sample >= cutoff);
+        let first = samples.next()?;
+        let mut last = first;
+        let mut intervals = 0_u32;
+        for sample in samples {
+            last = sample;
+            intervals = intervals.saturating_add(1);
+        }
+        let elapsed = last.saturating_duration_since(first).as_secs_f64();
+        (intervals > 0 && elapsed > 0.0).then_some(f64::from(intervals) / elapsed)
+    }
+}
+
 struct NativeVideoDecoder(*mut RigVideoDecoderOpaque);
 
 unsafe impl Send for NativeVideoDecoder {}
@@ -397,6 +558,7 @@ struct LatestFrame {
 pub(crate) struct VideoDecoder {
     latest_frame: Arc<Mutex<LatestFrame>>,
     delivered_serial: u64,
+    display_rate: DisplayRate,
     stop: Arc<AtomicI32>,
     pause: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
@@ -444,6 +606,7 @@ impl VideoDecoder {
         Ok(Self {
             latest_frame,
             delivered_serial: 0,
+            display_rate: DisplayRate::default(),
             stop,
             pause,
             seek_generation,
@@ -473,7 +636,10 @@ impl VideoDecoder {
             }
             frame.copy_from_slice(latest_frame);
             self.delivered_serial = state.serial;
-            Ok(FrameStatus::NewFrame { pts: state.pts })
+            let pts = state.pts;
+            drop(state);
+            self.display_rate.record(Instant::now());
+            Ok(FrameStatus::NewFrame { pts })
         } else if let Some(error) = state.error.take() {
             Err(io::Error::other(error))
         } else if state.ended {
@@ -495,10 +661,15 @@ impl VideoDecoder {
         self.pause.store(i32::from(paused), Ordering::Relaxed);
     }
 
+    pub(crate) fn display_fps(&self, now: Instant) -> Option<f64> {
+        self.display_rate.measured_at(now)
+    }
+
     pub(crate) fn seek(&mut self, position: Duration) {
         self.seek_micros
             .store(duration_micros_i64(position), Ordering::Relaxed);
         self.seek_generation.fetch_add(1, Ordering::Relaxed);
+        self.display_rate.delivered_at.clear();
         if let Ok(mut state) = self.latest_frame.lock() {
             state.frame = None;
             state.error = None;
@@ -980,13 +1151,17 @@ mod tests {
     #[test]
     fn parses_audio_track_labels_from_ffprobe_output() {
         let track = parse_audio_track(
-            "index=2|codec_name=aac|channels=6|channel_layout=5.1|tag:language=jpn|tag:title=Japanese 5.1|disposition:default=1",
+            "index=2|codec_name=aac|channels=6|channel_layout=5.1|sample_rate=48000|tag:language=jpn|tag:title=Japanese 5.1|disposition:default=1",
             0,
         )
         .expect("audio track should parse");
 
         assert_eq!(track.stream_index(), 2);
         assert_eq!(track.label(), "Japanese 5.1 — AAC — Default");
+        assert_eq!(
+            track.playback_summary(),
+            "Source: AAC · 5.1 · 48 kHz | Output: PCM S16 · Stereo · 48 kHz"
+        );
     }
 
     #[test]
@@ -996,6 +1171,78 @@ mod tests {
 
         assert_eq!(track.stream_index(), 7);
         assert_eq!(track.label(), "Track 3");
+        assert_eq!(
+            track.playback_summary(),
+            "Output: PCM S16 · Stereo · 48 kHz"
+        );
+    }
+
+    #[test]
+    fn source_summary_keeps_original_frame_rate() {
+        let info = VideoInfo {
+            width: 3840,
+            height: 2160,
+            fps: 30.0,
+            source_fps: 59.94,
+            duration: None,
+            has_audio: true,
+            seekable: true,
+            container: Some("matroska,webm".to_string()),
+            codec: Some("hevc".to_string()),
+            profile: Some("Main 10".to_string()),
+            hdr: Some("HDR (PQ)"),
+        };
+
+        assert_eq!(
+            info.source_summary(),
+            "HEVC · Main 10 · 3840×2160 · 59.94 fps · HDR (PQ)"
+        );
+    }
+
+    #[test]
+    fn display_rate_measures_recent_frame_delivery() {
+        let start = Instant::now();
+        let mut rate = DisplayRate::default();
+        rate.record(start);
+        rate.record(start + Duration::from_millis(40));
+
+        assert_eq!(
+            rate.measured_at(start + Duration::from_millis(40)),
+            Some(25.0)
+        );
+        assert_eq!(
+            rate.measured_at(start + DISPLAY_RATE_WINDOW + Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn probe_preserves_source_rate_above_playback_cap_when_ffmpeg_is_available() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let media =
+            std::env::temp_dir().join(format!("enzo-media-info-test-{}.mkv", std::process::id()));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("color=size=16x16:duration=0.2:rate=60")
+            .args(["-c:v", "ffv1"])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let info = probe_video(&media).expect("generated video should be probed");
+        assert!((info.source_fps - 60.0).abs() < 0.01);
+        assert_eq!(info.fps, MAX_PLAYBACK_FPS);
+        assert_eq!(info.container.as_deref(), Some("matroska,webm"));
+        let summary = info.source_summary();
+        assert!(summary.starts_with("FFV1"));
+        assert!(summary.contains("16×16 · 60 fps"));
+
+        let _ = std::fs::remove_file(media);
     }
 
     #[test]
