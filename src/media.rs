@@ -22,6 +22,8 @@ const HDR_PQ: c_int = 1;
 const HDR_HLG: c_int = 2;
 const AUDIO_OUTPUT_SUMMARY: &str = "PCM S16 · Stereo · 48 kHz";
 const DISPLAY_RATE_WINDOW: Duration = Duration::from_secs(2);
+const VIDEO_CLOCK_LEAD: Duration = Duration::from_millis(5);
+const VIDEO_CLOCK_DROP_LAG: Duration = Duration::from_millis(75);
 
 #[repr(C)]
 struct RigVideoInfo {
@@ -63,6 +65,8 @@ unsafe extern "C" {
         rgb_out: *mut c_uchar,
         pts_out: *mut c_double,
         stop_flag: *const c_int,
+        seek_generation: *const c_int,
+        expected_seek_generation: c_int,
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
@@ -81,8 +85,32 @@ unsafe extern "C" {
         mute_flag: *const c_int,
         seek_generation: *const c_int,
         seek_micros: *const i64,
+        released_seek_generation: *const c_int,
+        applied_seek_generation: *mut c_int,
+        buffered_seek_generation: *mut c_int,
+        playback_micros: *mut i64,
         err: *mut c_char,
         err_len: usize,
+    ) -> c_int;
+    #[cfg(test)]
+    fn rig_audio_seek_trim_samples(
+        frame_timestamp: i64,
+        timestamp_origin: i64,
+        time_base_num: c_int,
+        time_base_den: c_int,
+        frame_samples: c_int,
+        source_rate: c_int,
+        target_micros: i64,
+        delayed_output_samples: c_int,
+        converted_samples: c_int,
+    ) -> c_int;
+    #[cfg(test)]
+    fn rig_audio_seek_leading_silence_samples(
+        frame_timestamp: i64,
+        timestamp_origin: i64,
+        time_base_num: c_int,
+        time_base_den: c_int,
+        target_micros: i64,
     ) -> c_int;
 }
 
@@ -473,6 +501,12 @@ struct NativeVideoDecoder(*mut RigVideoDecoderOpaque);
 
 unsafe impl Send for NativeVideoDecoder {}
 
+enum NativeFrame {
+    Frame(f64),
+    Ended,
+    Interrupted,
+}
+
 impl NativeVideoDecoder {
     fn open(path: &Path, width: u32, height: u32, fps: f64) -> Result<Self> {
         let path = path_cstring(path)?;
@@ -498,7 +532,13 @@ impl NativeVideoDecoder {
         Ok(Self(decoder))
     }
 
-    fn next_frame(&mut self, frame: &mut [u8], stop: &AtomicI32) -> Result<Option<f64>> {
+    fn next_frame(
+        &mut self,
+        frame: &mut [u8],
+        stop: &AtomicI32,
+        seek_generation: &AtomicI32,
+        expected_seek_generation: i32,
+    ) -> Result<NativeFrame> {
         let mut pts = 0.0;
         let mut error = ErrorBuffer::new();
         let status = unsafe {
@@ -507,13 +547,16 @@ impl NativeVideoDecoder {
                 frame.as_mut_ptr(),
                 &mut pts,
                 stop.as_ptr(),
+                seek_generation.as_ptr(),
+                expected_seek_generation,
                 error.as_mut_ptr(),
                 error.len(),
             )
         };
         match status {
-            1 => Ok(Some(pts)),
-            0 => Ok(None),
+            2 => Ok(NativeFrame::Interrupted),
+            1 => Ok(NativeFrame::Frame(pts)),
+            0 => Ok(NativeFrame::Ended),
             _ => bail!("{}", error.message("failed to decode video frame")),
         }
     }
@@ -550,6 +593,7 @@ impl Drop for NativeVideoDecoder {
 struct LatestFrame {
     frame: Option<Vec<u8>>,
     pts: Duration,
+    seek_generation: i32,
     ended: bool,
     error: Option<String>,
     serial: u64,
@@ -563,6 +607,8 @@ pub(crate) struct VideoDecoder {
     pause: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
+    released_seek_generation: Arc<AtomicI32>,
+    master_clock: Arc<Mutex<Option<Arc<AtomicI64>>>>,
     frame_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -589,6 +635,11 @@ impl VideoDecoder {
         let seek_generation_thread = Arc::clone(&seek_generation);
         let seek_micros = Arc::new(AtomicI64::new(duration_micros_i64(position)));
         let seek_micros_thread = Arc::clone(&seek_micros);
+        let initial_seek_generation = seek_generation.load(Ordering::Relaxed);
+        let released_seek_generation = Arc::new(AtomicI32::new(initial_seek_generation));
+        let released_seek_generation_thread = Arc::clone(&released_seek_generation);
+        let master_clock = Arc::new(Mutex::new(None));
+        let master_clock_thread = Arc::clone(&master_clock);
 
         let frame_thread = thread::spawn(move || {
             run_video_decode_thread(
@@ -600,6 +651,8 @@ impl VideoDecoder {
                 pause_thread,
                 seek_generation_thread,
                 seek_micros_thread,
+                released_seek_generation_thread,
+                master_clock_thread,
             );
         });
 
@@ -611,6 +664,8 @@ impl VideoDecoder {
             pause,
             seek_generation,
             seek_micros,
+            released_seek_generation,
+            master_clock,
             frame_thread: Some(frame_thread),
         })
     }
@@ -665,10 +720,14 @@ impl VideoDecoder {
         self.display_rate.measured_at(now)
     }
 
-    pub(crate) fn seek(&mut self, position: Duration) {
+    pub(crate) fn seek(&mut self, position: Duration) -> i32 {
+        self.pause.store(1, Ordering::Release);
         self.seek_micros
-            .store(duration_micros_i64(position), Ordering::Relaxed);
-        self.seek_generation.fetch_add(1, Ordering::Relaxed);
+            .store(duration_micros_i64(position), Ordering::Release);
+        let generation = self
+            .seek_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
         self.display_rate.delivered_at.clear();
         if let Ok(mut state) = self.latest_frame.lock() {
             state.frame = None;
@@ -676,6 +735,28 @@ impl VideoDecoder {
             state.ended = false;
             state.serial = state.serial.wrapping_add(1);
             self.delivered_serial = state.serial;
+        }
+        generation
+    }
+
+    pub(crate) fn seek_frame(&self, generation: i32) -> Option<Duration> {
+        let state = self.latest_frame.lock().ok()?;
+        (state.frame.is_some() && state.seek_generation == generation).then_some(state.pts)
+    }
+
+    pub(crate) fn seek_generation(&self) -> i32 {
+        self.seek_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn release_seek(&self, generation: i32, paused: bool) {
+        self.released_seek_generation
+            .store(generation, Ordering::Release);
+        self.pause.store(i32::from(paused), Ordering::Release);
+    }
+
+    pub(crate) fn set_audio_clock(&self, audio: Option<&AudioPlayer>) {
+        if let Ok(mut master) = self.master_clock.lock() {
+            *master = audio.map(AudioPlayer::playback_clock);
         }
     }
 }
@@ -696,6 +777,8 @@ fn run_video_decode_thread(
     pause: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
+    released_seek_generation: Arc<AtomicI32>,
+    master_clock: Arc<Mutex<Option<Arc<AtomicI64>>>>,
 ) {
     let mut started_at = Instant::now();
     let fallback_interval = 1.0 / fps.max(1.0);
@@ -703,6 +786,8 @@ fn run_video_decode_thread(
     let mut buffer = vec![0_u8; frame_len];
     let mut seen_seek_generation = 0;
     let mut force_next_frame = false;
+    let mut clocked_seek_generation = 0;
+    let mut last_published_pts = None::<Duration>;
 
     loop {
         if stop.load(Ordering::Relaxed) != 0 {
@@ -735,7 +820,15 @@ fn run_video_decode_thread(
                 &mut seen_seek_generation,
             ) {
                 PauseWait::Ready(paused_for) => {
-                    started_at += paused_for;
+                    if released_seek_generation.load(Ordering::Acquire) == seen_seek_generation
+                        && clocked_seek_generation != seen_seek_generation
+                        && let Some(pts) = last_published_pts
+                    {
+                        started_at = Instant::now() - pts;
+                        clocked_seek_generation = seen_seek_generation;
+                    } else {
+                        started_at += paused_for;
+                    }
                 }
                 PauseWait::Seek(position, paused_for) => {
                     started_at += paused_for;
@@ -758,17 +851,19 @@ fn run_video_decode_thread(
             }
         }
 
-        let pts = match native.next_frame(&mut buffer, &stop) {
-            Ok(Some(pts)) => pts,
-            Ok(None) => {
-                mark_ended(&latest_frame);
-                break;
-            }
-            Err(error) => {
-                mark_error(&latest_frame, error.to_string());
-                break;
-            }
-        };
+        let pts =
+            match native.next_frame(&mut buffer, &stop, &seek_generation, seen_seek_generation) {
+                Ok(NativeFrame::Frame(pts)) => pts,
+                Ok(NativeFrame::Interrupted) => continue,
+                Ok(NativeFrame::Ended) => {
+                    mark_ended(&latest_frame);
+                    break;
+                }
+                Err(error) => {
+                    mark_error(&latest_frame, error.to_string());
+                    break;
+                }
+            };
 
         let pts = if pts.is_finite() && pts >= 0.0 {
             pts
@@ -780,6 +875,7 @@ fn run_video_decode_thread(
         let pts_duration = Duration::from_secs_f64(pts);
         if !force_next_frame {
             let mut due_at = started_at + pts_duration;
+            let mut drop_frame = false;
             loop {
                 if stop.load(Ordering::Relaxed) != 0 {
                     mark_ended(&latest_frame);
@@ -817,13 +913,28 @@ fn run_video_decode_thread(
                     }
                 }
 
+                if let Some(master_position) = master_clock_position(&master_clock) {
+                    if pts_duration.saturating_add(VIDEO_CLOCK_DROP_LAG) < master_position {
+                        drop_frame = true;
+                        break;
+                    }
+                    if pts_duration <= master_position.saturating_add(VIDEO_CLOCK_LEAD) {
+                        break;
+                    }
+                    let wait = pts_duration
+                        .saturating_sub(master_position)
+                        .saturating_sub(VIDEO_CLOCK_LEAD);
+                    thread::sleep(wait.min(Duration::from_millis(10)));
+                    continue;
+                }
+
                 let now = Instant::now();
                 if due_at <= now {
                     break;
                 }
                 thread::sleep((due_at - now).min(Duration::from_millis(10)));
             }
-            if force_next_frame {
+            if force_next_frame || drop_frame {
                 continue;
             }
         }
@@ -853,8 +964,15 @@ fn run_video_decode_thread(
             &seek_generation,
             seen_seek_generation,
         );
+        last_published_pts = Some(pts_duration);
         force_next_frame = false;
     }
+}
+
+fn master_clock_position(master_clock: &Mutex<Option<Arc<AtomicI64>>>) -> Option<Duration> {
+    let clock = master_clock.lock().ok()?.clone()?;
+    let micros = clock.load(Ordering::Acquire);
+    (micros >= 0).then(|| Duration::from_micros(micros as u64))
 }
 
 enum PauseWait {
@@ -923,12 +1041,16 @@ pub(crate) struct AudioPlayer {
     mute: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
+    released_seek_generation: Arc<AtomicI32>,
+    applied_seek_generation: Arc<AtomicI32>,
+    buffered_seek_generation: Arc<AtomicI32>,
+    playback_micros: Arc<AtomicI64>,
     handle: Option<thread::JoinHandle<Result<()>>>,
     finished: bool,
 }
 
 impl AudioPlayer {
-    pub(crate) fn spawn_at(
+    pub(crate) fn spawn_held_at(
         path: &Path,
         audio_stream_index: Option<usize>,
         position: Duration,
@@ -948,10 +1070,20 @@ impl AudioPlayer {
         let pause_thread = Arc::clone(&pause);
         let mute = Arc::new(AtomicI32::new(i32::from(muted)));
         let mute_thread = Arc::clone(&mute);
-        let seek_generation = Arc::new(AtomicI32::new(i32::from(position > Duration::ZERO)));
+        let initial_seek_generation = 1;
+        let seek_generation = Arc::new(AtomicI32::new(initial_seek_generation));
         let seek_generation_thread = Arc::clone(&seek_generation);
         let seek_micros = Arc::new(AtomicI64::new(duration_micros_i64(position)));
         let seek_micros_thread = Arc::clone(&seek_micros);
+        let released_seek_generation =
+            Arc::new(AtomicI32::new(initial_seek_generation.wrapping_sub(1)));
+        let released_seek_generation_thread = Arc::clone(&released_seek_generation);
+        let applied_seek_generation = Arc::new(AtomicI32::new(0));
+        let applied_seek_generation_thread = Arc::clone(&applied_seek_generation);
+        let buffered_seek_generation = Arc::new(AtomicI32::new(0));
+        let buffered_seek_generation_thread = Arc::clone(&buffered_seek_generation);
+        let playback_micros = Arc::new(AtomicI64::new(-1));
+        let playback_micros_thread = Arc::clone(&playback_micros);
         let handle = thread::spawn(move || {
             let mut error = ErrorBuffer::new();
             let status = unsafe {
@@ -963,6 +1095,10 @@ impl AudioPlayer {
                     mute_thread.as_ptr(),
                     seek_generation_thread.as_ptr(),
                     seek_micros_thread.as_ptr(),
+                    released_seek_generation_thread.as_ptr(),
+                    applied_seek_generation_thread.as_ptr(),
+                    buffered_seek_generation_thread.as_ptr(),
+                    playback_micros_thread.as_ptr(),
                     error.as_mut_ptr(),
                     error.len(),
                 )
@@ -979,6 +1115,10 @@ impl AudioPlayer {
             mute,
             seek_generation,
             seek_micros,
+            released_seek_generation,
+            applied_seek_generation,
+            buffered_seek_generation,
+            playback_micros,
             handle: Some(handle),
             finished: false,
         })
@@ -1016,17 +1156,40 @@ impl AudioPlayer {
     }
 
     pub(crate) fn set_paused(&self, paused: bool) {
-        self.pause.store(i32::from(paused), Ordering::Relaxed);
+        self.pause.store(i32::from(paused), Ordering::Release);
     }
 
     pub(crate) fn set_muted(&self, muted: bool) {
         self.mute.store(i32::from(muted), Ordering::Relaxed);
     }
 
-    pub(crate) fn seek(&self, position: Duration) {
+    pub(crate) fn seek_held(&self, position: Duration) -> i32 {
         self.seek_micros
-            .store(duration_micros_i64(position), Ordering::Relaxed);
-        self.seek_generation.fetch_add(1, Ordering::Relaxed);
+            .store(duration_micros_i64(position), Ordering::Release);
+        self.seek_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
+    pub(crate) fn seek_generation(&self) -> i32 {
+        self.seek_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn seek_applied(&self, generation: i32) -> bool {
+        self.applied_seek_generation.load(Ordering::Acquire) == generation
+    }
+
+    pub(crate) fn seek_buffered(&self, generation: i32) -> bool {
+        self.buffered_seek_generation.load(Ordering::Acquire) == generation
+    }
+
+    pub(crate) fn release_seek(&self, generation: i32) {
+        self.released_seek_generation
+            .store(generation, Ordering::Release);
+    }
+
+    fn playback_clock(&self) -> Arc<AtomicI64> {
+        Arc::clone(&self.playback_micros)
     }
 }
 
@@ -1110,6 +1273,7 @@ fn store_latest_frame(
 
     let old_frame = state.frame.replace(frame);
     state.pts = pts;
+    state.seek_generation = seen_seek_generation;
     state.ended = false;
     state.serial = state.serial.wrapping_add(1);
     old_frame.unwrap_or_else(|| vec![0_u8; frame_len])
@@ -1217,6 +1381,31 @@ mod tests {
     }
 
     #[test]
+    fn audio_seek_trimming_discards_early_frames_and_leading_samples() {
+        let entirely_early = unsafe {
+            rig_audio_seek_trim_samples(1_000, 0, 1, 1_000, 1_024, 48_000, 1_030_000, 0, 1_024)
+        };
+        let crossing_target = unsafe {
+            rig_audio_seek_trim_samples(1_000, 0, 1, 1_000, 1_024, 48_000, 1_010_000, 17, 1_041)
+        };
+        let normalized_start = unsafe {
+            rig_audio_seek_trim_samples(
+                11_400, 1_400, 1, 1_000, 1_024, 48_000, 10_005_000, 0, 1_024,
+            )
+        };
+        let leading_silence =
+            unsafe { rig_audio_seek_leading_silence_samples(11_413, 1_400, 1, 1_000, 10_000_000) };
+        let delayed_track_silence =
+            unsafe { rig_audio_seek_leading_silence_samples(500, 0, 1, 1_000, 0) };
+
+        assert_eq!(entirely_early, -1);
+        assert_eq!(crossing_target, 497);
+        assert_eq!(normalized_start, 240);
+        assert_eq!(leading_silence, 624);
+        assert_eq!(delayed_track_silence, 24_000);
+    }
+
+    #[test]
     fn probe_preserves_source_rate_above_playback_cap_when_ffmpeg_is_available() {
         if Command::new("ffmpeg").arg("-version").output().is_err() {
             return;
@@ -1264,5 +1453,173 @@ mod tests {
         let state = state.lock().expect("frame state should not be poisoned");
         assert!(state.frame.is_none());
         assert_eq!(state.serial, 0);
+    }
+
+    #[test]
+    fn rapid_video_seeks_publish_only_the_latest_generation() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let media = std::env::temp_dir().join(format!(
+            "enzo-rapid-video-seek-test-{}.mkv",
+            std::process::id()
+        ));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=320x180:duration=8:rate=30")
+            .args(["-c:v", "mpeg4", "-g", "240"])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let mut decoder = VideoDecoder::spawn_at(&media, 64, 36, 30.0, Duration::ZERO, true)
+            .expect("video decoder should start");
+        let superseded = decoder.seek(Duration::from_millis(7_500));
+        thread::sleep(Duration::from_millis(2));
+        let latest = decoder.seek(Duration::from_millis(1_000));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let latest_pts = loop {
+            if let Some(pts) = decoder.seek_frame(latest) {
+                break pts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "latest seek frame should become ready"
+            );
+            thread::sleep(Duration::from_millis(2));
+        };
+
+        assert!(decoder.seek_frame(superseded).is_none());
+        assert!(latest_pts >= Duration::from_millis(950));
+        assert!(latest_pts < Duration::from_millis(1_100));
+        decoder.stop().expect("video decoder should stop");
+        let _ = std::fs::remove_file(media);
+    }
+
+    #[test]
+    fn video_seek_normalizes_nonzero_stream_start_time() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let media = std::env::temp_dir().join(format!(
+            "enzo-video-start-time-test-{}.ts",
+            std::process::id()
+        ));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=64x64:duration=5:rate=30")
+            .args(["-c:v", "mpeg2video", "-g", "30", "-f", "mpegts"])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let mut decoder = VideoDecoder::spawn_at(&media, 64, 64, 30.0, Duration::ZERO, true)
+            .expect("video decoder should start");
+        let generation = decoder.seek(Duration::from_millis(2_400));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pts = loop {
+            if let Some(pts) = decoder.seek_frame(generation) {
+                break pts;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "normalized seek frame should become ready"
+            );
+            thread::sleep(Duration::from_millis(2));
+        };
+
+        assert!(pts >= Duration::from_millis(2_350));
+        assert!(pts < Duration::from_millis(3_100));
+        decoder.stop().expect("video decoder should stop");
+        let _ = std::fs::remove_file(media);
+    }
+
+    #[test]
+    fn held_audio_seek_applies_and_prebuffers_before_release_when_pulse_is_available() {
+        if Command::new("ffmpeg").arg("-version").output().is_err()
+            || !Command::new("pactl")
+                .arg("info")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        {
+            return;
+        }
+        let media = std::env::temp_dir().join(format!(
+            "enzo-held-audio-seek-test-{}.mkv",
+            std::process::id()
+        ));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("color=size=16x16:duration=2:rate=30")
+            .args(["-f", "lavfi", "-i"])
+            .arg("sine=frequency=440:sample_rate=48000:duration=2")
+            .args([
+                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "ffv1", "-c:a", "flac",
+            ])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let mut player =
+            AudioPlayer::spawn_held_at(&media, None, Duration::from_millis(750), false, true)
+                .expect("held audio player should start");
+        let generation = player.seek_generation();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !player.seek_applied(generation) || !player.seek_buffered(generation) {
+            assert!(
+                !player.is_finished().expect("audio thread should not fail"),
+                "held audio should not finish before release"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "held audio should apply and buffer the seek"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        player.release_seek(generation);
+        thread::sleep(Duration::from_millis(25));
+        player.stop().expect("audio player should stop");
+
+        let mut tail =
+            AudioPlayer::spawn_held_at(&media, None, Duration::from_millis(1_990), false, true)
+                .expect("held tail audio player should start");
+        let tail_generation = tail.seek_generation();
+        let tail_deadline = Instant::now() + Duration::from_secs(3);
+        while !tail.seek_applied(tail_generation) || !tail.seek_buffered(tail_generation) {
+            assert!(
+                !tail
+                    .is_finished()
+                    .expect("tail audio thread should not fail"),
+                "held tail audio should wait for release"
+            );
+            assert!(
+                Instant::now() < tail_deadline,
+                "held tail audio should apply and buffer the seek"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        tail.release_seek(tail_generation);
+        while !tail
+            .is_finished()
+            .expect("tail audio thread should not fail")
+        {
+            assert!(
+                Instant::now() < tail_deadline,
+                "released tail audio should drain and finish"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let _ = std::fs::remove_file(media);
     }
 }

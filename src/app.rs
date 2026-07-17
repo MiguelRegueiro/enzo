@@ -35,7 +35,7 @@ use crate::{
 use cli::{media_path_from_drop_text, parse_args};
 use layout::{CanvasFrame, TargetFrame, terminal_target_and_canvas};
 use resume_integration::{
-    restore_audio_selection, restore_subtitle_selection, resume_available, selected_audio_stream,
+    restore_audio_selection, restore_subtitle_selection, resume_available,
     selected_audio_stream_choice, sync_resume_audio, sync_resume_subtitle,
 };
 use subtitle_tracks::{
@@ -57,6 +57,13 @@ const KEYBOARD_SEEK_MAX_STEP: Duration = Duration::from_secs(60);
 struct StatusMessage {
     text: &'static str,
     visible_until: Instant,
+}
+
+struct PendingSeek {
+    video_generation: i32,
+    video_pts: Option<Duration>,
+    audio_generation: Option<i32>,
+    audio_target: Option<Duration>,
 }
 
 struct MediaInfoOverlay {
@@ -254,19 +261,20 @@ fn play_media(
         target.height,
         source.fps,
         start_position,
-        false,
+        true,
     )?;
     let mut muted = false;
     let selected_audio_stream = selected_audio_stream_choice(&audio_tracks, selected_audio);
     let mut audio = if source.has_audio {
         selected_audio_stream
             .map(|stream_index| {
-                AudioPlayer::spawn_at(&path, stream_index, start_position, false, muted)
+                AudioPlayer::spawn_held_at(&path, stream_index, start_position, false, muted)
             })
             .transpose()?
     } else {
         None
     };
+    decoder.set_audio_clock(audio.as_ref());
     let mut audio_done = !source.has_audio || selected_audio_stream.is_none();
     let playback_started_at = Instant::now();
 
@@ -316,6 +324,12 @@ fn play_media(
     let mut scrub_position = None::<Duration>;
     let mut keyboard_seek_commit_at = None::<Instant>;
     let mut mouse_scrub_commit_at = None::<Instant>;
+    let mut pending_seek = Some(PendingSeek {
+        video_generation: decoder.seek_generation(),
+        video_pts: None,
+        audio_generation: audio.as_ref().map(AudioPlayer::seek_generation),
+        audio_target: audio.as_ref().map(|_| start_position),
+    });
     let mut playback_outcome = PlaybackOutcome::Interrupted;
 
     loop {
@@ -330,6 +344,10 @@ fn play_media(
             });
         }
         poll_audio(&mut audio, &mut audio_done)?;
+        decoder.set_audio_clock(audio.as_ref());
+        if progress_pending_seek(&mut pending_seek, &decoder, &mut audio, paused) {
+            next_frame_at = Instant::now();
+        }
 
         let input = read_input_events()?;
         let input_at = Instant::now();
@@ -456,7 +474,13 @@ fn play_media(
             }
             PlaybackCommand::TogglePause => {
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
-                toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
+                toggle_pause(
+                    &mut paused,
+                    &decoder,
+                    &mut audio,
+                    &mut next_frame_at,
+                    pending_seek.is_some(),
+                );
                 redraw_current_frame = have_frame;
             }
             PlaybackCommand::ToggleMute => {
@@ -517,7 +541,7 @@ fn play_media(
                 }
                 overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
                 if keyboard_seek_commit_at.is_none_or(|deadline| input_at >= deadline) {
-                    seek_playback(
+                    pending_seek = Some(seek_playback(
                         &path,
                         source.has_audio,
                         &mut decoder,
@@ -527,7 +551,7 @@ fn play_media(
                         seek_target,
                         paused,
                         muted,
-                    )?;
+                    )?);
                     playback_position = seek_target;
                     resume.set_position(playback_position);
                     scrub_position = None;
@@ -546,7 +570,7 @@ fn play_media(
         let (current_target, current_canvas) =
             terminal_target_and_canvas(source.width, source.height);
         if current_target != target {
-            if !paused && let Some(audio) = audio.as_mut() {
+            if let Some(audio) = audio.as_mut() {
                 audio.set_paused(true);
             }
 
@@ -559,12 +583,19 @@ fn play_media(
                 target.height,
                 source.fps,
                 playback_position,
-                paused,
+                true,
             )?;
-
-            if !paused && let Some(audio) = audio.as_mut() {
-                audio.set_paused(false);
-            }
+            pending_seek = Some(seek_playback(
+                &path,
+                source.has_audio,
+                &mut decoder,
+                &mut audio,
+                &mut audio_done,
+                selected_audio_stream_choice(&audio_tracks, selected_audio),
+                playback_position,
+                paused,
+                muted,
+            )?);
 
             clear_screen_and_images(&mut out)?;
             previous_image_id = None;
@@ -667,16 +698,21 @@ fn play_media(
                                 selected_audio = Some(index);
                                 sync_resume_audio(&mut resume, &audio_tracks, selected_audio);
                                 audio_picker_open = false;
-                                switch_audio_track(
+                                if let Some(mut player) = audio.take() {
+                                    player.stop()?;
+                                }
+                                audio_done = true;
+                                pending_seek = Some(seek_playback(
                                     &path,
-                                    &audio_tracks,
-                                    selected_audio,
+                                    source.has_audio,
+                                    &mut decoder,
                                     &mut audio,
                                     &mut audio_done,
+                                    selected_audio_stream_choice(&audio_tracks, selected_audio),
                                     playback_position,
                                     paused,
                                     muted,
-                                )?;
+                                )?);
                             }
                         }
                         redraw_current_frame = have_frame;
@@ -735,7 +771,13 @@ fn play_media(
                         subtitle_picker_open = false;
                         audio_picker_open = false;
                         overlay_visible_until = Some(input_at + OVERLAY_VISIBLE_FOR);
-                        toggle_pause(&mut paused, &decoder, &mut audio, &mut next_frame_at);
+                        toggle_pause(
+                            &mut paused,
+                            &decoder,
+                            &mut audio,
+                            &mut next_frame_at,
+                            pending_seek.is_some(),
+                        );
                         redraw_current_frame = have_frame;
                     } else {
                         let picker_was_open = audio_picker_open || subtitle_picker_open;
@@ -809,7 +851,7 @@ fn play_media(
                 playback_outcome = PlaybackOutcome::Completed;
                 break;
             }
-            seek_playback(
+            pending_seek = Some(seek_playback(
                 &path,
                 source.has_audio,
                 &mut decoder,
@@ -819,7 +861,7 @@ fn play_media(
                 seek_target,
                 paused,
                 muted,
-            )?;
+            )?);
             playback_position = seek_target;
             resume.set_position(playback_position);
             video_ended = false;
@@ -830,7 +872,7 @@ fn play_media(
         if keyboard_seek_commit_at.is_some_and(|deadline| Instant::now() >= deadline) {
             keyboard_seek_commit_at = None;
             if let Some(seek_target) = scrub_position.take() {
-                seek_playback(
+                pending_seek = Some(seek_playback(
                     &path,
                     source.has_audio,
                     &mut decoder,
@@ -840,7 +882,7 @@ fn play_media(
                     seek_target,
                     paused,
                     muted,
-                )?;
+                )?);
                 playback_position = seek_target;
                 resume.set_position(playback_position);
                 video_ended = false;
@@ -1226,21 +1268,20 @@ fn seek_playback(
     position: Duration,
     paused: bool,
     muted: bool,
-) -> Result<()> {
-    decoder.seek(position);
+) -> Result<PendingSeek> {
+    let video_generation = decoder.seek(position);
+    let mut audio_generation = None;
     if has_audio && let Some(audio_stream_index) = audio_stream {
         if let Some(audio) = audio.as_mut() {
-            audio.seek(position);
+            audio.set_paused(true);
+            audio_generation = Some(audio.seek_held(position));
             audio.set_paused(paused);
             audio.set_muted(muted);
         } else {
-            *audio = Some(AudioPlayer::spawn_at(
-                path,
-                audio_stream_index,
-                position,
-                paused,
-                muted,
-            )?);
+            let player =
+                AudioPlayer::spawn_held_at(path, audio_stream_index, position, paused, muted)?;
+            audio_generation = Some(player.seek_generation());
+            *audio = Some(player);
         }
         *audio_done = false;
     } else {
@@ -1249,7 +1290,58 @@ fn seek_playback(
         }
         *audio_done = true;
     }
-    Ok(())
+    decoder.set_audio_clock(audio.as_ref());
+    Ok(PendingSeek {
+        video_generation,
+        video_pts: None,
+        audio_generation,
+        audio_target: audio_generation.map(|_| position),
+    })
+}
+
+fn progress_pending_seek(
+    pending: &mut Option<PendingSeek>,
+    decoder: &VideoDecoder,
+    audio: &mut Option<AudioPlayer>,
+    paused: bool,
+) -> bool {
+    let Some(seek) = pending.as_mut() else {
+        return false;
+    };
+
+    let Some(video_pts) = seek
+        .video_pts
+        .or_else(|| decoder.seek_frame(seek.video_generation))
+    else {
+        return false;
+    };
+    seek.video_pts = Some(video_pts);
+
+    if let Some(player) = audio.as_ref()
+        && seek.audio_target != Some(video_pts)
+    {
+        player.set_paused(true);
+        seek.audio_generation = Some(player.seek_held(video_pts));
+        seek.audio_target = Some(video_pts);
+        player.set_paused(paused);
+        return false;
+    }
+
+    let audio_ready = match (audio.as_ref(), seek.audio_generation) {
+        (Some(player), Some(generation)) if paused => player.seek_applied(generation),
+        (Some(player), Some(generation)) => player.seek_buffered(generation),
+        _ => true,
+    };
+    if paused || !audio_ready {
+        return false;
+    }
+
+    if let (Some(player), Some(generation)) = (audio.as_ref(), seek.audio_generation) {
+        player.release_seek(generation);
+    }
+    decoder.release_seek(seek.video_generation, false);
+    *pending = None;
+    true
 }
 
 fn toggle_pause(
@@ -1257,9 +1349,10 @@ fn toggle_pause(
     decoder: &VideoDecoder,
     audio: &mut Option<AudioPlayer>,
     next_frame_at: &mut Instant,
+    seek_pending: bool,
 ) {
     *paused = !*paused;
-    decoder.set_paused(*paused);
+    decoder.set_paused(*paused || seek_pending);
     if let Some(audio) = audio.as_mut() {
         audio.set_paused(*paused);
     }
@@ -1384,35 +1477,6 @@ fn media_title(path: &Path) -> &'static str {
         .to_string_lossy()
         .into_owned();
     Box::leak(text.into_boxed_str())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn switch_audio_track(
-    path: &Path,
-    tracks: &[crate::media::AudioTrack],
-    selected_audio: Option<usize>,
-    audio: &mut Option<AudioPlayer>,
-    audio_done: &mut bool,
-    position: Duration,
-    paused: bool,
-    muted: bool,
-) -> Result<()> {
-    if let Some(player) = audio.as_mut() {
-        player.stop()?;
-    }
-    *audio = selected_audio
-        .map(|_| {
-            AudioPlayer::spawn_at(
-                path,
-                selected_audio_stream(tracks, selected_audio),
-                position,
-                paused,
-                muted,
-            )
-        })
-        .transpose()?;
-    *audio_done = selected_audio.is_none();
-    Ok(())
 }
 
 fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {

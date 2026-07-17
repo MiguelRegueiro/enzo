@@ -52,6 +52,7 @@ typedef struct RigVideoDecoder {
     struct SwsContext *sws;
     int stream_index;
     AVRational time_base;
+    int64_t timestamp_origin;
     int out_width;
     int out_height;
     int flushing;
@@ -77,6 +78,18 @@ typedef struct RigAudioConverter {
     int out_capacity;
     int configured;
 } RigAudioConverter;
+
+typedef struct RigAudioSeekState {
+    int active;
+    int64_t target_micros;
+} RigAudioSeekState;
+
+typedef struct RigAudioClock {
+    int generation;
+    int initialized;
+    int64_t media_origin_micros;
+    pa_usec_t pulse_origin_micros;
+} RigAudioClock;
 
 typedef struct PulseOperationWait {
     pa_threaded_mainloop *mainloop;
@@ -184,27 +197,51 @@ int rig_file_fingerprint(
 }
 
 static int stop_requested(const int *stop_flag) {
-    return stop_flag != NULL && *((volatile const int *)stop_flag) != 0;
+    return stop_flag != NULL && __atomic_load_n(stop_flag, __ATOMIC_ACQUIRE) != 0;
 }
 
 static int pause_requested(const int *pause_flag) {
-    return pause_flag != NULL && *((volatile const int *)pause_flag) != 0;
+    return pause_flag != NULL && __atomic_load_n(pause_flag, __ATOMIC_ACQUIRE) != 0;
 }
 
 static int mute_requested(const int *mute_flag) {
-    return mute_flag != NULL && *((volatile const int *)mute_flag) != 0;
+    return mute_flag != NULL && __atomic_load_n(mute_flag, __ATOMIC_ACQUIRE) != 0;
 }
 
 static int seek_generation_value(const int *seek_generation) {
-    return seek_generation == NULL ? 0 : *((volatile const int *)seek_generation);
+    return seek_generation == NULL
+        ? 0
+        : __atomic_load_n(seek_generation, __ATOMIC_ACQUIRE);
 }
 
 static int64_t seek_micros_value(const int64_t *seek_micros) {
     if (seek_micros == NULL) {
         return 0;
     }
-    int64_t value = *((volatile const int64_t *)seek_micros);
+    int64_t value = __atomic_load_n(seek_micros, __ATOMIC_ACQUIRE);
     return value < 0 ? 0 : value;
+}
+
+static int64_t stream_timestamp_origin(
+    const AVFormatContext *format,
+    const AVStream *stream
+) {
+    if (format->start_time != AV_NOPTS_VALUE) {
+        return av_rescale_q(format->start_time, AV_TIME_BASE_Q, stream->time_base);
+    }
+    return stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time;
+}
+
+static void atomic_store_generation(int *generation, int value) {
+    if (generation != NULL) {
+        __atomic_store_n(generation, value, __ATOMIC_RELEASE);
+    }
+}
+
+static void atomic_store_micros(int64_t *micros, int64_t value) {
+    if (micros != NULL) {
+        __atomic_store_n(micros, value, __ATOMIC_RELEASE);
+    }
 }
 
 static int take_seek_request(
@@ -419,7 +456,8 @@ static int pulse_output_open(RigPulseOutput *output, char *err, size_t err_len) 
         .fragsize = (uint32_t)-1,
     };
     pa_stream_flags_t flags =
-        PA_STREAM_ADJUST_LATENCY | PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_AUTO_TIMING_UPDATE;
+        PA_STREAM_ADJUST_LATENCY | PA_STREAM_INTERPOLATE_TIMING |
+        PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_START_CORKED;
     if (pa_stream_connect_playback(output->stream, NULL, &buffer_attr, flags, NULL, NULL) < 0) {
         set_error(err, err_len, "failed to connect PulseAudio stream: %s", pulse_output_error(output));
         pa_threaded_mainloop_unlock(output->mainloop);
@@ -476,18 +514,46 @@ static int pulse_output_flush_locked(RigPulseOutput *output, char *err, size_t e
     );
 }
 
+static int pulse_output_update_timing_locked(
+    RigPulseOutput *output,
+    char *err,
+    size_t err_len
+) {
+    PulseOperationWait wait = {
+        .mainloop = output->mainloop,
+        .done = 0,
+        .success = 0,
+    };
+    pa_operation *operation = pa_stream_update_timing_info(
+        output->stream,
+        pulse_stream_success_callback,
+        &wait
+    );
+    return wait_for_pulse_operation_locked(
+        output,
+        operation,
+        &wait,
+        "failed to update audio timing",
+        err,
+        err_len
+    );
+}
+
 static int sync_pulse_pause(
     RigPulseOutput *output,
     const int *stop_flag,
     const int *pause_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
+    const int *released_seek_generation,
     int *seen_seek_generation,
     int *corked,
     char *err,
     size_t err_len
 ) {
-    if (pause_requested(pause_flag) && !*corked) {
+    int seek_held =
+        seek_generation_value(released_seek_generation) != *seen_seek_generation;
+    if ((pause_requested(pause_flag) || seek_held) && !*corked) {
         pa_threaded_mainloop_lock(output->mainloop);
         int ret = pulse_output_set_corked_locked(output, 1, err, err_len);
         pa_threaded_mainloop_unlock(output->mainloop);
@@ -507,9 +573,14 @@ static int sync_pulse_pause(
         av_usleep(1000);
     }
 
-    if (*corked) {
+    seek_held =
+        seek_generation_value(released_seek_generation) != *seen_seek_generation;
+    if (*corked && !seek_held) {
         pa_threaded_mainloop_lock(output->mainloop);
-        int ret = pulse_output_set_corked_locked(output, 0, err, err_len);
+        int ret = pulse_output_update_timing_locked(output, err, err_len);
+        if (ret == 0) {
+            ret = pulse_output_set_corked_locked(output, 0, err, err_len);
+        }
         pa_threaded_mainloop_unlock(output->mainloop);
         if (ret < 0) {
             return -1;
@@ -517,6 +588,54 @@ static int sync_pulse_pause(
         *corked = 0;
     }
     return 0;
+}
+
+static void audio_clock_reset(
+    RigAudioClock *clock,
+    int generation,
+    int64_t media_origin_micros,
+    int64_t *playback_micros
+) {
+    clock->generation = generation;
+    clock->initialized = 0;
+    clock->media_origin_micros = media_origin_micros;
+    clock->pulse_origin_micros = 0;
+    atomic_store_micros(playback_micros, media_origin_micros);
+}
+
+static void audio_clock_update(
+    RigPulseOutput *output,
+    int corked,
+    const int *released_seek_generation,
+    int seen_seek_generation,
+    RigAudioClock *clock,
+    int64_t *playback_micros
+) {
+    if (corked ||
+        seek_generation_value(released_seek_generation) != seen_seek_generation ||
+        clock->generation != seen_seek_generation) {
+        return;
+    }
+
+    pa_usec_t pulse_micros = 0;
+    pa_threaded_mainloop_lock(output->mainloop);
+    int status = pa_stream_get_time(output->stream, &pulse_micros);
+    pa_threaded_mainloop_unlock(output->mainloop);
+    if (status < 0) {
+        return;
+    }
+    if (!clock->initialized) {
+        clock->pulse_origin_micros = pulse_micros;
+        clock->initialized = 1;
+    }
+
+    int64_t elapsed = pulse_micros >= clock->pulse_origin_micros
+        ? (int64_t)(pulse_micros - clock->pulse_origin_micros)
+        : 0;
+    atomic_store_micros(
+        playback_micros,
+        clock->media_origin_micros + elapsed
+    );
 }
 
 static int pulse_output_write(
@@ -527,8 +646,12 @@ static int pulse_output_write(
     const int *pause_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
+    const int *released_seek_generation,
+    int *buffered_seek_generation,
     int *seen_seek_generation,
     int *corked,
+    RigAudioClock *clock,
+    int64_t *playback_micros,
     char *err,
     size_t err_len
 ) {
@@ -550,6 +673,7 @@ static int pulse_output_write(
             pause_flag,
             seek_generation,
             seek_micros,
+            released_seek_generation,
             seen_seek_generation,
             corked,
             err,
@@ -561,6 +685,14 @@ static int pulse_output_write(
         if (pause_status > 0 || stop_requested(stop_flag)) {
             return pause_status == 2 ? 1 : 0;
         }
+        audio_clock_update(
+            output,
+            *corked,
+            released_seek_generation,
+            *seen_seek_generation,
+            clock,
+            playback_micros
+        );
 
         pa_threaded_mainloop_lock(output->mainloop);
         size_t writable = pa_stream_writable_size(output->stream);
@@ -588,6 +720,15 @@ static int pulse_output_write(
         }
         pa_threaded_mainloop_unlock(output->mainloop);
         offset += (int)chunk;
+        atomic_store_generation(buffered_seek_generation, *seen_seek_generation);
+        audio_clock_update(
+            output,
+            *corked,
+            released_seek_generation,
+            *seen_seek_generation,
+            clock,
+            playback_micros
+        );
     }
 
     return 0;
@@ -745,6 +886,8 @@ int rig_video_decoder_open(
 
     AVStream *stream = decoder->format->streams[decoder->stream_index];
     decoder->time_base = stream->time_base;
+    decoder->timestamp_origin =
+        stream_timestamp_origin(decoder->format, stream);
     const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec == NULL) {
         set_error(err, err_len, "failed to find video decoder");
@@ -815,7 +958,9 @@ static int receive_video_frame(
     if (ret == 0) {
         int64_t timestamp = decoder->frame->best_effort_timestamp;
         if (timestamp != AV_NOPTS_VALUE) {
-            *pts_out = (double)timestamp * av_q2d(decoder->time_base);
+            *pts_out =
+                (double)(timestamp - decoder->timestamp_origin) *
+                av_q2d(decoder->time_base);
         } else {
             *pts_out = (double)decoder->frame_index * decoder->fallback_interval;
         }
@@ -859,6 +1004,8 @@ int rig_video_decoder_next(
     uint8_t *rgb_out,
     double *pts_out,
     const int *stop_flag,
+    const int *seek_generation,
+    int expected_seek_generation,
     char *err,
     size_t err_len
 ) {
@@ -868,9 +1015,15 @@ int rig_video_decoder_next(
     }
 
     while (!stop_requested(stop_flag)) {
+        if (seek_generation_value(seek_generation) != expected_seek_generation) {
+            return 2;
+        }
         int status = receive_video_frame(decoder, rgb_out, pts_out, err, err_len);
         if (status == 1 || status == 0 || status == -1) {
             return status;
+        }
+        if (seek_generation_value(seek_generation) != expected_seek_generation) {
+            return 2;
         }
 
         if (decoder->flushing) {
@@ -927,7 +1080,7 @@ int rig_video_decoder_seek(
         (int64_t)(seconds * (double)AV_TIME_BASE),
         AV_TIME_BASE_Q,
         stream->time_base
-    );
+    ) + decoder->timestamp_origin;
     int ret = av_seek_frame(
         decoder->format,
         decoder->stream_index,
@@ -1192,7 +1345,9 @@ static int seek_audio_decoder(
 ) {
     AVStream *stream = format->streams[stream_index];
     AVRational micros_base = {1, 1000000};
-    int64_t timestamp = av_rescale_q(micros, micros_base, stream->time_base);
+    int64_t timestamp =
+        av_rescale_q(micros, micros_base, stream->time_base) +
+        stream_timestamp_origin(format, stream);
     int ret = av_seek_frame(format, stream_index, timestamp, AVSEEK_FLAG_BACKWARD);
     if (ret < 0) {
         set_ffmpeg_error(err, err_len, "failed to seek audio", ret);
@@ -1214,8 +1369,12 @@ static int sync_audio_seek(
     const int *seek_generation,
     const int64_t *seek_micros,
     int *seen_seek_generation,
+    int *applied_seek_generation,
     int *corked,
     int *flushing,
+    RigAudioSeekState *seek_state,
+    RigAudioClock *clock,
+    int64_t *playback_micros,
     char *err,
     size_t err_len
 ) {
@@ -1249,12 +1408,94 @@ static int sync_audio_seek(
     }
     audio_converter_reset(converter);
     *flushing = 0;
+    seek_state->active = 1;
+    seek_state->target_micros = micros;
+    audio_clock_reset(
+        clock,
+        *seen_seek_generation,
+        micros,
+        playback_micros
+    );
+    atomic_store_generation(applied_seek_generation, *seen_seek_generation);
     return 1;
+}
+
+int rig_audio_seek_trim_samples(
+    int64_t frame_timestamp,
+    int64_t timestamp_origin,
+    int time_base_num,
+    int time_base_den,
+    int frame_samples,
+    int source_rate,
+    int64_t target_micros,
+    int delayed_output_samples,
+    int converted_samples
+) {
+    if (time_base_num <= 0 || time_base_den <= 0 || frame_samples < 0 ||
+        source_rate <= 0 || delayed_output_samples < 0 || converted_samples < 0) {
+        return -1;
+    }
+
+    AVRational time_base = {time_base_num, time_base_den};
+    AVRational micros_base = {1, 1000000};
+    int64_t frame_start_micros = av_rescale_q(
+        frame_timestamp - timestamp_origin,
+        time_base,
+        micros_base
+    );
+    int64_t frame_duration_micros = av_rescale_q(
+        frame_samples,
+        (AVRational){1, source_rate},
+        micros_base
+    );
+    if (frame_start_micros + frame_duration_micros <= target_micros) {
+        return -1;
+    }
+
+    int64_t skip_samples = delayed_output_samples;
+    if (frame_start_micros < target_micros) {
+        skip_samples += av_rescale_rnd(
+            target_micros - frame_start_micros,
+            RIG_AUDIO_OUTPUT_RATE,
+            1000000,
+            AV_ROUND_UP
+        );
+    }
+    return skip_samples >= converted_samples ? -1 : (int)skip_samples;
+}
+
+int rig_audio_seek_leading_silence_samples(
+    int64_t frame_timestamp,
+    int64_t timestamp_origin,
+    int time_base_num,
+    int time_base_den,
+    int64_t target_micros
+) {
+    if (time_base_num <= 0 || time_base_den <= 0) {
+        return 0;
+    }
+    int64_t frame_start_micros = av_rescale_q(
+        frame_timestamp - timestamp_origin,
+        (AVRational){time_base_num, time_base_den},
+        (AVRational){1, 1000000}
+    );
+    if (frame_start_micros <= target_micros) {
+        return 0;
+    }
+    int64_t samples = av_rescale_rnd(
+        frame_start_micros - target_micros,
+        RIG_AUDIO_OUTPUT_RATE,
+        1000000,
+        AV_ROUND_NEAR_INF
+    );
+    return samples > INT32_MAX ? INT32_MAX : (int)samples;
 }
 
 static int write_converted_audio(
     RigAudioConverter *converter,
     AVCodecContext *codec,
+    AVStream *stream,
+    int64_t timestamp_origin,
     AVFrame *frame,
     RigPulseOutput *pulse,
     const int *stop_flag,
@@ -1262,8 +1503,13 @@ static int write_converted_audio(
     const int *mute_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
+    const int *released_seek_generation,
+    int *buffered_seek_generation,
     int *seen_seek_generation,
     int *corked,
+    RigAudioSeekState *seek_state,
+    RigAudioClock *clock,
+    int64_t *playback_micros,
     char *err,
     size_t err_len
 ) {
@@ -1271,8 +1517,15 @@ static int write_converted_audio(
         return -1;
     }
 
+    int64_t delayed_input_samples = swr_get_delay(converter->swr, converter->src_rate);
+    int delayed_output_samples = (int)av_rescale_rnd(
+        delayed_input_samples,
+        RIG_AUDIO_OUTPUT_RATE,
+        converter->src_rate,
+        AV_ROUND_UP
+    );
     int out_samples = (int)av_rescale_rnd(
-        swr_get_delay(converter->swr, converter->src_rate) + frame->nb_samples,
+        delayed_input_samples + frame->nb_samples,
         RIG_AUDIO_OUTPUT_RATE,
         converter->src_rate,
         AV_ROUND_UP
@@ -1312,10 +1565,40 @@ static int write_converted_audio(
         return -1;
     }
 
+    int skip_samples = 0;
+    int leading_silence_samples = 0;
+    if (seek_state->active && frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+        leading_silence_samples = rig_audio_seek_leading_silence_samples(
+            frame->best_effort_timestamp,
+            timestamp_origin,
+            stream->time_base.num,
+            stream->time_base.den,
+            seek_state->target_micros
+        );
+        skip_samples = rig_audio_seek_trim_samples(
+            frame->best_effort_timestamp,
+            timestamp_origin,
+            stream->time_base.num,
+            stream->time_base.den,
+            frame->nb_samples,
+            converter->src_rate,
+            seek_state->target_micros,
+            delayed_output_samples,
+            converted
+        );
+        if (skip_samples < 0) {
+            return 0;
+        }
+        seek_state->active = 0;
+    } else if (seek_state->active) {
+        seek_state->active = 0;
+    }
+
+    int output_samples = converted - skip_samples;
     int bytes = av_samples_get_buffer_size(
         NULL,
         RIG_AUDIO_OUTPUT_CHANNELS,
-        converted,
+        output_samples,
         AV_SAMPLE_FMT_S16,
         1
     );
@@ -1325,19 +1608,60 @@ static int write_converted_audio(
     }
 
     if (bytes > 0) {
+        const int silence_chunk_bytes =
+            RIG_AUDIO_OUTPUT_RATE / 100 * RIG_AUDIO_OUTPUT_CHANNELS *
+            RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
+        uint8_t silence[silence_chunk_bytes];
+        memset(silence, 0, sizeof(silence));
+        int64_t silence_bytes =
+            (int64_t)leading_silence_samples * RIG_AUDIO_OUTPUT_CHANNELS *
+            RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
+        while (silence_bytes > 0) {
+            int64_t chunk =
+                silence_bytes < silence_chunk_bytes ? silence_bytes : silence_chunk_bytes;
+            int ret = pulse_output_write(
+                pulse,
+                silence,
+                (int)chunk,
+                stop_flag,
+                pause_flag,
+                seek_generation,
+                seek_micros,
+                released_seek_generation,
+                buffered_seek_generation,
+                seen_seek_generation,
+                corked,
+                clock,
+                playback_micros,
+                err,
+                err_len
+            );
+            if (ret != 0) {
+                return ret;
+            }
+            silence_bytes -= chunk;
+        }
+
+        uint8_t *output_data =
+            converter->out_buffer +
+            skip_samples * RIG_AUDIO_OUTPUT_CHANNELS * RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
         if (mute_requested(mute_flag)) {
-            memset(converter->out_buffer, 0, (size_t)bytes);
+            memset(output_data, 0, (size_t)bytes);
         }
         int ret = pulse_output_write(
             pulse,
-            converter->out_buffer,
+            output_data,
             bytes,
             stop_flag,
             pause_flag,
             seek_generation,
             seek_micros,
+            released_seek_generation,
+            buffered_seek_generation,
             seen_seek_generation,
             corked,
+            clock,
+            playback_micros,
             err,
             err_len
         );
@@ -1360,6 +1684,10 @@ int rig_play_audio(
     const int *mute_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
+    const int *released_seek_generation,
+    int *applied_seek_generation,
+    int *buffered_seek_generation,
+    int64_t *playback_micros,
     char *err,
     size_t err_len
 ) {
@@ -1377,6 +1705,8 @@ int rig_play_audio(
     if (opened <= 0) {
         return opened;
     }
+    AVStream *stream = format->streams[stream_index];
+    int64_t timestamp_origin = stream_timestamp_origin(format, stream);
 
     RigAudioConverter converter;
     audio_converter_init(&converter);
@@ -1393,14 +1723,21 @@ int rig_play_audio(
     int ret = 0;
     int failed = 0;
     int flushing = 0;
-    int corked = 0;
+    int corked = 1;
     int seen_seek_generation = 0;
+    RigAudioSeekState seek_state = {
+        .active = 0,
+        .target_micros = 0,
+    };
+    RigAudioClock clock;
+    audio_clock_reset(&clock, 0, 0, playback_micros);
 
     if (packet == NULL || frame == NULL) {
         set_error(err, err_len, "failed to allocate audio packet/frame");
         failed = 1;
     }
 
+decode_audio:
     while (!failed && !stop_requested(stop_flag)) {
         int seek_status = sync_audio_seek(
             &pulse,
@@ -1413,8 +1750,12 @@ int rig_play_audio(
             seek_generation,
             seek_micros,
             &seen_seek_generation,
+            applied_seek_generation,
             &corked,
             &flushing,
+            &seek_state,
+            &clock,
+            playback_micros,
             err,
             err_len
         );
@@ -1432,6 +1773,7 @@ int rig_play_audio(
             pause_flag,
             seek_generation,
             seek_micros,
+            released_seek_generation,
             &seen_seek_generation,
             &corked,
             err,
@@ -1447,6 +1789,14 @@ int rig_play_audio(
         if (pause_status > 0) {
             break;
         }
+        audio_clock_update(
+            &pulse,
+            corked,
+            released_seek_generation,
+            seen_seek_generation,
+            &clock,
+            playback_micros
+        );
 
         ret = avcodec_receive_frame(codec, frame);
         if (ret == 0) {
@@ -1461,8 +1811,12 @@ int rig_play_audio(
                 seek_generation,
                 seek_micros,
                 &seen_seek_generation,
+                applied_seek_generation,
                 &corked,
                 &flushing,
+                &seek_state,
+                &clock,
+                playback_micros,
                 err,
                 err_len
             );
@@ -1481,6 +1835,7 @@ int rig_play_audio(
                 pause_flag,
                 seek_generation,
                 seek_micros,
+                released_seek_generation,
                 &seen_seek_generation,
                 &corked,
                 err,
@@ -1502,6 +1857,8 @@ int rig_play_audio(
             int write_status = write_converted_audio(
                 &converter,
                 codec,
+                stream,
+                timestamp_origin,
                 frame,
                 &pulse,
                 stop_flag,
@@ -1509,8 +1866,13 @@ int rig_play_audio(
                 mute_flag,
                 seek_generation,
                 seek_micros,
+                released_seek_generation,
+                buffered_seek_generation,
                 &seen_seek_generation,
                 &corked,
+                &seek_state,
+                &clock,
+                playback_micros,
                 err,
                 err_len
             );
@@ -1566,7 +1928,41 @@ int rig_play_audio(
     }
 
     if (!failed && !stop_requested(stop_flag)) {
-        if (pulse_output_drain(&pulse, err, err_len) < 0) {
+        atomic_store_generation(buffered_seek_generation, seen_seek_generation);
+        int seek_after_eof = 0;
+        while (corked && !stop_requested(stop_flag)) {
+            int pause_status = sync_pulse_pause(
+                &pulse,
+                stop_flag,
+                pause_flag,
+                seek_generation,
+                seek_micros,
+                released_seek_generation,
+                &seen_seek_generation,
+                &corked,
+                err,
+                err_len
+            );
+            if (pause_status < 0) {
+                failed = 1;
+                break;
+            }
+            if (pause_status == 2) {
+                seek_after_eof = 1;
+                break;
+            }
+            if (pause_status > 0) {
+                break;
+            }
+            if (corked) {
+                av_usleep(1000);
+            }
+        }
+        if (seek_after_eof) {
+            goto decode_audio;
+        }
+        if (!failed && !stop_requested(stop_flag) &&
+            pulse_output_drain(&pulse, err, err_len) < 0) {
             failed = 1;
         }
     }
@@ -1581,6 +1977,7 @@ int rig_play_audio(
     pulse_output_close(&pulse);
     avcodec_free_context(&codec);
     avformat_close_input(&format);
+    atomic_store_micros(playback_micros, -1);
 
     return failed ? -1 : 0;
 }
