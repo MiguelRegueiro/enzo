@@ -18,20 +18,18 @@ fn seek_forward_clamps_to_duration() {
 }
 
 #[test]
-fn keyboard_seek_step_scales_with_video_duration() {
-    assert_eq!(keyboard_seek_seconds(1, Some(Duration::from_secs(600))), 5);
-    assert_eq!(
-        keyboard_seek_seconds(1, Some(Duration::from_secs(7200))),
-        36
-    );
-    assert_eq!(
-        keyboard_seek_seconds(-2, Some(Duration::from_secs(7200))),
-        -72
-    );
-    assert_eq!(
-        keyboard_seek_seconds(1, Some(Duration::from_secs(24 * 60 * 60))),
-        60
-    );
+fn keyboard_seek_uses_fixed_five_second_steps() {
+    assert_eq!(keyboard_seek_seconds(0), 0);
+    assert_eq!(keyboard_seek_seconds(1), 5);
+    assert_eq!(keyboard_seek_seconds(-1), -5);
+    assert_eq!(keyboard_seek_seconds(4), 20);
+    assert_eq!(keyboard_seek_seconds(-4), -20);
+}
+
+#[test]
+fn keyboard_seek_step_calculation_saturates_safely() {
+    assert_eq!(keyboard_seek_seconds(i32::MAX), i32::MAX);
+    assert_eq!(keyboard_seek_seconds(i32::MIN), i32::MIN);
 }
 
 #[test]

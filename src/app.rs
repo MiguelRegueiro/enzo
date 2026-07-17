@@ -50,8 +50,7 @@ const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const MEDIA_INFO_VISIBLE_FOR: Duration = Duration::from_secs(4);
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const MOUSE_SCRUB_COMMIT_AFTER: Duration = Duration::from_millis(120);
-const KEYBOARD_SEEK_MIN_STEP: Duration = Duration::from_secs(5);
-const KEYBOARD_SEEK_MAX_STEP: Duration = Duration::from_secs(60);
+const KEYBOARD_SEEK_SECONDS: i32 = 5;
 
 #[derive(Clone, Copy)]
 struct StatusMessage {
@@ -532,7 +531,7 @@ fn play_media(
                 redraw_current_frame = have_frame;
             }
             PlaybackCommand::SeekBy(steps) => {
-                let seconds = keyboard_seek_seconds(steps, source.duration);
+                let seconds = keyboard_seek_seconds(steps);
                 let base_position = scrub_position.unwrap_or(playback_position);
                 let seek_target = seek_position(base_position, seconds, source.duration);
                 if is_end_seek(seek_target, source.duration) {
@@ -1602,18 +1601,8 @@ fn seek_position(current: Duration, seconds: i32, duration: Option<Duration>) ->
     duration.map_or(target, |duration| target.min(duration))
 }
 
-fn keyboard_seek_seconds(steps: i32, duration: Option<Duration>) -> i32 {
-    let direction = steps.signum();
-    if direction == 0 {
-        return 0;
-    }
-    let step = duration
-        .map(|duration| duration / 200)
-        .unwrap_or(KEYBOARD_SEEK_MIN_STEP)
-        .clamp(KEYBOARD_SEEK_MIN_STEP, KEYBOARD_SEEK_MAX_STEP);
-    let total = step.as_secs().saturating_mul(steps.unsigned_abs().into());
-    let total = total.min(i32::MAX as u64) as i32;
-    total * direction
+fn keyboard_seek_seconds(steps: i32) -> i32 {
+    steps.saturating_mul(KEYBOARD_SEEK_SECONDS)
 }
 
 fn is_end_seek(target: Duration, duration: Option<Duration>) -> bool {
