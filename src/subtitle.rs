@@ -21,6 +21,7 @@ use crate::{
 const TEXT_COLOR: [u8; 3] = [255, 255, 255];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
 const MAX_SUBTITLE_WIDTH_RATIO: f64 = 0.84;
+const MAX_ACTIVE_SUBTITLE_LINES: usize = 3;
 const LANGUAGE_DETECTION_SAMPLE_BYTES: usize = 16 * 1024;
 const TEXT_SUBTITLE_CODECS: &[&str] = &[
     "ass",
@@ -88,6 +89,10 @@ impl SubtitleTrack {
                     lines.push(line.clone());
                 }
             }
+        }
+        if lines.len() > MAX_ACTIVE_SUBTITLE_LINES {
+            lines.sort_by_key(|line| std::cmp::Reverse(line.chars().count()));
+            lines.truncate(MAX_ACTIVE_SUBTITLE_LINES);
         }
         (!lines.is_empty()).then_some(lines)
     }
@@ -167,10 +172,54 @@ fn subtitle_language_sample(cues: &[SubtitleCue]) -> String {
 }
 
 fn subtitle_cue_from_decoded(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
-    let text = match cue.kind {
-        DecodedSubtitleTextKind::Plain => cue.text.as_str(),
-        DecodedSubtitleTextKind::Ass => decoded_ass_text(&cue.text),
+    if matches!(cue.kind, DecodedSubtitleTextKind::Ass) {
+        return subtitle_cue_from_decoded_ass(cue);
+    }
+    let text = cue.text.as_str();
+    if is_ass_drawing(text) {
+        return None;
+    }
+    let lines = text
+        .lines()
+        .map(|line| strip_srt_markup(line).trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    (!lines.is_empty()).then_some(SubtitleCue {
+        start: cue.start,
+        end: cue.end,
+        lines,
+    })
+}
+
+fn subtitle_cue_from_decoded_ass(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
+    let decoded_format = decoded_ass_format();
+    let dialogue_format = ass_default_format();
+    let fields = if cue.text.trim_start().starts_with("Dialogue:") {
+        parse_ass_event_fields(&cue.text, &dialogue_format)
+    } else {
+        parse_ass_event_fields(&cue.text, &decoded_format)
     };
+    let Some(fields) = fields else {
+        return subtitle_cue_from_decoded_plain_ass(cue);
+    };
+    if is_ass_drawing(fields.text) {
+        return None;
+    }
+    let line = strip_srt_markup(fields.text).trim().to_string();
+    if line.is_empty()
+        || !ass_dialogue_line_is_useful(fields.style, fields.effect, fields.text, &line)
+    {
+        return None;
+    }
+    Some(SubtitleCue {
+        start: cue.start,
+        end: cue.end,
+        lines: vec![line],
+    })
+}
+
+fn subtitle_cue_from_decoded_plain_ass(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
+    let text = decoded_ass_text(&cue.text);
     if is_ass_drawing(text) {
         return None;
     }
@@ -527,6 +576,53 @@ fn ass_default_format() -> Vec<String> {
     .collect()
 }
 
+fn decoded_ass_format() -> Vec<String> {
+    [
+        "readorder",
+        "layer",
+        "style",
+        "name",
+        "marginl",
+        "marginr",
+        "marginv",
+        "effect",
+        "text",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+#[derive(Clone, Copy)]
+struct AssEventFields<'a> {
+    style: &'a str,
+    effect: &'a str,
+    text: &'a str,
+}
+
+fn parse_ass_event_fields<'a>(line: &'a str, format: &[String]) -> Option<AssEventFields<'a>> {
+    let line = line.trim_start();
+    let line = line
+        .strip_prefix("Dialogue:")
+        .map(str::trim_start)
+        .unwrap_or(line);
+    let fields = line.splitn(format.len(), ',').collect::<Vec<_>>();
+    if fields.len() < format.len() {
+        return None;
+    }
+
+    let field = |name: &str| -> Option<&'a str> {
+        let index = format.iter().position(|field| field == name)?;
+        fields.get(index).copied()
+    };
+
+    Some(AssEventFields {
+        style: field("style").unwrap_or_default(),
+        effect: field("effect").unwrap_or_default(),
+        text: field("text")?,
+    })
+}
+
 fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCue>> {
     let fields = line.splitn(format.len(), ',').collect::<Vec<_>>();
     if fields.len() < format.len() {
@@ -547,6 +643,7 @@ fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCu
     let Some(text) = field("text") else {
         return Ok(None);
     };
+    let style = field("style").unwrap_or_default().trim();
     let effect = field("effect").unwrap_or_default().trim();
 
     if is_ass_drawing(text) {
@@ -560,7 +657,7 @@ fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCu
     }
 
     let line = strip_srt_markup(text).trim().to_string();
-    if line.is_empty() || !ass_dialogue_line_is_useful(effect, &line) {
+    if line.is_empty() || !ass_dialogue_line_is_useful(style, effect, text, &line) {
         return Ok(None);
     }
 
@@ -584,8 +681,22 @@ fn is_ass_drawing(text: &str) -> bool {
     false
 }
 
-fn ass_dialogue_line_is_useful(effect: &str, _line: &str) -> bool {
+fn ass_dialogue_line_is_useful(style: &str, effect: &str, raw_text: &str, line: &str) -> bool {
     effect.trim().is_empty()
+        && !ass_style_is_romanized_karaoke(style)
+        && !ass_line_is_tiny_positioned_fragment(raw_text, line)
+}
+
+fn ass_style_is_romanized_karaoke(style: &str) -> bool {
+    let normalized = style.trim().to_ascii_uppercase();
+    normalized.starts_with("OP-R")
+        || normalized.starts_with("ED-R")
+        || normalized.contains("ROMAJI")
+        || normalized.contains("ROMANJI")
+}
+
+fn ass_line_is_tiny_positioned_fragment(raw_text: &str, line: &str) -> bool {
+    line.chars().count() <= 3 && (raw_text.contains("\\pos") || raw_text.contains("\\move"))
 }
 
 fn parse_srt(text: &str) -> Result<Vec<SubtitleCue>> {
@@ -1461,6 +1572,56 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond ha
     }
 
     #[test]
+    fn ass_song_fallback_skips_romaji_syllables_but_keeps_translation() {
+        let cues = parse_ass(
+            "\
+[Script Info]
+Title: test
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:22:39.29,0:22:44.88,ED-E,,0,0,0,,{\\pos(960,1050)\\3c&HAE641B&\\blur6}Not wanting to hide my eyes from sad happenings,
+Dialogue: 0,0:22:39.35,0:22:40.00,ED-R1,,0,0,0,,{\\pos(439,54)}k
+Dialogue: 0,0:22:39.38,0:22:40.03,ED-R1,,0,0,0,,{\\pos(467,54)}a
+Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
+",
+        )
+        .expect("ass should parse");
+        let track = SubtitleTrack {
+            cues,
+            language: None,
+            label: String::from("Subtitles"),
+        };
+
+        assert_eq!(
+            track.active_lines(Duration::from_millis(22 * 60 * 1000 + 40 * 1000)),
+            Some(vec![String::from(
+                "Not wanting to hide my eyes from sad happenings,"
+            )])
+        );
+    }
+
+    #[test]
+    fn decoded_ass_song_fallback_skips_romaji_syllables_but_keeps_translation() {
+        let translated = subtitle_cue_from_decoded(DecodedSubtitleCue {
+            start: Duration::from_secs(1),
+            end: Duration::from_secs(2),
+            kind: DecodedSubtitleTextKind::Ass,
+            text: r"0,0,ED-E,,0,0,0,,{\pos(960,1050)}Not wanting to hide my eyes".to_string(),
+        })
+        .expect("translation should remain");
+        let romaji = subtitle_cue_from_decoded(DecodedSubtitleCue {
+            start: Duration::from_secs(1),
+            end: Duration::from_secs(2),
+            kind: DecodedSubtitleTextKind::Ass,
+            text: r"1,0,ED-R1,,0,0,0,,{\pos(439,54)}k".to_string(),
+        });
+
+        assert_eq!(translated.lines, ["Not wanting to hide my eyes"]);
+        assert!(romaji.is_none());
+    }
+
+    #[test]
     fn strips_subtitle_markup_without_losing_literal_braces() {
         assert_eq!(strip_srt_markup(r"{\an8}{\i1}ku{\i0}"), "ku");
         assert_eq!(
@@ -1590,6 +1751,45 @@ Second line
             Some(vec![
                 String::from("First line"),
                 String::from("Second line"),
+            ])
+        );
+    }
+
+    #[test]
+    fn active_lines_caps_dense_ass_fallbacks_to_longest_lines() {
+        let track = SubtitleTrack {
+            cues: vec![
+                SubtitleCue {
+                    start: Duration::ZERO,
+                    end: Duration::from_secs(1),
+                    lines: vec![String::from("A")],
+                },
+                SubtitleCue {
+                    start: Duration::ZERO,
+                    end: Duration::from_secs(1),
+                    lines: vec![String::from("long translated sentence")],
+                },
+                SubtitleCue {
+                    start: Duration::ZERO,
+                    end: Duration::from_secs(1),
+                    lines: vec![String::from("medium label")],
+                },
+                SubtitleCue {
+                    start: Duration::ZERO,
+                    end: Duration::from_secs(1),
+                    lines: vec![String::from("another useful line")],
+                },
+            ],
+            language: None,
+            label: String::from("Subtitles"),
+        };
+
+        assert_eq!(
+            track.active_lines(Duration::ZERO),
+            Some(vec![
+                String::from("long translated sentence"),
+                String::from("another useful line"),
+                String::from("medium label"),
             ])
         );
     }
