@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.96"
 description = "Kitty terminal video player"
 license = "MIT"
+repository = "https://github.com/MiguelRegueiro/enzo"
 
 [dependencies]
 anyhow = "1.0"
