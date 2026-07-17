@@ -1000,7 +1000,8 @@ fn draw_audio_icon(frame: &mut [u8], width: u32, height: u32, metrics: OverlayMe
         .control_y
         .saturating_add(metrics.control_size.saturating_sub(icon_height) / 2);
     let radius = rounded_radius(icon_width, icon_height, icon_height / 4);
-    fill_rounded_rect(
+    let stroke = (icon_height / 8).max(2);
+    stroke_rounded_rect(
         frame,
         width,
         height,
@@ -1011,24 +1012,9 @@ fn draw_audio_icon(frame: &mut [u8], width: u32, height: u32, metrics: OverlayMe
             height: f64::from(icon_height),
             radius: f64::from(radius),
         },
+        f64::from(stroke),
         TEXT_COLOR,
         alpha,
-    );
-
-    let stroke = (icon_height / 8).max(2);
-    fill_rounded_rect(
-        frame,
-        width,
-        height,
-        RoundedRect {
-            x: f64::from(icon_x.saturating_add(stroke)),
-            y: f64::from(icon_y.saturating_add(stroke)),
-            width: f64::from(icon_width.saturating_sub(stroke.saturating_mul(2))),
-            height: f64::from(icon_height.saturating_sub(stroke.saturating_mul(2))),
-            radius: f64::from(radius.saturating_sub(stroke / 2)),
-        },
-        PANEL_COLOR,
-        255,
     );
 
     let bar_w = stroke.max(2);
@@ -1209,7 +1195,8 @@ fn draw_subtitle_icon(
         .control_y
         .saturating_add(metrics.control_size.saturating_sub(icon_height) / 2);
     let radius = rounded_radius(icon_width, icon_height, icon_height / 4);
-    fill_rounded_rect(
+    let stroke = (icon_height / 8).max(2);
+    stroke_rounded_rect(
         frame,
         width,
         height,
@@ -1220,24 +1207,9 @@ fn draw_subtitle_icon(
             height: f64::from(icon_height),
             radius: f64::from(radius),
         },
+        f64::from(stroke),
         TEXT_COLOR,
         alpha,
-    );
-
-    let stroke = (icon_height / 8).max(2);
-    fill_rounded_rect(
-        frame,
-        width,
-        height,
-        RoundedRect {
-            x: f64::from(icon_x.saturating_add(stroke)),
-            y: f64::from(icon_y.saturating_add(stroke)),
-            width: f64::from(icon_width.saturating_sub(stroke.saturating_mul(2))),
-            height: f64::from(icon_height.saturating_sub(stroke.saturating_mul(2))),
-            radius: f64::from(radius.saturating_sub(stroke / 2)),
-        },
-        PANEL_COLOR,
-        255,
     );
 
     let line_height = stroke.max(2);
@@ -1877,6 +1849,51 @@ fn fill_rounded_rect(
             let coverage = rounded_rect_coverage(f64::from(x) + 0.5, f64::from(y) + 0.5, rect);
             if coverage > 0.0 {
                 let offset = rgb_offset(width, x, y);
+                blend_pixel(
+                    frame,
+                    offset,
+                    color,
+                    (coverage * f64::from(alpha)).round() as u8,
+                );
+            }
+        }
+    }
+}
+
+fn stroke_rounded_rect(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    rect: RoundedRect,
+    stroke: f64,
+    color: [u8; 3],
+    alpha: u8,
+) {
+    if width == 0 || height == 0 || rect.width <= 0.0 || rect.height <= 0.0 || stroke <= 0.0 {
+        return;
+    }
+
+    let stroke = stroke.min(rect.width / 2.0).min(rect.height / 2.0);
+    let inner = RoundedRect {
+        x: rect.x + stroke,
+        y: rect.y + stroke,
+        width: rect.width - stroke * 2.0,
+        height: rect.height - stroke * 2.0,
+        radius: (rect.radius - stroke / 2.0).max(0.0),
+    };
+    let min_x = rect.x.floor().max(0.0) as u32;
+    let max_x = (rect.x + rect.width).ceil().min(f64::from(width)) as u32;
+    let min_y = rect.y.floor().max(0.0) as u32;
+    let max_y = (rect.y + rect.height).ceil().min(f64::from(height)) as u32;
+
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let x = f64::from(x) + 0.5;
+            let y = f64::from(y) + 0.5;
+            let coverage = (rounded_rect_coverage(x, y, rect) - rounded_rect_coverage(x, y, inner))
+                .clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                let offset = rgb_offset(width, x.floor() as u32, y.floor() as u32);
                 blend_pixel(
                     frame,
                     offset,
@@ -2738,6 +2755,35 @@ mod tests {
         assert_eq!(frame[outside_offset], 0);
         assert_eq!(frame[outside_offset + 1], 0);
         assert_eq!(frame[outside_offset + 2], 0);
+    }
+
+    #[test]
+    fn rounded_rect_stroke_preserves_inner_pixels() {
+        let width = 32;
+        let height = 20;
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+
+        stroke_rounded_rect(
+            &mut frame,
+            width,
+            height,
+            RoundedRect {
+                x: 4.0,
+                y: 4.0,
+                width: 24.0,
+                height: 12.0,
+                radius: 3.0,
+            },
+            2.0,
+            TEXT_COLOR,
+            255,
+        );
+
+        let border = rgb_offset(width, 4, 10);
+        assert_eq!(&frame[border..border + 3], &TEXT_COLOR);
+
+        let inner = rgb_offset(width, 16, 10);
+        assert_eq!(&frame[inner..inner + 3], &[20, 20, 20]);
     }
 
     #[test]
