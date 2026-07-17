@@ -41,6 +41,7 @@ pub(crate) struct PlaybackOverlay {
 pub(crate) struct OverlayHitContext {
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) terminal_rows: u16,
     pub(crate) scale_percent: u32,
     pub(crate) position: Duration,
     pub(crate) duration: Option<Duration>,
@@ -66,6 +67,7 @@ pub(crate) enum SubtitlePickerAction {
 #[derive(Clone, Copy)]
 pub(crate) struct OverlayHitPoint {
     pub(crate) x: u32,
+    pub(crate) y: u32,
     pub(crate) cell: HitboxRect,
 }
 
@@ -92,6 +94,7 @@ impl PlaybackOverlay {
         frame: &mut [u8],
         width: u32,
         height: u32,
+        terminal_rows: u16,
         scale_percent: u32,
         state: OverlayState,
     ) {
@@ -99,6 +102,7 @@ impl PlaybackOverlay {
             frame,
             width,
             height,
+            terminal_rows,
             scale_percent,
             state,
             &mut self.scratch,
@@ -114,6 +118,7 @@ impl PlaybackOverlay {
         let metrics = self.metrics(
             context.width,
             context.height,
+            context.terminal_rows,
             context.scale_percent,
             context.duration,
             context.audio_available,
@@ -127,6 +132,7 @@ impl PlaybackOverlay {
         &mut self,
         width: u32,
         height: u32,
+        terminal_rows: u16,
         scale_percent: u32,
         duration: Option<Duration>,
         subtitles_available: bool,
@@ -136,6 +142,7 @@ impl PlaybackOverlay {
         let metrics = self.metrics(
             width,
             height,
+            terminal_rows,
             scale_percent,
             duration,
             audio_available,
@@ -152,6 +159,7 @@ impl PlaybackOverlay {
         let metrics = self.metrics(
             context.width,
             context.height,
+            context.terminal_rows,
             context.scale_percent,
             context.duration,
             context.audio_available,
@@ -169,6 +177,7 @@ impl PlaybackOverlay {
         let metrics = self.metrics(
             context.width,
             context.height,
+            context.terminal_rows,
             context.scale_percent,
             context.duration,
             context.audio_available,
@@ -186,6 +195,7 @@ impl PlaybackOverlay {
         let metrics = self.metrics(
             context.width,
             context.height,
+            context.terminal_rows,
             context.scale_percent,
             context.duration,
             context.audio_available,
@@ -194,10 +204,12 @@ impl PlaybackOverlay {
         subtitle_picker_action(metrics, point, picker_open, context.subtitle_count)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn metrics(
         &mut self,
         width: u32,
         height: u32,
+        terminal_rows: u16,
         scale_percent: u32,
         duration: Option<Duration>,
         audio_available: bool,
@@ -206,6 +218,7 @@ impl PlaybackOverlay {
         overlay_metrics(
             width,
             height,
+            terminal_rows,
             scale_percent,
             duration,
             audio_available,
@@ -232,7 +245,11 @@ struct OverlayMetrics {
     subtitle_x: u32,
     time_x: u32,
     text_size: u32,
+    text_height: u32,
     fallback_text_scale: u32,
+    canvas_height: u32,
+    terminal_rows: u16,
+    picker_terminal_row_span: u16,
     panel_right: u32,
 }
 
@@ -244,6 +261,7 @@ impl OverlayMetrics {
         text_size: u32,
         fallback_text_scale: u32,
         text_height: u32,
+        terminal_rows: u16,
         time_width: u32,
         audio_available: bool,
         subtitles_available: bool,
@@ -254,6 +272,15 @@ impl OverlayMetrics {
         let control_size = control_size_for_text(text_size, text_height);
         let control_gap = control_gap_for_text(text_size);
         let handle_radius = progress_handle_radius(bar_height);
+        let picker_line_pitch = text_size
+            .max(text_height)
+            .max(7 * fallback_text_scale)
+            .saturating_add(6);
+        let terminal_rows = terminal_rows.max(1);
+        let picker_terminal_row_span = (u64::from(picker_line_pitch)
+            .saturating_mul(u64::from(terminal_rows))
+            .div_ceil(u64::from(video_height.max(1))))
+        .clamp(1, u64::from(u16::MAX)) as u16;
         let row_height = text_height
             .max(control_size)
             .max(handle_radius.saturating_mul(2).saturating_add(4));
@@ -330,16 +357,22 @@ impl OverlayMetrics {
             subtitle_x,
             time_x,
             text_size,
+            text_height,
             fallback_text_scale,
+            canvas_height: video_height,
+            terminal_rows,
+            picker_terminal_row_span,
             panel_right,
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_overlay_rgb(
     frame: &mut [u8],
     width: u32,
     height: u32,
+    terminal_rows: u16,
     scale_percent: u32,
     state: OverlayState,
     scratch: &mut String,
@@ -399,6 +432,7 @@ fn render_overlay_rgb(
         text_size,
         fallback_text_scale,
         text_height,
+        terminal_rows,
         time_width,
         state.audio_available,
         state.subtitles_available,
@@ -599,9 +633,11 @@ fn top_message_y(height: u32, text_size: u32) -> u32 {
     outer_padding_for_text(text_size).min(height.saturating_sub(1))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn overlay_metrics(
     width: u32,
     height: u32,
+    terminal_rows: u16,
     scale_percent: u32,
     duration: Option<Duration>,
     audio_available: bool,
@@ -622,6 +658,7 @@ fn overlay_metrics(
         text_size,
         fallback_text_scale,
         text_height,
+        terminal_rows,
         time_width,
         audio_available,
         subtitles_available,
@@ -852,23 +889,21 @@ fn draw_track_picker(
     );
 
     let pad = picker_padding(metrics);
-    let row_height = track_picker_row_height(metrics);
     let marker_size = (metrics.text_size / 3).clamp(4, 7);
     let marker_x = picker.left.saturating_add(pad);
     let text_x = marker_x.saturating_add(marker_size).saturating_add(pad / 2);
     let text_width = picker.right.saturating_sub(text_x).saturating_sub(pad);
     for (index, label) in labels.iter().enumerate() {
-        let row_y = picker
-            .top
-            .saturating_add(pad)
-            .saturating_add(row_height.saturating_mul(index as u32));
+        let row = track_picker_track_rect(metrics, picker, index);
+        let row_height = row.bottom.saturating_sub(row.top);
+        let text_y = picker_text_y(metrics, row);
         if selected_track == Some(index) {
             draw_picker_marker(
                 frame,
                 width,
                 height,
                 marker_x,
-                row_y,
+                row.top,
                 row_height,
                 marker_size,
             );
@@ -885,7 +920,7 @@ fn draw_track_picker(
             width,
             height,
             text_x,
-            row_y,
+            text_y,
             metrics.fallback_text_scale,
             &label,
             TEXT_COLOR,
@@ -894,17 +929,16 @@ fn draw_track_picker(
     }
 
     if include_off {
-        let off_y = picker
-            .top
-            .saturating_add(pad)
-            .saturating_add(row_height.saturating_mul(labels.len() as u32));
+        let row = track_picker_track_rect(metrics, picker, labels.len());
+        let row_height = row.bottom.saturating_sub(row.top);
+        let off_text_y = picker_text_y(metrics, row);
         if selected_track.is_none() {
             draw_picker_marker(
                 frame,
                 width,
                 height,
                 marker_x,
-                off_y,
+                row.top,
                 row_height,
                 marker_size,
             );
@@ -915,7 +949,7 @@ fn draw_track_picker(
             width,
             height,
             text_x,
-            off_y,
+            off_text_y,
             metrics.fallback_text_scale,
             "Off",
             TEXT_COLOR,
@@ -1083,10 +1117,8 @@ fn audio_picker_action(
             track_picker_max_width(metrics, anchor_x),
             false,
         );
-        for index in 0..audio_count {
-            if hitbox_intersects(point.cell, track_picker_track_rect(metrics, picker, index)) {
-                return Some(AudioPickerAction::SelectTrack(index));
-            }
+        if let Some(index) = track_picker_row_at_point(metrics, picker, point, audio_count) {
+            return Some(AudioPickerAction::SelectTrack(index));
         }
     }
 
@@ -1109,15 +1141,12 @@ fn subtitle_picker_action(
             track_picker_max_width(metrics, anchor_x),
             true,
         );
-        for index in 0..subtitle_count {
-            if hitbox_intersects(point.cell, track_picker_track_rect(metrics, picker, index)) {
+        if let Some(index) =
+            track_picker_row_at_point(metrics, picker, point, subtitle_count.saturating_add(1))
+        {
+            if index < subtitle_count {
                 return Some(SubtitlePickerAction::SelectTrack(index));
             }
-        }
-        if hitbox_intersects(
-            point.cell,
-            track_picker_off_rect(metrics, picker, subtitle_count),
-        ) {
             return Some(SubtitlePickerAction::SelectOff);
         }
     }
@@ -1162,19 +1191,23 @@ fn track_picker_rect(
     include_off: bool,
 ) -> HitboxRect {
     let pad = picker_padding(metrics);
-    let row_height = track_picker_row_height(metrics);
     let row_count = track_count.saturating_add(usize::from(include_off));
-    let picker_height = row_height
-        .saturating_mul(row_count as u32)
-        .saturating_add(pad.saturating_mul(2));
     let right = anchor_x
         .saturating_add(metrics.control_size)
         .max(picker_width);
     let left = right.saturating_sub(picker_width);
-    let bottom = metrics
+    let desired_rows_bottom = metrics
         .panel_y
-        .saturating_sub(track_picker_gap_for_text(metrics.text_size));
-    let top = bottom.saturating_sub(picker_height);
+        .saturating_sub(track_picker_gap_for_text(metrics.text_size))
+        .saturating_sub(pad);
+    let end_terminal_row = terminal_row_at_or_before_y(metrics, desired_rows_bottom);
+    let terminal_row_count =
+        (row_count as u32).saturating_mul(u32::from(metrics.picker_terminal_row_span));
+    let start_terminal_row = end_terminal_row.saturating_sub(terminal_row_count);
+    let rows_top = terminal_row_boundary(metrics, start_terminal_row);
+    let rows_bottom = terminal_row_boundary(metrics, end_terminal_row);
+    let top = rows_top.saturating_sub(pad);
+    let bottom = rows_bottom.saturating_add(pad);
     HitboxRect {
         left,
         top,
@@ -1209,19 +1242,29 @@ fn track_picker_track_rect(
     index: usize,
 ) -> HitboxRect {
     let pad = picker_padding(metrics);
-    let row_height = track_picker_row_height(metrics);
-    let top = picker
-        .top
-        .saturating_add(pad)
-        .saturating_add(row_height.saturating_mul(index as u32));
+    let rows_top = if picker.top == 0 {
+        0
+    } else {
+        picker.top.saturating_add(pad)
+    };
+    let start_terminal_row = terminal_row_at_or_before_y(metrics, rows_top);
+    let row_offset = (index as u32).saturating_mul(u32::from(metrics.picker_terminal_row_span));
+    let top = terminal_row_boundary(metrics, start_terminal_row.saturating_add(row_offset));
+    let bottom = terminal_row_boundary(
+        metrics,
+        start_terminal_row
+            .saturating_add(row_offset)
+            .saturating_add(u32::from(metrics.picker_terminal_row_span)),
+    );
     HitboxRect {
         left: picker.left,
         top,
         right: picker.right,
-        bottom: top.saturating_add(row_height),
+        bottom,
     }
 }
 
+#[cfg(test)]
 fn track_picker_off_rect(
     metrics: OverlayMetrics,
     picker: HitboxRect,
@@ -1230,15 +1273,89 @@ fn track_picker_off_rect(
     track_picker_track_rect(metrics, picker, track_count)
 }
 
+fn track_picker_row_at_point(
+    metrics: OverlayMetrics,
+    picker: HitboxRect,
+    point: OverlayHitPoint,
+    row_count: usize,
+) -> Option<usize> {
+    let first_row = track_picker_track_rect(metrics, picker, 0);
+    if point.x < first_row.left || point.x >= first_row.right {
+        return None;
+    }
+
+    (0..row_count).find(|index| {
+        let hitbox = track_picker_row_hit_rect(metrics, picker, *index, row_count);
+        point.y >= hitbox.top && point.y < hitbox.bottom
+    })
+}
+
+fn track_picker_row_hit_rect(
+    metrics: OverlayMetrics,
+    picker: HitboxRect,
+    index: usize,
+    row_count: usize,
+) -> HitboxRect {
+    let row = track_picker_track_rect(metrics, picker, index);
+    let text_top = picker_text_y(metrics, row);
+    let text_bottom = text_top.saturating_add(metrics.text_height);
+    let top = if index == 0 {
+        row.top
+    } else {
+        let previous = track_picker_track_rect(metrics, picker, index - 1);
+        let previous_text_bottom =
+            picker_text_y(metrics, previous).saturating_add(metrics.text_height);
+        midpoint_toward_lower_line(previous_text_bottom, text_top)
+    };
+    let bottom = if index + 1 >= row_count {
+        row.bottom
+    } else {
+        let next = track_picker_track_rect(metrics, picker, index + 1);
+        midpoint_toward_lower_line(text_bottom, picker_text_y(metrics, next))
+    };
+
+    HitboxRect {
+        left: row.left,
+        top,
+        right: row.right,
+        bottom,
+    }
+}
+
 fn picker_padding(metrics: OverlayMetrics) -> u32 {
     (horizontal_padding_for_text(metrics.text_size) / 2).max(6)
 }
 
-fn track_picker_row_height(metrics: OverlayMetrics) -> u32 {
-    metrics
-        .text_size
-        .max(7 * metrics.fallback_text_scale)
-        .saturating_add(6)
+fn picker_text_y(metrics: OverlayMetrics, row: HitboxRect) -> u32 {
+    row.top.saturating_add(
+        row.bottom
+            .saturating_sub(row.top)
+            .saturating_sub(metrics.text_height)
+            / 2,
+    )
+}
+
+fn midpoint_toward_lower_line(upper: u32, lower: u32) -> u32 {
+    upper.saturating_add(lower.saturating_sub(upper).div_ceil(2))
+}
+
+fn terminal_row_boundary(metrics: OverlayMetrics, terminal_row: u32) -> u32 {
+    (u64::from(terminal_row.min(u32::from(metrics.terminal_rows)))
+        .saturating_mul(u64::from(metrics.canvas_height))
+        / u64::from(metrics.terminal_rows))
+    .min(u64::from(metrics.canvas_height)) as u32
+}
+
+fn terminal_row_at_or_before_y(metrics: OverlayMetrics, y: u32) -> u32 {
+    let rows = u64::from(metrics.terminal_rows);
+    let height = u64::from(metrics.canvas_height.max(1));
+    let y = u64::from(y.min(metrics.canvas_height));
+    y.saturating_add(1)
+        .saturating_mul(rows)
+        .saturating_sub(1)
+        .checked_div(height)
+        .unwrap_or(0)
+        .min(rows) as u32
 }
 
 fn draw_progress_handle(
@@ -2105,6 +2222,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            height as u16,
             100,
             OverlayState {
                 position: Duration::from_secs(30),
@@ -2148,6 +2266,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            height as u16,
             100,
             OverlayState {
                 position: Duration::from_secs(30),
@@ -2192,6 +2311,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            height as u16,
             100,
             OverlayState {
                 position: Duration::from_secs(30),
@@ -2289,6 +2409,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            height as u16,
             100,
             OverlayState {
                 position: Duration::from_secs(30),
@@ -2326,6 +2447,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            height as u16,
             100,
             OverlayState {
                 position: Duration::from_secs(30),
@@ -2366,6 +2488,7 @@ mod tests {
             &mut frame,
             width,
             height,
+            height as u16,
             100,
             OverlayState {
                 position: Duration::from_secs(30),
@@ -2616,6 +2739,14 @@ mod tests {
             Some(SubtitlePickerAction::SelectOff)
         );
         assert_eq!(
+            subtitle_picker_action(metrics, hit_point(second.left + 1, second.top), true, 2),
+            Some(SubtitlePickerAction::SelectTrack(1))
+        );
+        assert_eq!(
+            subtitle_picker_action(metrics, hit_point(off.left + 1, off.top), true, 2),
+            Some(SubtitlePickerAction::SelectOff)
+        );
+        assert_eq!(
             subtitle_picker_action(metrics, hit_point(metrics.bar_x, metrics.bar_y), true, 2),
             None
         );
@@ -2645,6 +2776,10 @@ mod tests {
             Some(AudioPickerAction::SelectTrack(1))
         );
         assert_eq!(
+            audio_picker_action(metrics, hit_point(second.left + 1, second.top), true, 2),
+            Some(AudioPickerAction::SelectTrack(1))
+        );
+        assert_eq!(
             audio_picker_action(
                 metrics,
                 hit_point(off_space.left + 1, off_space.top + 1),
@@ -2657,6 +2792,92 @@ mod tests {
             audio_picker_action(metrics, hit_point(metrics.bar_x, metrics.bar_y), true, 2),
             None
         );
+    }
+
+    #[test]
+    fn terminal_aligned_picker_entry_centers_select_expected_rows() {
+        let metrics =
+            test_metrics_with_scale_controls_and_terminal_rows(1920, 1080, 24, 100, false, true);
+        let anchor_x = track_picker_anchor_x(metrics);
+        let picker = track_picker_rect(
+            metrics,
+            anchor_x,
+            4,
+            track_picker_max_width(metrics, anchor_x),
+            true,
+        );
+
+        for (index, expected) in [
+            SubtitlePickerAction::SelectTrack(0),
+            SubtitlePickerAction::SelectTrack(1),
+            SubtitlePickerAction::SelectTrack(2),
+            SubtitlePickerAction::SelectTrack(3),
+            SubtitlePickerAction::SelectOff,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row = track_picker_track_rect(metrics, picker, index);
+            let visible_entry_center = row
+                .top
+                .saturating_add(row.bottom.saturating_sub(row.top) / 2);
+
+            assert_eq!(
+                subtitle_picker_action(
+                    metrics,
+                    hit_point(row.left + 1, visible_entry_center),
+                    true,
+                    4,
+                ),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn picker_gap_hitboxes_split_between_visible_lines() {
+        let metrics =
+            test_metrics_with_scale_controls_and_terminal_rows(1920, 1080, 24, 100, false, true);
+        let anchor_x = track_picker_anchor_x(metrics);
+        let picker = track_picker_rect(
+            metrics,
+            anchor_x,
+            2,
+            track_picker_max_width(metrics, anchor_x),
+            true,
+        );
+        let first = track_picker_track_rect(metrics, picker, 0);
+        let second = track_picker_track_rect(metrics, picker, 1);
+        let first_text_top = picker_text_y(metrics, first);
+        let first_text_bottom = first_text_top.saturating_add(metrics.text_height);
+        let second_text_top = picker_text_y(metrics, second);
+        let gap_midpoint = midpoint_toward_lower_line(first_text_bottom, second_text_top);
+        let x = first.left + 1;
+
+        assert_eq!(
+            track_picker_row_hit_rect(metrics, picker, 0, 3).bottom,
+            gap_midpoint
+        );
+        assert_eq!(
+            track_picker_row_hit_rect(metrics, picker, 1, 3).top,
+            gap_midpoint
+        );
+        for y in [
+            first_text_top,
+            first_text_bottom.saturating_sub(1),
+            gap_midpoint.saturating_sub(1),
+        ] {
+            assert_eq!(
+                subtitle_picker_action(metrics, hit_point(x, y), true, 2),
+                Some(SubtitlePickerAction::SelectTrack(0))
+            );
+        }
+        for y in [gap_midpoint, second_text_top] {
+            assert_eq!(
+                subtitle_picker_action(metrics, hit_point(x, y), true, 2),
+                Some(SubtitlePickerAction::SelectTrack(1))
+            );
+        }
     }
 
     #[test]
@@ -2807,7 +3028,10 @@ mod tests {
     }
 
     fn hit_point_with_cell(x: u32, cell: HitboxRect) -> OverlayHitPoint {
-        OverlayHitPoint { x, cell }
+        let y = cell
+            .top
+            .saturating_add(cell.bottom.saturating_sub(cell.top) / 2);
+        OverlayHitPoint { x, y, cell }
     }
 
     fn progress_hit_ratio_at_middle(
@@ -2833,6 +3057,24 @@ mod tests {
         audio_available: bool,
         subtitles_available: bool,
     ) -> OverlayMetrics {
+        test_metrics_with_scale_controls_and_terminal_rows(
+            width,
+            height,
+            height as u16,
+            scale_percent,
+            audio_available,
+            subtitles_available,
+        )
+    }
+
+    fn test_metrics_with_scale_controls_and_terminal_rows(
+        width: u32,
+        height: u32,
+        terminal_rows: u16,
+        scale_percent: u32,
+        audio_available: bool,
+        subtitles_available: bool,
+    ) -> OverlayMetrics {
         let text_size = text_size(width, height, scale_percent);
         let fallback_text_scale = fallback_text_scale(width, height, scale_percent);
         let text_height = 7 * fallback_text_scale;
@@ -2844,6 +3086,7 @@ mod tests {
             text_size,
             fallback_text_scale,
             text_height,
+            terminal_rows,
             time_width,
             audio_available,
             subtitles_available,

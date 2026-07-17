@@ -48,3 +48,17 @@ impl Drop for TerminalGuard {
         let _ = disable_raw_mode();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ENABLE_MOUSE_TRACKING;
+
+    #[test]
+    fn hover_tracking_never_enables_pixel_mode() {
+        assert!(
+            !ENABLE_MOUSE_TRACKING
+                .windows(b"\x1b[?1016h".len())
+                .any(|mode| mode == b"\x1b[?1016h")
+        );
+    }
+}

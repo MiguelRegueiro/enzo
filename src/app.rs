@@ -559,6 +559,7 @@ fn play_media(
         let hit_context = OverlayHitContext {
             width: canvas.width,
             height: canvas.height,
+            terminal_rows: canvas.area.rows,
             scale_percent: canvas.overlay_scale_percent,
             position: scrub_position.unwrap_or(playback_position),
             duration: source.duration,
@@ -680,6 +681,7 @@ fn play_media(
                     let ratio = overlay.progress_ratio_from_x(
                         canvas.width,
                         canvas.height,
+                        canvas.area.rows,
                         canvas.overlay_scale_percent,
                         source.duration,
                         !subtitle_tracks.is_empty(),
@@ -700,6 +702,7 @@ fn play_media(
                     let ratio = overlay.progress_ratio_from_x(
                         canvas.width,
                         canvas.height,
+                        canvas.area.rows,
                         canvas.overlay_scale_percent,
                         source.duration,
                         !subtitle_tracks.is_empty(),
@@ -1048,6 +1051,7 @@ fn draw_frame(
         composited_frame,
         canvas.width,
         canvas.height,
+        canvas.area.rows,
         canvas.overlay_scale_percent,
         overlay_state.clone(),
     );
@@ -1280,6 +1284,7 @@ fn mouse_canvas_position(column: u16, row: u16, canvas: CanvasFrame) -> Option<O
         let y = pixel_to_canvas(u32::from(row), canvas.terminal_height, canvas.height);
         return Some(OverlayHitPoint {
             x,
+            y,
             cell: HitboxRect {
                 left: x,
                 top: y,
@@ -1302,6 +1307,7 @@ fn mouse_canvas_position(column: u16, row: u16, canvas: CanvasFrame) -> Option<O
 
     Some(OverlayHitPoint {
         x,
+        y,
         cell: HitboxRect {
             left: x,
             top: y,
