@@ -138,9 +138,39 @@ fn resize_layout_waits_for_stable_size_and_resets_on_drag() {
 #[test]
 fn paused_resize_restart_uses_displayed_position() {
     assert_eq!(
-        resize_restart_position(Duration::from_secs(30), None, true, None),
+        resize_restart_position(Duration::from_secs(30), None, true, None, None),
         Duration::from_secs(30)
     );
+}
+
+#[test]
+fn resize_during_pending_seek_keeps_seek_target() {
+    assert_eq!(
+        resize_restart_position(
+            Duration::from_secs(30),
+            Some(Duration::from_secs(120)),
+            false,
+            None,
+            Some(Duration::from_secs(75)),
+        ),
+        Duration::from_secs(75)
+    );
+}
+
+#[test]
+fn resize_during_pending_seek_preserves_held_audio_release() {
+    let mut interrupted = pending_seek_for_test(Duration::from_secs(75));
+    interrupted.hold();
+    interrupted.audio_generation = Some(12);
+    interrupted.audio_target = Some(Duration::from_secs(75));
+
+    let resized = resize_pending_seek(34, Duration::from_secs(75), Some(interrupted));
+
+    assert_eq!(resized.video_generation, 34);
+    assert_eq!(resized.video_target, Duration::from_secs(75));
+    assert_eq!(resized.audio_generation, Some(12));
+    assert_eq!(resized.audio_target, Some(Duration::from_secs(75)));
+    assert!(resized.release_requested);
 }
 
 #[test]

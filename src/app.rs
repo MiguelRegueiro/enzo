@@ -642,8 +642,16 @@ fn play_media(
         }
 
         if current_target != target {
-            let resize_position =
-                resize_restart_position(playback_position, source.duration, paused, audio.as_ref());
+            let interrupted_seek = pending_seek.take();
+            let pending_resize_position =
+                scrub_position.or_else(|| interrupted_seek.as_ref().map(|seek| seek.video_target));
+            let resize_position = resize_restart_position(
+                playback_position,
+                source.duration,
+                paused,
+                audio.as_ref(),
+                pending_resize_position,
+            );
 
             decoder.stop()?;
             frame.resize(current_target.frame_len(), 0);
@@ -657,15 +665,11 @@ fn play_media(
                 true,
             )?;
             decoder.set_audio_clock(audio.as_ref());
-            pending_seek = Some(PendingSeek {
-                video_generation: decoder.seek_generation(),
-                video_target: resize_position,
-                video_pts: None,
-                video_frame_displayed: false,
-                audio_generation: None,
-                audio_target: None,
-                release_requested: true,
-            });
+            pending_seek = Some(resize_pending_seek(
+                decoder.seek_generation(),
+                resize_position,
+                interrupted_seek,
+            ));
             playback_position = resize_position;
             resume.set_position(playback_position);
 
@@ -1282,15 +1286,37 @@ fn resize_restart_position(
     duration: Option<Duration>,
     paused: bool,
     audio: Option<&AudioPlayer>,
+    pending_seek_target: Option<Duration>,
 ) -> Duration {
-    let position = if paused {
-        playback_position
-    } else {
-        audio
-            .and_then(AudioPlayer::playback_position)
-            .unwrap_or(playback_position)
-    };
+    let position = pending_seek_target.unwrap_or_else(|| {
+        if paused {
+            playback_position
+        } else {
+            audio
+                .and_then(AudioPlayer::playback_position)
+                .unwrap_or(playback_position)
+        }
+    });
     duration.map_or(position, |duration| position.min(duration))
+}
+
+fn resize_pending_seek(
+    video_generation: i32,
+    video_target: Duration,
+    interrupted_seek: Option<PendingSeek>,
+) -> PendingSeek {
+    let (audio_generation, audio_target) = interrupted_seek
+        .map(|seek| (seek.audio_generation, seek.audio_target))
+        .unwrap_or((None, None));
+    PendingSeek {
+        video_generation,
+        video_target,
+        video_pts: None,
+        video_frame_displayed: false,
+        audio_generation,
+        audio_target,
+        release_requested: true,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
