@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
     ffi::CString,
     os::raw::{c_char, c_int, c_long, c_short, c_uchar, c_uint, c_ulong, c_ushort, c_void},
     path::Path,
     ptr,
 };
 
+const FT_LOAD_DEFAULT: c_int = 0;
 const FT_LOAD_RENDER: c_int = 4;
 
 type FtLibrary = *mut c_void;
@@ -140,6 +142,21 @@ pub(crate) struct FontRenderer {
     library: FtLibrary,
     face: FtFace,
     pixel_size: u32,
+    ascii_glyphs: HashMap<char, CachedGlyph>,
+}
+
+struct CachedGlyph {
+    advance: i32,
+    rasterized: bool,
+    bitmap: Option<CachedBitmap>,
+}
+
+struct CachedBitmap {
+    left: i32,
+    top: i32,
+    width: u32,
+    rows: u32,
+    coverage: Vec<u8>,
 }
 
 impl FontRenderer {
@@ -152,6 +169,7 @@ impl FontRenderer {
         let ok = unsafe { FT_Set_Pixel_Sizes(self.face, 0, pixel_size as c_uint) } == 0;
         if ok {
             self.pixel_size = pixel_size;
+            self.ascii_glyphs.clear();
         }
         ok
     }
@@ -165,8 +183,15 @@ impl FontRenderer {
     pub(crate) fn text_width(&mut self, text: &str) -> u32 {
         let mut width = 0_i32;
         for ch in text.chars() {
-            if self.load_char(ch) {
-                width = width.saturating_add(self.current_advance());
+            let advance = if ch.is_ascii() {
+                self.ascii_advance(ch)
+            } else if self.load_char(ch, FT_LOAD_DEFAULT) {
+                Some(self.current_advance())
+            } else {
+                None
+            };
+            if let Some(advance) = advance {
+                width = width.saturating_add(advance);
             }
         }
         width.max(0) as u32
@@ -188,7 +213,16 @@ impl FontRenderer {
         let mut pen_x = x;
 
         for ch in text.chars() {
-            if !self.load_char(ch) {
+            if ch.is_ascii() {
+                if !self.ensure_ascii_glyph(ch) {
+                    continue;
+                }
+                let glyph = &self.ascii_glyphs[&ch];
+                draw_cached_glyph(frame, width, height, pen_x, baseline, glyph, color, alpha);
+                pen_x = pen_x.saturating_add(glyph.advance);
+                continue;
+            }
+            if !self.load_char(ch, FT_LOAD_RENDER) {
                 continue;
             }
             self.draw_current_glyph(frame, width, height, pen_x, baseline, color, alpha);
@@ -219,6 +253,7 @@ impl FontRenderer {
             library,
             face,
             pixel_size: 0,
+            ascii_glyphs: HashMap::new(),
         };
         if !renderer.set_pixel_size(pixel_size) {
             return None;
@@ -242,8 +277,60 @@ impl FontRenderer {
         Some(read(unsafe { &(*size).metrics }))
     }
 
-    fn load_char(&mut self, ch: char) -> bool {
-        (unsafe { FT_Load_Char(self.face, ch as c_ulong, FT_LOAD_RENDER) }) == 0
+    fn load_char(&mut self, ch: char, flags: c_int) -> bool {
+        (unsafe { FT_Load_Char(self.face, ch as c_ulong, flags) }) == 0
+    }
+
+    fn ascii_advance(&mut self, ch: char) -> Option<i32> {
+        if let Some(glyph) = self.ascii_glyphs.get(&ch) {
+            return Some(glyph.advance);
+        }
+        if !self.load_char(ch, FT_LOAD_DEFAULT) {
+            return None;
+        }
+        let advance = self.current_advance();
+        self.ascii_glyphs.insert(
+            ch,
+            CachedGlyph {
+                advance,
+                rasterized: false,
+                bitmap: None,
+            },
+        );
+        Some(advance)
+    }
+
+    fn ensure_ascii_glyph(&mut self, ch: char) -> bool {
+        if self
+            .ascii_glyphs
+            .get(&ch)
+            .is_some_and(|glyph| glyph.rasterized)
+        {
+            return true;
+        }
+        if !self.load_char(ch, FT_LOAD_RENDER) {
+            return false;
+        }
+        self.ascii_glyphs.insert(ch, self.cache_current_glyph());
+        true
+    }
+
+    fn cache_current_glyph(&self) -> CachedGlyph {
+        let slot = self.glyph_slot();
+        if slot.is_null() {
+            return CachedGlyph {
+                advance: 0,
+                rasterized: true,
+                bitmap: None,
+            };
+        }
+
+        let slot = unsafe { &*slot };
+        CachedGlyph {
+            advance: to_pixels(slot.advance.x) as i32,
+            rasterized: true,
+            bitmap: cache_bitmap(slot),
+        }
     }
 
     fn current_advance(&self) -> i32 {
@@ -311,6 +398,64 @@ impl FontRenderer {
             ptr::null_mut()
         } else {
             unsafe { (*self.face).glyph }
+        }
+    }
+}
+
+fn cache_bitmap(slot: &FtGlyphSlotRec) -> Option<CachedBitmap> {
+    let bitmap = &slot.bitmap;
+    if bitmap.buffer.is_null() || bitmap.width == 0 || bitmap.rows == 0 || bitmap.pitch == 0 {
+        return None;
+    }
+
+    let mut coverage =
+        Vec::with_capacity((bitmap.width as usize).checked_mul(bitmap.rows as usize)?);
+    for row in 0..bitmap.rows {
+        for col in 0..bitmap.width {
+            coverage.push(bitmap_coverage(bitmap, row, col, bitmap.pitch)?);
+        }
+    }
+    Some(CachedBitmap {
+        left: slot.bitmap_left,
+        top: slot.bitmap_top,
+        width: bitmap.width,
+        rows: bitmap.rows,
+        coverage,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_cached_glyph(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    pen_x: i32,
+    baseline: i32,
+    glyph: &CachedGlyph,
+    color: [u8; 3],
+    alpha: u8,
+) {
+    let Some(bitmap) = glyph.bitmap.as_ref() else {
+        return;
+    };
+    let glyph_x = pen_x.saturating_add(bitmap.left);
+    let glyph_y = baseline.saturating_sub(bitmap.top);
+    for row in 0..bitmap.rows {
+        for col in 0..bitmap.width {
+            let coverage = bitmap.coverage[(row * bitmap.width + col) as usize];
+            if coverage == 0 {
+                continue;
+            }
+
+            let px = glyph_x.saturating_add(col as i32);
+            let py = glyph_y.saturating_add(row as i32);
+            if px < 0 || py < 0 || px >= width as i32 || py >= height as i32 {
+                continue;
+            }
+
+            let effective_alpha = ((u16::from(coverage) * u16::from(alpha) + 127) / 255) as u8;
+            let offset = rgb_offset(width, px as u32, py as u32);
+            blend_pixel(frame, offset, color, effective_alpha);
         }
     }
 }
@@ -394,5 +539,50 @@ mod tests {
         );
 
         assert!(frame.iter().any(|&value| value > 0));
+    }
+
+    #[test]
+    fn cached_ascii_render_matches_direct_freetype_render() {
+        let Some(path) = crate::font_system::FontSystem::discover()
+            .resolve_all(crate::font_system::FontRole::Ui)
+            .next()
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(mut direct) = FontRenderer::open_path(&path, 18) else {
+            return;
+        };
+        let Some(mut cached) = FontRenderer::open_path(&path, 18) else {
+            return;
+        };
+        let text = "DISPLAY  Kitty · 513×289 · 24.0 fps";
+        let mut expected = vec![0_u8; 420 * 48 * 3];
+        let mut pen_x = 4_i32;
+        let baseline = 4_i32.saturating_add(direct.ascent());
+        for ch in text.chars() {
+            if !direct.load_char(ch, FT_LOAD_RENDER) {
+                continue;
+            }
+            direct.draw_current_glyph(
+                &mut expected,
+                420,
+                48,
+                pen_x,
+                baseline,
+                [255, 255, 255],
+                244,
+            );
+            pen_x = pen_x.saturating_add(direct.current_advance());
+        }
+
+        let mut first = vec![0_u8; expected.len()];
+        cached.draw_text(&mut first, 420, 48, 4, 4, text, [255, 255, 255], 244);
+        let mut second = vec![0_u8; expected.len()];
+        cached.draw_text(&mut second, 420, 48, 4, 4, text, [255, 255, 255], 244);
+
+        assert_eq!(first, expected);
+        assert_eq!(second, expected);
+        assert_eq!(cached.text_width(text), direct.text_width(text));
     }
 }
