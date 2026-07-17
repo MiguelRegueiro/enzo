@@ -757,8 +757,7 @@ fn draw_audio_control(
 }
 
 fn draw_audio_icon(frame: &mut [u8], width: u32, height: u32, metrics: OverlayMetrics, alpha: u8) {
-    let icon_width = (metrics.control_size * 4 / 5).max(14);
-    let icon_height = (metrics.control_size * 3 / 5).max(10);
+    let (icon_width, icon_height) = track_icon_dimensions(metrics);
     let icon_x = metrics
         .audio_x
         .saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
@@ -965,8 +964,7 @@ fn draw_subtitle_icon(
     metrics: OverlayMetrics,
     alpha: u8,
 ) {
-    let icon_width = (metrics.control_size * 4 / 5).max(14);
-    let icon_height = (metrics.control_size * 3 / 5).max(10);
+    let (icon_width, icon_height) = track_icon_dimensions(metrics);
     let icon_x = metrics
         .subtitle_x
         .saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
@@ -1163,19 +1161,30 @@ fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
     icon_button_rect(metrics.subtitle_x, metrics)
 }
 
+fn track_icon_dimensions(metrics: OverlayMetrics) -> (u32, u32) {
+    (
+        (metrics.control_size * 9 / 10).max(14),
+        (metrics.control_size * 3 / 4).max(12),
+    )
+}
+
 fn icon_button_rect(x: u32, metrics: OverlayMetrics) -> HitboxRect {
-    let icon_width = (metrics.control_size * 4 / 5).max(14);
-    let icon_height = (metrics.control_size * 3 / 5).max(10);
-    let left = x.saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
-    let top = metrics
+    let (icon_width, icon_height) = track_icon_dimensions(metrics);
+    let icon_left = x.saturating_add(metrics.control_size.saturating_sub(icon_width) / 2);
+    let icon_top = metrics
         .control_y
         .saturating_add(metrics.control_size.saturating_sub(icon_height) / 2);
 
     HitboxRect {
-        left,
-        top,
-        right: left.saturating_add(icon_width),
-        bottom: top.saturating_add(icon_height),
+        left: x.min(icon_left),
+        top: metrics.control_y.min(icon_top),
+        right: x
+            .saturating_add(metrics.control_size)
+            .max(icon_left.saturating_add(icon_width)),
+        bottom: metrics
+            .control_y
+            .saturating_add(metrics.control_size)
+            .max(icon_top.saturating_add(icon_height)),
     }
 }
 
@@ -2656,7 +2665,7 @@ mod tests {
 
     #[test]
     fn subtitle_button_hit_test_toggles_picker() {
-        let metrics = test_metrics_with_subtitles(320, 180);
+        let metrics = test_metrics_with_subtitles(640, 360);
         let rect = subtitle_button_rect(metrics);
 
         assert_eq!(
@@ -2672,6 +2681,15 @@ mod tests {
             Some(SubtitlePickerAction::TogglePicker)
         );
         assert_eq!(
+            subtitle_picker_action(
+                metrics,
+                hit_point(metrics.subtitle_x, metrics.control_y),
+                false,
+                2,
+            ),
+            Some(SubtitlePickerAction::TogglePicker)
+        );
+        assert_eq!(
             subtitle_picker_action(metrics, hit_point(rect.right + 1, rect.top), false, 2),
             None
         );
@@ -2679,7 +2697,7 @@ mod tests {
 
     #[test]
     fn audio_button_hit_test_toggles_picker() {
-        let metrics = test_metrics_with_audio_and_subtitles(320, 180);
+        let metrics = test_metrics_with_audio_and_subtitles(640, 360);
         let rect = audio_button_rect(metrics);
 
         assert_eq!(
@@ -2689,6 +2707,15 @@ mod tests {
                     rect.left + (rect.right - rect.left) / 2,
                     rect.top + (rect.bottom - rect.top) / 2,
                 ),
+                false,
+                2,
+            ),
+            Some(AudioPickerAction::TogglePicker)
+        );
+        assert_eq!(
+            audio_picker_action(
+                metrics,
+                hit_point(metrics.audio_x, metrics.control_y),
                 false,
                 2,
             ),
