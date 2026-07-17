@@ -1,10 +1,9 @@
 use std::{
     collections::VecDeque,
-    ffi::{CString, c_char, c_double, c_int, c_uchar},
+    ffi::{CStr, CString, c_char, c_double, c_int, c_uchar},
     io::{self, ErrorKind},
     os::unix::ffi::OsStrExt,
     path::Path,
-    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicI32, AtomicI64, Ordering},
@@ -13,13 +12,19 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use std::process::Command;
+
 use anyhow::{Context, Result, anyhow, bail};
 
 const MAX_PLAYBACK_FPS: f64 = 30.0;
 const ERROR_BUFFER_LEN: usize = 4096;
 const INFO_TEXT_LEN: usize = 64;
+const TRACK_TEXT_LEN: usize = 128;
 const HDR_PQ: c_int = 1;
 const HDR_HLG: c_int = 2;
+const SUBTITLE_TEXT: c_int = 1;
+const SUBTITLE_ASS: c_int = 2;
 const AUDIO_OUTPUT_SUMMARY: &str = "PCM S16 · Stereo · 48 kHz";
 const DISPLAY_RATE_WINDOW: Duration = Duration::from_secs(2);
 const VIDEO_CLOCK_LEAD: Duration = Duration::from_millis(5);
@@ -40,6 +45,43 @@ struct RigVideoInfo {
 }
 
 #[repr(C)]
+struct RigAudioTrackInfo {
+    stream_index: c_int,
+    channels: c_int,
+    sample_rate: c_int,
+    is_default: c_int,
+    codec: [c_char; TRACK_TEXT_LEN],
+    channel_layout: [c_char; TRACK_TEXT_LEN],
+    language: [c_char; TRACK_TEXT_LEN],
+    title: [c_char; TRACK_TEXT_LEN],
+}
+
+#[repr(C)]
+struct RigSubtitleStreamInfo {
+    subtitle_index: c_int,
+    is_default: c_int,
+    is_forced: c_int,
+    codec: [c_char; TRACK_TEXT_LEN],
+    language: [c_char; TRACK_TEXT_LEN],
+    title: [c_char; TRACK_TEXT_LEN],
+}
+
+#[repr(C)]
+struct RigDecodedSubtitleCue {
+    start_micros: i64,
+    end_micros: i64,
+    text_kind: c_int,
+    text: *mut c_char,
+}
+
+#[repr(C)]
+struct RigDecodedSubtitleTrack {
+    cues: *mut RigDecodedSubtitleCue,
+    count: usize,
+    capacity: usize,
+}
+
+#[repr(C)]
 struct RigVideoDecoderOpaque {
     _private: [u8; 0],
 }
@@ -51,6 +93,30 @@ unsafe extern "C" {
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;
+    fn rig_probe_audio_tracks(
+        path: *const c_char,
+        tracks_out: *mut *mut RigAudioTrackInfo,
+        count_out: *mut usize,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn rig_audio_tracks_free(tracks: *mut RigAudioTrackInfo);
+    fn rig_probe_subtitle_streams(
+        path: *const c_char,
+        streams_out: *mut *mut RigSubtitleStreamInfo,
+        count_out: *mut usize,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn rig_subtitle_streams_free(streams: *mut RigSubtitleStreamInfo);
+    fn rig_decode_subtitle_stream(
+        path: *const c_char,
+        subtitle_index: c_int,
+        track_out: *mut RigDecodedSubtitleTrack,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn rig_decoded_subtitle_track_free(track: *mut RigDecodedSubtitleTrack);
     fn rig_video_decoder_open(
         path: *const c_char,
         out_width: c_int,
@@ -199,7 +265,7 @@ impl VideoInfo {
     }
 }
 
-fn fixed_info_text(value: &[c_char; INFO_TEXT_LEN]) -> Option<String> {
+fn fixed_info_text<const N: usize>(value: &[c_char; N]) -> Option<String> {
     let bytes = value
         .iter()
         .copied()
@@ -266,30 +332,75 @@ impl AudioTrack {
 }
 
 pub(crate) fn load_audio_tracks(path: &Path) -> Vec<AudioTrack> {
-    let output = Command::new("ffprobe")
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("a")
-        .arg("-show_entries")
-        .arg("stream=index,codec_name,channels,channel_layout,sample_rate:stream_tags=language,title:stream_disposition=default")
-        .arg("-of")
-        .arg("compact=p=0:nk=0")
-        .arg(path)
-        .output();
-
-    let Ok(output) = output else {
+    let Ok(path) = path_cstring(path) else {
         return Vec::new();
     };
-    if !output.status.success() {
+    let mut tracks = std::ptr::null_mut();
+    let mut count = 0_usize;
+    let mut error = ErrorBuffer::new();
+    let status = unsafe {
+        rig_probe_audio_tracks(
+            path.as_ptr(),
+            &mut tracks,
+            &mut count,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if status < 0 || count == 0 {
         return Vec::new();
     }
 
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
+    let tracks = NativeAudioTrackList { tracks, count };
+    tracks
+        .as_slice()
+        .iter()
         .enumerate()
-        .filter_map(|(fallback, line)| parse_audio_track(line, fallback))
+        .filter_map(|(fallback, track)| {
+            audio_track_from_probe(
+                AudioTrackProbe {
+                    stream_index: usize::try_from(track.stream_index).ok(),
+                    codec: fixed_info_text(&track.codec),
+                    language: fixed_info_text(&track.language)
+                        .as_deref()
+                        .and_then(normalize_audio_language),
+                    title: fixed_info_text(&track.title),
+                    channels: u32::try_from(track.channels)
+                        .ok()
+                        .filter(|value| *value > 0),
+                    channel_layout: fixed_info_text(&track.channel_layout),
+                    sample_rate: u32::try_from(track.sample_rate)
+                        .ok()
+                        .filter(|value| *value > 0),
+                    default: track.is_default != 0,
+                },
+                fallback,
+            )
+        })
         .collect()
+}
+
+struct NativeAudioTrackList {
+    tracks: *mut RigAudioTrackInfo,
+    count: usize,
+}
+
+impl NativeAudioTrackList {
+    fn as_slice(&self) -> &[RigAudioTrackInfo] {
+        if self.tracks.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.tracks, self.count) }
+        }
+    }
+}
+
+impl Drop for NativeAudioTrackList {
+    fn drop(&mut self) {
+        unsafe {
+            rig_audio_tracks_free(self.tracks);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -304,25 +415,7 @@ struct AudioTrackProbe {
     default: bool,
 }
 
-fn parse_audio_track(line: &str, fallback_index: usize) -> Option<AudioTrack> {
-    let mut probe = AudioTrackProbe::default();
-    for field in line.split('|') {
-        let Some((key, value)) = field.split_once('=') else {
-            continue;
-        };
-        match key {
-            "index" => probe.stream_index = value.parse().ok(),
-            "codec_name" => probe.codec = non_empty(value),
-            "channels" => probe.channels = value.parse().ok(),
-            "channel_layout" => probe.channel_layout = non_empty(value),
-            "sample_rate" => probe.sample_rate = value.parse().ok(),
-            "tag:language" => probe.language = normalize_audio_language(value),
-            "tag:title" => probe.title = non_empty(value),
-            "disposition:default" => probe.default = value == "1",
-            _ => {}
-        }
-    }
-
+fn audio_track_from_probe(probe: AudioTrackProbe, fallback_index: usize) -> Option<AudioTrack> {
     let stream_index = probe.stream_index?;
     Some(AudioTrack {
         stream_index,
@@ -332,6 +425,168 @@ fn parse_audio_track(line: &str, fallback_index: usize) -> Option<AudioTrack> {
         channel_layout: probe.channel_layout,
         sample_rate: probe.sample_rate,
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SubtitleStreamInfo {
+    pub(crate) subtitle_index: usize,
+    pub(crate) codec: Option<String>,
+    pub(crate) language: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) default: bool,
+    pub(crate) forced: bool,
+}
+
+pub(crate) fn load_subtitle_streams(path: &Path) -> Vec<SubtitleStreamInfo> {
+    let text = path.as_os_str().to_string_lossy();
+    if text.contains("://") {
+        return Vec::new();
+    }
+    let Ok(path) = path_cstring(path) else {
+        return Vec::new();
+    };
+    let mut streams = std::ptr::null_mut();
+    let mut count = 0_usize;
+    let mut error = ErrorBuffer::new();
+    let status = unsafe {
+        rig_probe_subtitle_streams(
+            path.as_ptr(),
+            &mut streams,
+            &mut count,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if status < 0 || count == 0 {
+        return Vec::new();
+    }
+
+    let streams = NativeSubtitleStreamList { streams, count };
+    streams
+        .as_slice()
+        .iter()
+        .filter_map(|stream| {
+            Some(SubtitleStreamInfo {
+                subtitle_index: usize::try_from(stream.subtitle_index).ok()?,
+                codec: fixed_info_text(&stream.codec),
+                language: fixed_info_text(&stream.language),
+                title: fixed_info_text(&stream.title),
+                default: stream.is_default != 0,
+                forced: stream.is_forced != 0,
+            })
+        })
+        .collect()
+}
+
+struct NativeSubtitleStreamList {
+    streams: *mut RigSubtitleStreamInfo,
+    count: usize,
+}
+
+impl NativeSubtitleStreamList {
+    fn as_slice(&self) -> &[RigSubtitleStreamInfo] {
+        if self.streams.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.streams, self.count) }
+        }
+    }
+}
+
+impl Drop for NativeSubtitleStreamList {
+    fn drop(&mut self) {
+        unsafe {
+            rig_subtitle_streams_free(self.streams);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DecodedSubtitleTextKind {
+    Plain,
+    Ass,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DecodedSubtitleCue {
+    pub(crate) start: Duration,
+    pub(crate) end: Duration,
+    pub(crate) kind: DecodedSubtitleTextKind,
+    pub(crate) text: String,
+}
+
+pub(crate) fn decode_subtitle_stream(
+    path: &Path,
+    subtitle_index: usize,
+) -> Result<Vec<DecodedSubtitleCue>> {
+    let path = path_cstring(path)?;
+    let subtitle_index =
+        c_int::try_from(subtitle_index).context("subtitle stream index is too large")?;
+    let mut track = NativeDecodedSubtitleTrack {
+        track: RigDecodedSubtitleTrack {
+            cues: std::ptr::null_mut(),
+            count: 0,
+            capacity: 0,
+        },
+    };
+    let mut error = ErrorBuffer::new();
+    let status = unsafe {
+        rig_decode_subtitle_stream(
+            path.as_ptr(),
+            subtitle_index,
+            &mut track.track,
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if status < 0 {
+        bail!("{}", error.message("failed to decode subtitle stream"));
+    }
+
+    let cues = track
+        .as_slice()
+        .iter()
+        .filter_map(|cue| {
+            let kind = match cue.text_kind {
+                SUBTITLE_TEXT => DecodedSubtitleTextKind::Plain,
+                SUBTITLE_ASS => DecodedSubtitleTextKind::Ass,
+                _ => return None,
+            };
+            let text = (!cue.text.is_null())
+                .then(|| unsafe { CStr::from_ptr(cue.text).to_string_lossy().into_owned() })?;
+            let start = u64::try_from(cue.start_micros).ok()?;
+            let end = u64::try_from(cue.end_micros).ok()?;
+            (end > start).then_some(DecodedSubtitleCue {
+                start: Duration::from_micros(start),
+                end: Duration::from_micros(end),
+                kind,
+                text,
+            })
+        })
+        .collect();
+    Ok(cues)
+}
+
+struct NativeDecodedSubtitleTrack {
+    track: RigDecodedSubtitleTrack,
+}
+
+impl NativeDecodedSubtitleTrack {
+    fn as_slice(&self) -> &[RigDecodedSubtitleCue] {
+        if self.track.cues.is_null() {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.track.cues, self.track.count) }
+        }
+    }
+}
+
+impl Drop for NativeDecodedSubtitleTrack {
+    fn drop(&mut self) {
+        unsafe {
+            rig_decoded_subtitle_track_free(&mut self.track);
+        }
+    }
 }
 
 fn codec_display_name(codec: &str) -> String {
@@ -1313,9 +1568,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_audio_track_labels_from_ffprobe_output() {
-        let track = parse_audio_track(
-            "index=2|codec_name=aac|channels=6|channel_layout=5.1|sample_rate=48000|tag:language=jpn|tag:title=Japanese 5.1|disposition:default=1",
+    fn formats_probed_audio_track_metadata() {
+        let track = audio_track_from_probe(
+            AudioTrackProbe {
+                stream_index: Some(2),
+                codec: Some("aac".to_string()),
+                language: Some("ja".to_string()),
+                title: Some("Japanese 5.1".to_string()),
+                channels: Some(6),
+                channel_layout: Some("5.1".to_string()),
+                sample_rate: Some(48_000),
+                default: true,
+            },
             0,
         )
         .expect("audio track should parse");
@@ -1330,8 +1594,14 @@ mod tests {
 
     #[test]
     fn audio_track_label_falls_back_to_track_number() {
-        let track = parse_audio_track("index=7|codec_name=|channels=N/A", 2)
-            .expect("audio track should parse");
+        let track = audio_track_from_probe(
+            AudioTrackProbe {
+                stream_index: Some(7),
+                ..AudioTrackProbe::default()
+            },
+            2,
+        )
+        .expect("audio track should parse");
 
         assert_eq!(track.stream_index(), 7);
         assert_eq!(track.label(), "Track 3");
@@ -1339,6 +1609,49 @@ mod tests {
             track.playback_summary(),
             "Output: PCM S16 · Stereo · 48 kHz"
         );
+    }
+
+    #[test]
+    fn native_probe_reads_audio_track_metadata() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let media = std::env::temp_dir().join(format!(
+            "enzo-audio-track-probe-test-{}.mkv",
+            std::process::id()
+        ));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("anullsrc=channel_layout=5.1:sample_rate=48000")
+            .args([
+                "-t",
+                "0.2",
+                "-c:a",
+                "flac",
+                "-metadata:s:a:0",
+                "language=jpn",
+                "-metadata:s:a:0",
+                "title=Japanese 5.1",
+                "-disposition:a:0",
+                "default",
+            ])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let tracks = load_audio_tracks(&media);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].stream_index(), 0);
+        assert_eq!(tracks[0].label(), "Japanese 5.1 — FLAC — Default");
+        assert_eq!(
+            tracks[0].playback_summary(),
+            "Source: FLAC · 5.1 · 48 kHz | Output: PCM S16 · Stereo · 48 kHz"
+        );
+
+        let _ = std::fs::remove_file(media);
     }
 
     #[test]

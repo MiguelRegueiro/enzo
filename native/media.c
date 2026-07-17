@@ -27,9 +27,12 @@
 #define RIG_AUDIO_OUTPUT_CHANNELS 2
 #define RIG_AUDIO_OUTPUT_BYTES_PER_SAMPLE 2
 #define RIG_INFO_TEXT_LEN 64
+#define RIG_TRACK_TEXT_LEN 128
 #define RIG_HDR_NONE 0
 #define RIG_HDR_PQ 1
 #define RIG_HDR_HLG 2
+#define RIG_SUBTITLE_TEXT 1
+#define RIG_SUBTITLE_ASS 2
 
 typedef struct RigVideoInfo {
     uint32_t width;
@@ -43,6 +46,39 @@ typedef struct RigVideoInfo {
     char container[RIG_INFO_TEXT_LEN];
     int hdr;
 } RigVideoInfo;
+
+typedef struct RigAudioTrackInfo {
+    int stream_index;
+    int channels;
+    int sample_rate;
+    int is_default;
+    char codec[RIG_TRACK_TEXT_LEN];
+    char channel_layout[RIG_TRACK_TEXT_LEN];
+    char language[RIG_TRACK_TEXT_LEN];
+    char title[RIG_TRACK_TEXT_LEN];
+} RigAudioTrackInfo;
+
+typedef struct RigSubtitleStreamInfo {
+    int subtitle_index;
+    int is_default;
+    int is_forced;
+    char codec[RIG_TRACK_TEXT_LEN];
+    char language[RIG_TRACK_TEXT_LEN];
+    char title[RIG_TRACK_TEXT_LEN];
+} RigSubtitleStreamInfo;
+
+typedef struct RigDecodedSubtitleCue {
+    int64_t start_micros;
+    int64_t end_micros;
+    int text_kind;
+    char *text;
+} RigDecodedSubtitleCue;
+
+typedef struct RigDecodedSubtitleTrack {
+    RigDecodedSubtitleCue *cues;
+    size_t count;
+    size_t capacity;
+} RigDecodedSubtitleTrack;
 
 typedef struct RigVideoDecoder {
     AVFormatContext *format;
@@ -128,7 +164,7 @@ static int hash_file_chunk(
     while (remaining > 0) {
         size_t request = remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
         size_t read = fread(buffer, 1, request, file);
-        if (read == 0) {
+        if (read != request) {
             if (ferror(file)) {
                 set_error(err, err_len, "failed to read media fingerprint input: %s", strerror(errno));
             } else {
@@ -835,6 +871,483 @@ int rig_probe_video(const char *path, RigVideoInfo *out, char *err, size_t err_l
 
     avformat_close_input(&format);
     return 0;
+}
+
+static int open_stream_probe(
+    const char *path,
+    AVFormatContext **format_out,
+    char *err,
+    size_t err_len
+) {
+    AVFormatContext *format = NULL;
+    int ret = avformat_open_input(&format, path, NULL, NULL);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to open stream metadata input", ret);
+        return -1;
+    }
+    ret = avformat_find_stream_info(format, NULL);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to read stream metadata", ret);
+        avformat_close_input(&format);
+        return -1;
+    }
+    *format_out = format;
+    return 0;
+}
+
+static const char *stream_metadata(const AVStream *stream, const char *key) {
+    const AVDictionaryEntry *entry = av_dict_get(stream->metadata, key, NULL, 0);
+    return entry == NULL ? NULL : entry->value;
+}
+
+static void copy_track_text(char out[RIG_TRACK_TEXT_LEN], const char *text) {
+    if (text != NULL) {
+        snprintf(out, RIG_TRACK_TEXT_LEN, "%s", text);
+    }
+}
+
+void rig_audio_tracks_free(RigAudioTrackInfo *tracks) {
+    av_free(tracks);
+}
+
+int rig_probe_audio_tracks(
+    const char *path,
+    RigAudioTrackInfo **tracks_out,
+    size_t *count_out,
+    char *err,
+    size_t err_len
+) {
+    suppress_ffmpeg_logs();
+    if (path == NULL || tracks_out == NULL || count_out == NULL) {
+        set_error(err, err_len, "invalid audio track probe arguments");
+        return -1;
+    }
+    *tracks_out = NULL;
+    *count_out = 0;
+
+    AVFormatContext *format = NULL;
+    if (open_stream_probe(path, &format, err, err_len) < 0) {
+        return -1;
+    }
+
+    size_t count = 0;
+    for (unsigned int index = 0; index < format->nb_streams; index++) {
+        if (format->streams[index]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            count++;
+        }
+    }
+    if (count == 0) {
+        avformat_close_input(&format);
+        return 0;
+    }
+
+    RigAudioTrackInfo *tracks = av_calloc(count, sizeof(*tracks));
+    if (tracks == NULL) {
+        set_error(err, err_len, "failed to allocate audio track metadata");
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    size_t track_index = 0;
+    for (unsigned int index = 0; index < format->nb_streams; index++) {
+        const AVStream *stream = format->streams[index];
+        const AVCodecParameters *parameters = stream->codecpar;
+        if (parameters->codec_type != AVMEDIA_TYPE_AUDIO) {
+            continue;
+        }
+
+        RigAudioTrackInfo *track = &tracks[track_index++];
+        track->stream_index = (int)index;
+        track->channels = parameters->ch_layout.nb_channels;
+        track->sample_rate = parameters->sample_rate;
+        track->is_default = (stream->disposition & AV_DISPOSITION_DEFAULT) != 0;
+        copy_track_text(track->codec, avcodec_get_name(parameters->codec_id));
+        if (parameters->ch_layout.nb_channels > 0) {
+            av_channel_layout_describe(
+                &parameters->ch_layout,
+                track->channel_layout,
+                sizeof(track->channel_layout)
+            );
+        }
+        copy_track_text(track->language, stream_metadata(stream, "language"));
+        copy_track_text(track->title, stream_metadata(stream, "title"));
+    }
+
+    avformat_close_input(&format);
+    *tracks_out = tracks;
+    *count_out = count;
+    return 0;
+}
+
+void rig_subtitle_streams_free(RigSubtitleStreamInfo *streams) {
+    av_free(streams);
+}
+
+int rig_probe_subtitle_streams(
+    const char *path,
+    RigSubtitleStreamInfo **streams_out,
+    size_t *count_out,
+    char *err,
+    size_t err_len
+) {
+    suppress_ffmpeg_logs();
+    if (path == NULL || streams_out == NULL || count_out == NULL) {
+        set_error(err, err_len, "invalid subtitle stream probe arguments");
+        return -1;
+    }
+    *streams_out = NULL;
+    *count_out = 0;
+
+    AVFormatContext *format = NULL;
+    if (open_stream_probe(path, &format, err, err_len) < 0) {
+        return -1;
+    }
+
+    size_t count = 0;
+    for (unsigned int index = 0; index < format->nb_streams; index++) {
+        if (format->streams[index]->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+            count++;
+        }
+    }
+    if (count == 0) {
+        avformat_close_input(&format);
+        return 0;
+    }
+
+    RigSubtitleStreamInfo *streams = av_calloc(count, sizeof(*streams));
+    if (streams == NULL) {
+        set_error(err, err_len, "failed to allocate subtitle stream metadata");
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    size_t subtitle_index = 0;
+    for (unsigned int index = 0; index < format->nb_streams; index++) {
+        const AVStream *stream = format->streams[index];
+        const AVCodecParameters *parameters = stream->codecpar;
+        if (parameters->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+            continue;
+        }
+
+        RigSubtitleStreamInfo *subtitle = &streams[subtitle_index];
+        subtitle->subtitle_index = (int)subtitle_index;
+        subtitle->is_default = (stream->disposition & AV_DISPOSITION_DEFAULT) != 0;
+        subtitle->is_forced = (stream->disposition & AV_DISPOSITION_FORCED) != 0;
+        copy_track_text(subtitle->codec, avcodec_get_name(parameters->codec_id));
+        copy_track_text(subtitle->language, stream_metadata(stream, "language"));
+        copy_track_text(subtitle->title, stream_metadata(stream, "title"));
+        subtitle_index++;
+    }
+
+    avformat_close_input(&format);
+    *streams_out = streams;
+    *count_out = count;
+    return 0;
+}
+
+void rig_decoded_subtitle_track_free(RigDecodedSubtitleTrack *track) {
+    if (track == NULL) {
+        return;
+    }
+    for (size_t index = 0; index < track->count; index++) {
+        av_free(track->cues[index].text);
+    }
+    av_free(track->cues);
+    track->cues = NULL;
+    track->count = 0;
+    track->capacity = 0;
+}
+
+static int append_decoded_subtitle_cue(
+    RigDecodedSubtitleTrack *track,
+    int64_t start_micros,
+    int64_t end_micros,
+    int text_kind,
+    const char *text,
+    char *err,
+    size_t err_len
+) {
+    if (text == NULL || text[0] == '\0' || end_micros <= start_micros) {
+        return 0;
+    }
+    char *text_copy = av_strdup(text);
+    if (text_copy == NULL) {
+        set_error(err, err_len, "failed to allocate subtitle cue text");
+        return -1;
+    }
+    if (track->count == track->capacity) {
+        size_t capacity = track->capacity == 0 ? 64 : track->capacity * 2;
+        if (capacity < track->capacity ||
+            capacity > SIZE_MAX / sizeof(*track->cues)) {
+            av_free(text_copy);
+            set_error(err, err_len, "subtitle cue count is too large");
+            return -1;
+        }
+        RigDecodedSubtitleCue *cues =
+            av_realloc_array(track->cues, capacity, sizeof(*track->cues));
+        if (cues == NULL) {
+            av_free(text_copy);
+            set_error(err, err_len, "failed to allocate subtitle cues");
+            return -1;
+        }
+        track->cues = cues;
+        track->capacity = capacity;
+    }
+
+    track->cues[track->count] = (RigDecodedSubtitleCue) {
+        .start_micros = start_micros,
+        .end_micros = end_micros,
+        .text_kind = text_kind,
+        .text = text_copy,
+    };
+    track->count++;
+    return 0;
+}
+
+static int append_decoded_subtitle(
+    RigDecodedSubtitleTrack *track,
+    const AVSubtitle *subtitle,
+    const AVPacket *packet,
+    const AVStream *stream,
+    int64_t timestamp_origin,
+    char *err,
+    size_t err_len
+) {
+    int64_t origin_micros =
+        av_rescale_q(timestamp_origin, stream->time_base, AV_TIME_BASE_Q);
+    int64_t base_micros = AV_NOPTS_VALUE;
+    if (subtitle->pts != AV_NOPTS_VALUE) {
+        base_micros = subtitle->pts - origin_micros;
+    } else if (packet->pts != AV_NOPTS_VALUE) {
+        base_micros =
+            av_rescale_q(packet->pts - timestamp_origin, stream->time_base, AV_TIME_BASE_Q);
+    }
+    if (base_micros == AV_NOPTS_VALUE) {
+        return 0;
+    }
+
+    int64_t start_micros =
+        base_micros + (int64_t)subtitle->start_display_time * 1000;
+    int64_t end_micros = start_micros;
+    if (subtitle->end_display_time != UINT32_MAX) {
+        end_micros = base_micros + (int64_t)subtitle->end_display_time * 1000;
+    }
+    if (end_micros <= start_micros && packet->duration > 0) {
+        end_micros =
+            base_micros + av_rescale_q(packet->duration, stream->time_base, AV_TIME_BASE_Q);
+    }
+    start_micros = start_micros < 0 ? 0 : start_micros;
+    end_micros = end_micros < 0 ? 0 : end_micros;
+
+    for (unsigned int index = 0; index < subtitle->num_rects; index++) {
+        const AVSubtitleRect *rect = subtitle->rects[index];
+        if (rect == NULL) {
+            continue;
+        }
+        const char *text = NULL;
+        int text_kind = RIG_SUBTITLE_TEXT;
+        if (rect->type == SUBTITLE_ASS) {
+            text = rect->ass;
+            text_kind = RIG_SUBTITLE_ASS;
+        } else if (rect->type == SUBTITLE_TEXT) {
+            text = rect->text;
+        } else if (rect->text != NULL) {
+            text = rect->text;
+        } else if (rect->ass != NULL) {
+            text = rect->ass;
+            text_kind = RIG_SUBTITLE_ASS;
+        }
+        if (append_decoded_subtitle_cue(
+                track,
+                start_micros,
+                end_micros,
+                text_kind,
+                text,
+                err,
+                err_len
+            ) < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int decode_subtitle_packet(
+    AVCodecContext *codec,
+    const AVStream *stream,
+    int64_t timestamp_origin,
+    const AVPacket *packet,
+    RigDecodedSubtitleTrack *track,
+    int *got_subtitle_out,
+    char *err,
+    size_t err_len
+) {
+    AVSubtitle subtitle = {0};
+    int got_subtitle = 0;
+    int ret = avcodec_decode_subtitle2(codec, &subtitle, &got_subtitle, packet);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to decode subtitle packet", ret);
+        return -1;
+    }
+    if (got_subtitle_out != NULL) {
+        *got_subtitle_out = got_subtitle;
+    }
+    int status = 0;
+    if (got_subtitle) {
+        status = append_decoded_subtitle(
+            track,
+            &subtitle,
+            packet,
+            stream,
+            timestamp_origin,
+            err,
+            err_len
+        );
+        avsubtitle_free(&subtitle);
+    }
+    return status;
+}
+
+int rig_decode_subtitle_stream(
+    const char *path,
+    int requested_subtitle_index,
+    RigDecodedSubtitleTrack *track_out,
+    char *err,
+    size_t err_len
+) {
+    suppress_ffmpeg_logs();
+    if (path == NULL || requested_subtitle_index < 0 || track_out == NULL) {
+        set_error(err, err_len, "invalid subtitle decode arguments");
+        return -1;
+    }
+    track_out->cues = NULL;
+    track_out->count = 0;
+    track_out->capacity = 0;
+
+    AVFormatContext *format = NULL;
+    if (open_stream_probe(path, &format, err, err_len) < 0) {
+        return -1;
+    }
+
+    int stream_index = -1;
+    int subtitle_index = 0;
+    for (unsigned int index = 0; index < format->nb_streams; index++) {
+        if (format->streams[index]->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
+            continue;
+        }
+        if (subtitle_index == requested_subtitle_index) {
+            stream_index = (int)index;
+            break;
+        }
+        subtitle_index++;
+    }
+    if (stream_index < 0) {
+        set_error(err, err_len, "selected subtitle stream is not available");
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    AVStream *stream = format->streams[stream_index];
+    const AVCodecDescriptor *descriptor =
+        avcodec_descriptor_get(stream->codecpar->codec_id);
+    if (descriptor == NULL || (descriptor->props & AV_CODEC_PROP_TEXT_SUB) == 0) {
+        set_error(err, err_len, "selected subtitle stream is not text based");
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (codec == NULL) {
+        set_error(err, err_len, "failed to find subtitle decoder");
+        avformat_close_input(&format);
+        return -1;
+    }
+    AVCodecContext *codec_context = avcodec_alloc_context3(codec);
+    if (codec_context == NULL) {
+        set_error(err, err_len, "failed to allocate subtitle decoder");
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    int ret = avcodec_parameters_to_context(codec_context, stream->codecpar);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to copy subtitle codec parameters", ret);
+        avcodec_free_context(&codec_context);
+        avformat_close_input(&format);
+        return -1;
+    }
+    codec_context->pkt_timebase = stream->time_base;
+    ret = avcodec_open2(codec_context, codec, NULL);
+    if (ret < 0) {
+        set_ffmpeg_error(err, err_len, "failed to open subtitle decoder", ret);
+        avcodec_free_context(&codec_context);
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    AVPacket *packet = av_packet_alloc();
+    if (packet == NULL) {
+        set_error(err, err_len, "failed to allocate subtitle packet");
+        avcodec_free_context(&codec_context);
+        avformat_close_input(&format);
+        return -1;
+    }
+
+    int status = 0;
+    int64_t timestamp_origin = stream_timestamp_origin(format, stream);
+    while ((ret = av_read_frame(format, packet)) >= 0) {
+        if (packet->stream_index == stream_index &&
+            decode_subtitle_packet(
+                codec_context,
+                stream,
+                timestamp_origin,
+                packet,
+                track_out,
+                NULL,
+                err,
+                err_len
+            ) < 0) {
+            status = -1;
+            av_packet_unref(packet);
+            break;
+        }
+        av_packet_unref(packet);
+    }
+    if (status == 0 && ret != AVERROR_EOF) {
+        set_ffmpeg_error(err, err_len, "failed to read subtitle packets", ret);
+        status = -1;
+    }
+
+    if (status == 0 && (codec->capabilities & AV_CODEC_CAP_DELAY) != 0) {
+        AVPacket flush_packet = {
+            .pts = AV_NOPTS_VALUE,
+            .dts = AV_NOPTS_VALUE,
+        };
+        int got_subtitle = 0;
+        do {
+            if (decode_subtitle_packet(
+                    codec_context,
+                    stream,
+                    timestamp_origin,
+                    &flush_packet,
+                    track_out,
+                    &got_subtitle,
+                    err,
+                    err_len
+                ) < 0) {
+                status = -1;
+                break;
+            }
+        } while (got_subtitle);
+    }
+
+    av_packet_free(&packet);
+    avcodec_free_context(&codec_context);
+    avformat_close_input(&format);
+    if (status < 0) {
+        rig_decoded_subtitle_track_free(track_out);
+    }
+    return status;
 }
 
 int rig_video_decoder_open(

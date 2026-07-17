@@ -5,13 +5,22 @@ Video player for Kitty-compatible terminals.
 Enzo renders video frames with the Kitty graphics protocol and plays audio through PulseAudio.
 It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resampling.
 
-## Requirements
+## Runtime requirements
 
 - Kitty or another terminal that supports the Kitty graphics protocol
-- FFmpeg runtime/development libraries: `libavformat`, `libavcodec`, `libavutil`, `libswscale`, `libswresample`
-- PulseAudio runtime/development libraries: `libpulse`
-- FreeType runtime/development libraries: `libfreetype`
+- FFmpeg shared libraries: `libavformat`, `libavcodec`, `libavutil`, `libswscale`, `libswresample`
+- A PulseAudio-compatible audio server and `libpulse`
+- The FreeType runtime library
+
+## Build requirements
+
+- Rust 1.96 or newer and Cargo
+- Development headers for FFmpeg, PulseAudio, and FreeType
 - `cc` and `ar` to build the small native media shim
+
+The `ffmpeg` and `ffprobe` command-line programs are not required at runtime.
+When `ffmpeg` is available during development, it is used only to generate
+media fixtures for integration tests.
 
 ## Run
 
