@@ -393,6 +393,23 @@ fn render_overlay_rgb(
         .map(|font| font.line_height())
         .unwrap_or(7 * fallback_text_scale);
 
+    let title_visible = state.visible && state.media_title.is_some();
+    if state.visible
+        && let Some(title) = state.media_title
+    {
+        draw_top_message(
+            font.as_deref_mut(),
+            frame,
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            title,
+            false,
+        );
+    }
+
     if let Some(message) = state.status_message {
         draw_top_message(
             font.as_deref_mut(),
@@ -403,26 +420,12 @@ fn render_overlay_rgb(
             fallback_text_scale,
             text_height,
             message,
-            HorizontalAnchor::Right,
+            title_visible,
         );
     }
 
     if !state.visible {
         return;
-    }
-
-    if let Some(title) = state.media_title {
-        draw_top_message(
-            font.as_deref_mut(),
-            frame,
-            width,
-            height,
-            text_size,
-            fallback_text_scale,
-            text_height,
-            title,
-            HorizontalAnchor::Left,
-        );
     }
 
     let time_width = time_column_width(font.as_deref_mut(), state.duration, fallback_text_scale);
@@ -559,12 +562,6 @@ fn render_overlay_rgb(
     );
 }
 
-#[derive(Clone, Copy)]
-enum HorizontalAnchor {
-    Left,
-    Right,
-}
-
 #[allow(clippy::too_many_arguments)]
 fn draw_top_message(
     mut font: Option<&mut FontRenderer>,
@@ -575,12 +572,18 @@ fn draw_top_message(
     fallback_scale: u32,
     text_height: u32,
     text: &str,
-    anchor: HorizontalAnchor,
+    stacked: bool,
 ) {
     let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
-    let inset_y = top_message_y(height, text_size);
+    let base_y = top_message_y(height, text_size);
     let pad_x = (horizontal_padding_for_text(text_size) / 2).max(6);
     let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
+    let natural_panel_height = text_height.saturating_add(pad_y.saturating_mul(2));
+    let inset_y = if stacked {
+        stacked_top_message_y(height, text_size, text_height)
+    } else {
+        base_y
+    };
     let text_width = font
         .as_mut()
         .map(|font| font.text_width(text))
@@ -588,16 +591,8 @@ fn draw_top_message(
     let panel_width = text_width
         .saturating_add(pad_x.saturating_mul(2))
         .min(width.saturating_sub(inset_x).max(1));
-    let panel_height = text_height
-        .saturating_add(pad_y.saturating_mul(2))
-        .min(height.saturating_sub(inset_y).max(1));
-    let panel_x = match anchor {
-        HorizontalAnchor::Left => inset_x,
-        HorizontalAnchor::Right => width
-            .saturating_sub(inset_x)
-            .saturating_sub(panel_width)
-            .max(inset_x.min(width.saturating_sub(1))),
-    };
+    let panel_height = natural_panel_height.min(height.saturating_sub(inset_y).max(1));
+    let panel_x = inset_x;
     let panel_radius = rounded_radius(panel_width, panel_height, text_size / 3);
 
     fill_acrylic_rounded_rect(
@@ -631,6 +626,14 @@ fn draw_top_message(
 
 fn top_message_y(height: u32, text_size: u32) -> u32 {
     outer_padding_for_text(text_size).min(height.saturating_sub(1))
+}
+
+fn stacked_top_message_y(height: u32, text_size: u32, text_height: u32) -> u32 {
+    let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
+    top_message_y(height, text_size)
+        .saturating_add(text_height)
+        .saturating_add(pad_y.saturating_mul(3))
+        .min(height.saturating_sub(1))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3027,6 +3030,22 @@ mod tests {
         assert_eq!(
             top_message_y(1200, high_density.text_size),
             bottom_panel_gap(1200, high_density)
+        );
+    }
+
+    #[test]
+    fn stacked_status_starts_below_title_panel() {
+        let height = 360;
+        let text_size = 18;
+        let text_height = 14;
+        let pad_y = (vertical_padding_for_text(text_size) / 2).max(4);
+        let title_bottom = top_message_y(height, text_size)
+            .saturating_add(text_height)
+            .saturating_add(pad_y.saturating_mul(2));
+
+        assert_eq!(
+            stacked_top_message_y(height, text_size, text_height),
+            title_bottom + pad_y
         );
     }
 
