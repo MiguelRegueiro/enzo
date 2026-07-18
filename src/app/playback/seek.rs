@@ -126,6 +126,31 @@ pub(super) fn seek_playback(
     })
 }
 
+pub(super) fn preview_playback(
+    decoder: &mut VideoDecoder,
+    audio: Option<&AudioPlayer>,
+    pending: &mut Option<PendingSeek>,
+    position: Duration,
+) {
+    if let Some(audio) = audio {
+        audio.set_paused(true);
+    }
+    if let Some(seek) = pending.as_mut() {
+        seek.retarget_video(decoder, position, false);
+        seek.hold();
+        return;
+    }
+    *pending = Some(PendingSeek {
+        video_generation: decoder.preview_seek(position),
+        video_target: position,
+        video_pts: None,
+        video_frame_displayed: false,
+        audio_generation: None,
+        audio_target: None,
+        release_requested: false,
+    });
+}
+
 pub(super) fn progress_pending_seek(
     pending: &mut Option<PendingSeek>,
     decoder: &VideoDecoder,

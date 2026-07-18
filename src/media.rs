@@ -818,7 +818,15 @@ impl VideoDecoder {
     }
 
     pub(crate) fn stop(&mut self) -> Result<()> {
-        self.stop.store(1, Ordering::Relaxed);
+        self.request_stop();
+        self.join()
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(1, Ordering::Release);
+    }
+
+    pub(crate) fn join(&mut self) -> Result<()> {
         if let Some(handle) = self.frame_thread.take() {
             let _ = handle.join();
         }
@@ -1294,13 +1302,22 @@ impl AudioPlayer {
     }
 
     pub(crate) fn stop(&mut self) -> Result<()> {
-        self.stop.store(1, Ordering::Relaxed);
+        self.request_stop();
+        self.join()
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(1, Ordering::Release);
+    }
+
+    pub(crate) fn join(&mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
             self.finished = true;
             handle
                 .join()
                 .unwrap_or_else(|_| Err(anyhow!("audio playback thread panicked")))?;
         }
+        self.finished = true;
         Ok(())
     }
 
@@ -1902,7 +1919,14 @@ mod tests {
 
         player.release_seek(generation);
         thread::sleep(Duration::from_millis(25));
+        player.seek_held(Duration::from_millis(1_250));
+        thread::sleep(Duration::from_millis(2));
+        let stop_started = Instant::now();
         player.stop().expect("audio player should stop");
+        assert!(
+            stop_started.elapsed() < Duration::from_secs(1),
+            "stopping during a held audio seek should be prompt"
+        );
 
         let mut tail =
             AudioPlayer::spawn_held_at(&media, None, Duration::from_millis(1_990), false, true)

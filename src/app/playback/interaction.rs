@@ -19,7 +19,10 @@ use super::{
     engine::PlaybackEngine,
     pointer::{canvas_position as mouse_canvas_position, canvas_x as mouse_canvas_x},
     resume_selection::{sync_resume_audio, sync_resume_subtitle},
-    seek::{SeekCoordinator, is_end_seek, seek_from_progress_ratio, seek_playback, seek_position},
+    seek::{
+        SeekCoordinator, is_end_seek, preview_playback, seek_from_progress_ratio, seek_playback,
+        seek_position,
+    },
     session::PlaybackOutcome,
     subtitles::{DroppedSubtitleSelection, SubtitleCatalog},
     tracks::AudioCatalog,
@@ -29,6 +32,28 @@ use super::{
 
 const KEYBOARD_SEEK_COMMIT_AFTER: Duration = Duration::from_millis(120);
 const MOUSE_SCRUB_COMMIT_AFTER: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy)]
+struct PointerSeekRequest {
+    position: Duration,
+    exact: bool,
+}
+
+impl PointerSeekRequest {
+    fn preview(position: Duration) -> Self {
+        Self {
+            position,
+            exact: false,
+        }
+    }
+
+    fn exact(position: Duration) -> Self {
+        Self {
+            position,
+            exact: true,
+        }
+    }
+}
 
 pub(super) struct InteractionContext<'a, W: Write> {
     font_system: &'a FontSystem,
@@ -223,9 +248,9 @@ impl<W: Write> InteractionContext<'_, W> {
             self.engine.next_frame_at = Instant::now();
         }
 
-        let mut pointer_seek_target = None;
+        let mut pointer_seek = None;
         for mouse in mouse_events {
-            let seek_target = match mouse {
+            let seek = match mouse {
                 PlaybackMouse::Down { column, row } => {
                     let point = mouse_canvas_position(column, row, self.view.canvas);
                     if let Some(action) = point.and_then(|point| {
@@ -350,7 +375,7 @@ impl<W: Write> InteractionContext<'_, W> {
                         .is_some_and(|deadline| input_at >= deadline)
                     {
                         self.seeking.mouse_commit_at = Some(input_at + MOUSE_SCRUB_COMMIT_AFTER);
-                        self.seeking.scrub_position
+                        self.seeking.scrub_position.map(PointerSeekRequest::preview)
                     } else {
                         None
                     }
@@ -361,7 +386,7 @@ impl<W: Write> InteractionContext<'_, W> {
                     let target = seek_from_progress_ratio(ratio, self.source.duration);
                     self.seeking.scrub_position = None;
                     self.seeking.mouse_commit_at = None;
-                    target
+                    target.map(PointerSeekRequest::exact)
                 }
                 PlaybackMouse::Up { .. } => {
                     self.seeking.scrub_position = None;
@@ -371,31 +396,40 @@ impl<W: Write> InteractionContext<'_, W> {
                 _ => None,
             };
 
-            if let Some(seek_target) = seek_target {
-                pointer_seek_target = Some(seek_target);
+            if let Some(seek) = seek {
+                pointer_seek = Some(seek);
             }
         }
 
-        let Some(seek_target) = pointer_seek_target else {
+        let Some(seek) = pointer_seek else {
             return Ok(None);
         };
         self.seeking.keyboard_commit_at = None;
-        if is_end_seek(seek_target, self.source.duration) {
+        if is_end_seek(seek.position, self.source.duration) {
             return Ok(Some(PlaybackOutcome::Completed));
         }
-        self.seeking.pending = Some(seek_playback(
-            self.path,
-            self.source.has_audio,
-            &mut self.engine.video,
-            &mut self.engine.audio,
-            &mut self.engine.audio_done,
-            self.audio.choice(),
-            seek_target,
-            true,
-            self.engine.paused,
-            self.engine.muted,
-        )?);
-        self.engine.position = seek_target;
+        if seek.exact {
+            self.seeking.pending = Some(seek_playback(
+                self.path,
+                self.source.has_audio,
+                &mut self.engine.video,
+                &mut self.engine.audio,
+                &mut self.engine.audio_done,
+                self.audio.choice(),
+                seek.position,
+                true,
+                self.engine.paused,
+                self.engine.muted,
+            )?);
+        } else {
+            preview_playback(
+                &mut self.engine.video,
+                self.engine.audio.as_ref(),
+                &mut self.seeking.pending,
+                seek.position,
+            );
+        }
+        self.engine.position = seek.position;
         self.resume.set_position(self.engine.position);
         self.engine.video_ended = false;
         self.engine.next_frame_at = Instant::now();

@@ -242,17 +242,21 @@ static int audio_converter_configure(
 static int seek_audio_decoder(
     AVFormatContext *format,
     AVCodecContext *codec,
-    int stream_index,
     int64_t micros,
     char *err,
     size_t err_len
 ) {
-    AVStream *stream = format->streams[stream_index];
-    AVRational micros_base = {1, 1000000};
-    int64_t timestamp =
-        av_rescale_q(micros, micros_base, stream->time_base) +
-        enzo_stream_timestamp_origin(format, stream);
-    int ret = av_seek_frame(format, stream_index, timestamp, AVSEEK_FLAG_BACKWARD);
+    int64_t timestamp = micros;
+    if (format->start_time != AV_NOPTS_VALUE) {
+        timestamp += format->start_time;
+    }
+    /*
+     * Seek on the container timeline so formats such as Matroska can use
+     * their video cues. Seeking by audio stream can fall back to a very early
+     * byte position when the file has no audio cues, forcing a huge scan.
+     * Decoded audio is still trimmed against the exact target below.
+     */
+    int ret = av_seek_frame(format, -1, timestamp, AVSEEK_FLAG_BACKWARD);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to seek audio", ret);
         return -1;
@@ -267,9 +271,9 @@ static int sync_audio_seek(
     AVFormatContext *format,
     AVCodecContext *codec,
     EnzoAudioConverter *converter,
-    int stream_index,
     AVPacket *packet,
     AVFrame *frame,
+    const int *stop_flag,
     const int *seek_generation,
     const int64_t *seek_micros,
     int *seen_seek_generation,
@@ -287,8 +291,18 @@ static int sync_audio_seek(
         return 0;
     }
 
-    if (enzo_pulse_output_prepare_seek(pulse, corked, err, err_len) < 0) {
+    int prepare_status = enzo_pulse_output_prepare_seek(
+        pulse,
+        stop_flag,
+        corked,
+        err,
+        err_len
+    );
+    if (prepare_status < 0) {
         return -1;
+    }
+    if (prepare_status > 0) {
+        return 2;
     }
 
     if (packet != NULL) {
@@ -297,7 +311,7 @@ static int sync_audio_seek(
     if (frame != NULL) {
         av_frame_unref(frame);
     }
-    if (seek_audio_decoder(format, codec, stream_index, micros, err, err_len) < 0) {
+    if (seek_audio_decoder(format, codec, micros, err, err_len) < 0) {
         return -1;
     }
     audio_converter_reset(converter);
@@ -603,10 +617,16 @@ int enzo_play_audio(
     audio_converter_init(&converter);
 
     EnzoPulseOutput pulse;
-    if (enzo_pulse_output_open(&pulse, err, err_len) < 0) {
+    int pulse_status = enzo_pulse_output_open(
+        &pulse,
+        stop_flag,
+        err,
+        err_len
+    );
+    if (pulse_status != 0) {
         avcodec_free_context(&codec);
         avformat_close_input(&format);
-        return -1;
+        return pulse_status > 0 ? 0 : -1;
     }
 
     AVPacket *packet = av_packet_alloc();
@@ -635,9 +655,9 @@ decode_audio:
             format,
             codec,
             &converter,
-            stream_index,
             packet,
             frame,
+            stop_flag,
             seek_generation,
             seek_micros,
             &seen_seek_generation,
@@ -652,6 +672,9 @@ decode_audio:
         );
         if (seek_status < 0) {
             failed = 1;
+            break;
+        }
+        if (seek_status == 2) {
             break;
         }
         if (seek_status > 0) {
@@ -695,9 +718,9 @@ decode_audio:
                 format,
                 codec,
                 &converter,
-                stream_index,
                 packet,
                 frame,
+                stop_flag,
                 seek_generation,
                 seek_micros,
                 &seen_seek_generation,
@@ -712,6 +735,10 @@ decode_audio:
             );
             if (seek_status < 0) {
                 failed = 1;
+                av_frame_unref(frame);
+                break;
+            }
+            if (seek_status == 2) {
                 av_frame_unref(frame);
                 break;
             }
@@ -848,9 +875,16 @@ decode_audio:
         if (seek_after_eof) {
             goto decode_audio;
         }
-        if (!failed && !enzo_stop_requested(stop_flag) &&
-            enzo_pulse_output_drain(&pulse, err, err_len) < 0) {
-            failed = 1;
+        if (!failed && !enzo_stop_requested(stop_flag)) {
+            int drain_status = enzo_pulse_output_drain(
+                &pulse,
+                stop_flag,
+                err,
+                err_len
+            );
+            if (drain_status < 0) {
+                failed = 1;
+            }
         }
     }
 

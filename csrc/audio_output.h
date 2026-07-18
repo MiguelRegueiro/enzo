@@ -27,6 +27,7 @@ typedef struct EnzoAudioClock {
 
 int enzo_pulse_output_open(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     char *err,
     size_t err_len
 );
@@ -34,6 +35,7 @@ void enzo_pulse_output_close(EnzoPulseOutput *output);
 
 int enzo_pulse_output_prepare_seek(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     int *corked,
     char *err,
     size_t err_len
@@ -86,6 +88,7 @@ int enzo_pulse_output_write(
 
 int enzo_pulse_output_drain(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     char *err,
     size_t err_len
 );

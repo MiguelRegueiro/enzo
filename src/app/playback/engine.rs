@@ -142,8 +142,12 @@ impl PlaybackEngine {
     }
 
     pub(super) fn stop(&mut self) -> Result<()> {
-        let video_result = self.video.stop();
-        let audio_result = self.audio.as_mut().map(AudioPlayer::stop).transpose();
+        self.video.request_stop();
+        if let Some(audio) = self.audio.as_ref() {
+            audio.request_stop();
+        }
+        let video_result = self.video.join();
+        let audio_result = self.audio.as_mut().map(AudioPlayer::join).transpose();
         video_result?;
         audio_result?;
         Ok(())

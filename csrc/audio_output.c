@@ -37,8 +37,28 @@ static const char *pulse_output_error(EnzoPulseOutput *output) {
     return pa_strerror(pa_context_errno(output->context));
 }
 
+/*
+ * PulseAudio operations normally wake waiters through the threaded mainloop,
+ * but Enzo's stop flag lives outside that mainloop. Briefly releasing the lock
+ * lets callbacks run and gives shutdown a bounded cancellation point without
+ * adding polling to steady-state audio writes.
+ */
+static int pulse_output_wait_tick_locked(
+    EnzoPulseOutput *output,
+    const int *stop_flag
+) {
+    if (enzo_stop_requested(stop_flag)) {
+        return 1;
+    }
+    pa_threaded_mainloop_unlock(output->mainloop);
+    av_usleep(1000);
+    pa_threaded_mainloop_lock(output->mainloop);
+    return enzo_stop_requested(stop_flag);
+}
+
 static int wait_for_context_ready_locked(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     char *err,
     size_t err_len
 ) {
@@ -51,11 +71,18 @@ static int wait_for_context_ready_locked(
             enzo_set_error(err, err_len, "failed to connect PulseAudio: %s", pulse_output_error(output));
             return -1;
         }
-        pa_threaded_mainloop_wait(output->mainloop);
+        if (pulse_output_wait_tick_locked(output, stop_flag)) {
+            return 1;
+        }
     }
 }
 
-static int wait_for_stream_ready_locked(EnzoPulseOutput *output, char *err, size_t err_len) {
+static int wait_for_stream_ready_locked(
+    EnzoPulseOutput *output,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+) {
     for (;;) {
         pa_stream_state_t state = pa_stream_get_state(output->stream);
         if (state == PA_STREAM_READY) {
@@ -70,7 +97,9 @@ static int wait_for_stream_ready_locked(EnzoPulseOutput *output, char *err, size
             );
             return -1;
         }
-        pa_threaded_mainloop_wait(output->mainloop);
+        if (pulse_output_wait_tick_locked(output, stop_flag)) {
+            return 1;
+        }
     }
 }
 
@@ -78,6 +107,7 @@ static int wait_for_pulse_operation_locked(
     EnzoPulseOutput *output,
     pa_operation *operation,
     PulseOperationWait *wait,
+    const int *stop_flag,
     const char *action,
     char *err,
     size_t err_len
@@ -88,7 +118,11 @@ static int wait_for_pulse_operation_locked(
     }
 
     while (pa_operation_get_state(operation) == PA_OPERATION_RUNNING && !wait->done) {
-        pa_threaded_mainloop_wait(output->mainloop);
+        if (pulse_output_wait_tick_locked(output, stop_flag)) {
+            pa_operation_cancel(operation);
+            pa_operation_unref(operation);
+            return 1;
+        }
     }
     pa_operation_unref(operation);
 
@@ -125,7 +159,12 @@ void enzo_pulse_output_close(EnzoPulseOutput *output) {
     output->mainloop = NULL;
 }
 
-int enzo_pulse_output_open(EnzoPulseOutput *output, char *err, size_t err_len) {
+int enzo_pulse_output_open(
+    EnzoPulseOutput *output,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+) {
     memset(output, 0, sizeof(*output));
     output->mainloop = pa_threaded_mainloop_new();
     if (output->mainloop == NULL) {
@@ -156,10 +195,12 @@ int enzo_pulse_output_open(EnzoPulseOutput *output, char *err, size_t err_len) {
         enzo_pulse_output_close(output);
         return -1;
     }
-    if (wait_for_context_ready_locked(output, err, err_len) < 0) {
+    int ready_status =
+        wait_for_context_ready_locked(output, stop_flag, err, err_len);
+    if (ready_status != 0) {
         pa_threaded_mainloop_unlock(output->mainloop);
         enzo_pulse_output_close(output);
-        return -1;
+        return ready_status;
     }
 
     pa_sample_spec sample_spec = {
@@ -194,10 +235,16 @@ int enzo_pulse_output_open(EnzoPulseOutput *output, char *err, size_t err_len) {
         enzo_pulse_output_close(output);
         return -1;
     }
-    if (wait_for_stream_ready_locked(output, err, err_len) < 0) {
+    ready_status = wait_for_stream_ready_locked(
+        output,
+        stop_flag,
+        err,
+        err_len
+    );
+    if (ready_status != 0) {
         pa_threaded_mainloop_unlock(output->mainloop);
         enzo_pulse_output_close(output);
-        return -1;
+        return ready_status;
     }
     pa_threaded_mainloop_unlock(output->mainloop);
     return 0;
@@ -205,6 +252,7 @@ int enzo_pulse_output_open(EnzoPulseOutput *output, char *err, size_t err_len) {
 
 static int pulse_output_set_corked_locked(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     int corked,
     char *err,
     size_t err_len
@@ -220,13 +268,19 @@ static int pulse_output_set_corked_locked(
         output,
         operation,
         &wait,
+        stop_flag,
         corked ? "failed to pause audio" : "failed to resume audio",
         err,
         err_len
     );
 }
 
-static int pulse_output_flush_locked(EnzoPulseOutput *output, char *err, size_t err_len) {
+static int pulse_output_flush_locked(
+    EnzoPulseOutput *output,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+) {
     PulseOperationWait wait = {
         .mainloop = output->mainloop,
         .done = 0,
@@ -238,6 +292,7 @@ static int pulse_output_flush_locked(EnzoPulseOutput *output, char *err, size_t 
         output,
         operation,
         &wait,
+        stop_flag,
         "failed to flush audio",
         err,
         err_len
@@ -246,24 +301,39 @@ static int pulse_output_flush_locked(EnzoPulseOutput *output, char *err, size_t 
 
 int enzo_pulse_output_prepare_seek(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     int *corked,
     char *err,
     size_t err_len
 ) {
     pa_threaded_mainloop_lock(output->mainloop);
-    if (!*corked &&
-        pulse_output_set_corked_locked(output, 1, err, err_len) < 0) {
-        pa_threaded_mainloop_unlock(output->mainloop);
-        return -1;
+    if (!*corked) {
+        int cork_status = pulse_output_set_corked_locked(
+            output,
+            stop_flag,
+            1,
+            err,
+            err_len
+        );
+        if (cork_status != 0) {
+            pa_threaded_mainloop_unlock(output->mainloop);
+            return cork_status;
+        }
     }
     *corked = 1;
-    int status = pulse_output_flush_locked(output, err, err_len);
+    int status = pulse_output_flush_locked(
+        output,
+        stop_flag,
+        err,
+        err_len
+    );
     pa_threaded_mainloop_unlock(output->mainloop);
     return status;
 }
 
 static int pulse_output_update_timing_locked(
     EnzoPulseOutput *output,
+    const int *stop_flag,
     char *err,
     size_t err_len
 ) {
@@ -281,6 +351,7 @@ static int pulse_output_update_timing_locked(
         output,
         operation,
         &wait,
+        stop_flag,
         "failed to update audio timing",
         err,
         err_len
@@ -302,10 +373,16 @@ int enzo_sync_pulse_pause(
         enzo_seek_generation_value(released_seek_generation) != *seen_seek_generation;
     if ((enzo_pause_requested(pause_flag) || seek_held) && !*corked) {
         pa_threaded_mainloop_lock(output->mainloop);
-        int ret = pulse_output_set_corked_locked(output, 1, err, err_len);
+        int ret = pulse_output_set_corked_locked(
+            output,
+            stop_flag,
+            1,
+            err,
+            err_len
+        );
         pa_threaded_mainloop_unlock(output->mainloop);
-        if (ret < 0) {
-            return -1;
+        if (ret != 0) {
+            return ret;
         }
         *corked = 1;
     }
@@ -324,13 +401,24 @@ int enzo_sync_pulse_pause(
         enzo_seek_generation_value(released_seek_generation) != *seen_seek_generation;
     if (*corked && !seek_held) {
         pa_threaded_mainloop_lock(output->mainloop);
-        int ret = pulse_output_update_timing_locked(output, err, err_len);
+        int ret = pulse_output_update_timing_locked(
+            output,
+            stop_flag,
+            err,
+            err_len
+        );
         if (ret == 0) {
-            ret = pulse_output_set_corked_locked(output, 0, err, err_len);
+            ret = pulse_output_set_corked_locked(
+                output,
+                stop_flag,
+                0,
+                err,
+                err_len
+            );
         }
         pa_threaded_mainloop_unlock(output->mainloop);
-        if (ret < 0) {
-            return -1;
+        if (ret != 0) {
+            return ret;
         }
         *corked = 0;
     }
@@ -479,7 +567,12 @@ int enzo_pulse_output_write(
     return 0;
 }
 
-int enzo_pulse_output_drain(EnzoPulseOutput *output, char *err, size_t err_len) {
+int enzo_pulse_output_drain(
+    EnzoPulseOutput *output,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+) {
     pa_threaded_mainloop_lock(output->mainloop);
     PulseOperationWait wait = {
         .mainloop = output->mainloop,
@@ -492,6 +585,7 @@ int enzo_pulse_output_drain(EnzoPulseOutput *output, char *err, size_t err_len) 
         output,
         operation,
         &wait,
+        stop_flag,
         "failed to drain audio",
         err,
         err_len
