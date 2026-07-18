@@ -1,6 +1,8 @@
+mod ffi;
+
 use std::{
     collections::VecDeque,
-    ffi::{CStr, CString, c_char, c_double, c_int, c_uchar},
+    ffi::{CStr, CString, c_char, c_int},
     io::{self, ErrorKind},
     os::unix::ffi::OsStrExt,
     path::Path,
@@ -17,169 +19,14 @@ use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use self::ffi::*;
+
 const MAX_PLAYBACK_FPS: f64 = 30.0;
 const ERROR_BUFFER_LEN: usize = 4096;
-const INFO_TEXT_LEN: usize = 64;
-const TRACK_TEXT_LEN: usize = 128;
-const HDR_PQ: c_int = 1;
-const HDR_HLG: c_int = 2;
-const SUBTITLE_TEXT: c_int = 1;
-const SUBTITLE_ASS: c_int = 2;
 const AUDIO_OUTPUT_SUMMARY: &str = "PCM S16 · Stereo · 48 kHz";
 const DISPLAY_RATE_WINDOW: Duration = Duration::from_secs(2);
 const VIDEO_CLOCK_LEAD: Duration = Duration::from_millis(5);
 const VIDEO_CLOCK_DROP_LAG: Duration = Duration::from_millis(75);
-
-#[repr(C)]
-struct RigVideoInfo {
-    width: u32,
-    height: u32,
-    fps: c_double,
-    duration: c_double,
-    has_audio: c_int,
-    seekable: c_int,
-    codec: [c_char; INFO_TEXT_LEN],
-    profile: [c_char; INFO_TEXT_LEN],
-    container: [c_char; INFO_TEXT_LEN],
-    hdr: c_int,
-}
-
-#[repr(C)]
-struct RigAudioTrackInfo {
-    stream_index: c_int,
-    channels: c_int,
-    sample_rate: c_int,
-    is_default: c_int,
-    codec: [c_char; TRACK_TEXT_LEN],
-    channel_layout: [c_char; TRACK_TEXT_LEN],
-    language: [c_char; TRACK_TEXT_LEN],
-    title: [c_char; TRACK_TEXT_LEN],
-}
-
-#[repr(C)]
-struct RigSubtitleStreamInfo {
-    subtitle_index: c_int,
-    is_default: c_int,
-    is_forced: c_int,
-    codec: [c_char; TRACK_TEXT_LEN],
-    language: [c_char; TRACK_TEXT_LEN],
-    title: [c_char; TRACK_TEXT_LEN],
-}
-
-#[repr(C)]
-struct RigDecodedSubtitleCue {
-    start_micros: i64,
-    end_micros: i64,
-    text_kind: c_int,
-    text: *mut c_char,
-}
-
-#[repr(C)]
-struct RigDecodedSubtitleTrack {
-    cues: *mut RigDecodedSubtitleCue,
-    count: usize,
-    capacity: usize,
-}
-
-#[repr(C)]
-struct RigVideoDecoderOpaque {
-    _private: [u8; 0],
-}
-
-unsafe extern "C" {
-    fn rig_probe_video(
-        path: *const c_char,
-        out: *mut RigVideoInfo,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_probe_audio_tracks(
-        path: *const c_char,
-        tracks_out: *mut *mut RigAudioTrackInfo,
-        count_out: *mut usize,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_audio_tracks_free(tracks: *mut RigAudioTrackInfo);
-    fn rig_probe_subtitle_streams(
-        path: *const c_char,
-        streams_out: *mut *mut RigSubtitleStreamInfo,
-        count_out: *mut usize,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_subtitle_streams_free(streams: *mut RigSubtitleStreamInfo);
-    fn rig_decode_subtitle_stream(
-        path: *const c_char,
-        subtitle_index: c_int,
-        track_out: *mut RigDecodedSubtitleTrack,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_decoded_subtitle_track_free(track: *mut RigDecodedSubtitleTrack);
-    fn rig_video_decoder_open(
-        path: *const c_char,
-        out_width: c_int,
-        out_height: c_int,
-        fps: c_double,
-        out: *mut *mut RigVideoDecoderOpaque,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_video_decoder_next(
-        decoder: *mut RigVideoDecoderOpaque,
-        rgb_out: *mut c_uchar,
-        pts_out: *mut c_double,
-        stop_flag: *const c_int,
-        seek_generation: *const c_int,
-        expected_seek_generation: c_int,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_video_decoder_seek(
-        decoder: *mut RigVideoDecoderOpaque,
-        seconds: c_double,
-        exact: c_int,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    fn rig_video_decoder_close(decoder: *mut RigVideoDecoderOpaque);
-    fn rig_play_audio(
-        path: *const c_char,
-        audio_stream_index: c_int,
-        stop_flag: *const c_int,
-        pause_flag: *const c_int,
-        mute_flag: *const c_int,
-        seek_generation: *const c_int,
-        seek_micros: *const i64,
-        released_seek_generation: *const c_int,
-        applied_seek_generation: *mut c_int,
-        buffered_seek_generation: *mut c_int,
-        playback_micros: *mut i64,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> c_int;
-    #[cfg(test)]
-    fn rig_audio_seek_trim_samples(
-        frame_timestamp: i64,
-        timestamp_origin: i64,
-        time_base_num: c_int,
-        time_base_den: c_int,
-        frame_samples: c_int,
-        source_rate: c_int,
-        target_micros: i64,
-        delayed_output_samples: c_int,
-        converted_samples: c_int,
-    ) -> c_int;
-    #[cfg(test)]
-    fn rig_audio_seek_leading_silence_samples(
-        frame_timestamp: i64,
-        timestamp_origin: i64,
-        time_base_num: c_int,
-        time_base_den: c_int,
-        target_micros: i64,
-    ) -> c_int;
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct VideoInfo {
@@ -198,7 +45,7 @@ pub(crate) struct VideoInfo {
 
 pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
     let path = path_cstring(path)?;
-    let mut info = RigVideoInfo {
+    let mut info = EnzoVideoInfo {
         width: 0,
         height: 0,
         fps: 0.0,
@@ -213,7 +60,7 @@ pub(crate) fn probe_video(path: &Path) -> Result<VideoInfo> {
     let mut error = ErrorBuffer::new();
 
     let status =
-        unsafe { rig_probe_video(path.as_ptr(), &mut info, error.as_mut_ptr(), error.len()) };
+        unsafe { enzo_probe_video(path.as_ptr(), &mut info, error.as_mut_ptr(), error.len()) };
     if status < 0 {
         bail!("{}", error.message("failed to inspect video"));
     }
@@ -340,7 +187,7 @@ pub(crate) fn load_audio_tracks(path: &Path) -> Vec<AudioTrack> {
     let mut count = 0_usize;
     let mut error = ErrorBuffer::new();
     let status = unsafe {
-        rig_probe_audio_tracks(
+        enzo_probe_audio_tracks(
             path.as_ptr(),
             &mut tracks,
             &mut count,
@@ -382,12 +229,12 @@ pub(crate) fn load_audio_tracks(path: &Path) -> Vec<AudioTrack> {
 }
 
 struct NativeAudioTrackList {
-    tracks: *mut RigAudioTrackInfo,
+    tracks: *mut EnzoAudioTrackInfo,
     count: usize,
 }
 
 impl NativeAudioTrackList {
-    fn as_slice(&self) -> &[RigAudioTrackInfo] {
+    fn as_slice(&self) -> &[EnzoAudioTrackInfo] {
         if self.tracks.is_null() {
             &[]
         } else {
@@ -399,7 +246,7 @@ impl NativeAudioTrackList {
 impl Drop for NativeAudioTrackList {
     fn drop(&mut self) {
         unsafe {
-            rig_audio_tracks_free(self.tracks);
+            enzo_audio_tracks_free(self.tracks);
         }
     }
 }
@@ -450,7 +297,7 @@ pub(crate) fn load_subtitle_streams(path: &Path) -> Vec<SubtitleStreamInfo> {
     let mut count = 0_usize;
     let mut error = ErrorBuffer::new();
     let status = unsafe {
-        rig_probe_subtitle_streams(
+        enzo_probe_subtitle_streams(
             path.as_ptr(),
             &mut streams,
             &mut count,
@@ -480,12 +327,12 @@ pub(crate) fn load_subtitle_streams(path: &Path) -> Vec<SubtitleStreamInfo> {
 }
 
 struct NativeSubtitleStreamList {
-    streams: *mut RigSubtitleStreamInfo,
+    streams: *mut EnzoSubtitleStreamInfo,
     count: usize,
 }
 
 impl NativeSubtitleStreamList {
-    fn as_slice(&self) -> &[RigSubtitleStreamInfo] {
+    fn as_slice(&self) -> &[EnzoSubtitleStreamInfo] {
         if self.streams.is_null() {
             &[]
         } else {
@@ -497,7 +344,7 @@ impl NativeSubtitleStreamList {
 impl Drop for NativeSubtitleStreamList {
     fn drop(&mut self) {
         unsafe {
-            rig_subtitle_streams_free(self.streams);
+            enzo_subtitle_streams_free(self.streams);
         }
     }
 }
@@ -524,7 +371,7 @@ pub(crate) fn decode_subtitle_stream(
     let subtitle_index =
         c_int::try_from(subtitle_index).context("subtitle stream index is too large")?;
     let mut track = NativeDecodedSubtitleTrack {
-        track: RigDecodedSubtitleTrack {
+        track: EnzoDecodedSubtitleTrack {
             cues: std::ptr::null_mut(),
             count: 0,
             capacity: 0,
@@ -532,7 +379,7 @@ pub(crate) fn decode_subtitle_stream(
     };
     let mut error = ErrorBuffer::new();
     let status = unsafe {
-        rig_decode_subtitle_stream(
+        enzo_decode_subtitle_stream(
             path.as_ptr(),
             subtitle_index,
             &mut track.track,
@@ -569,11 +416,11 @@ pub(crate) fn decode_subtitle_stream(
 }
 
 struct NativeDecodedSubtitleTrack {
-    track: RigDecodedSubtitleTrack,
+    track: EnzoDecodedSubtitleTrack,
 }
 
 impl NativeDecodedSubtitleTrack {
-    fn as_slice(&self) -> &[RigDecodedSubtitleCue] {
+    fn as_slice(&self) -> &[EnzoDecodedSubtitleCue] {
         if self.track.cues.is_null() {
             &[]
         } else {
@@ -585,7 +432,7 @@ impl NativeDecodedSubtitleTrack {
 impl Drop for NativeDecodedSubtitleTrack {
     fn drop(&mut self) {
         unsafe {
-            rig_decoded_subtitle_track_free(&mut self.track);
+            enzo_decoded_subtitle_track_free(&mut self.track);
         }
     }
 }
@@ -753,8 +600,11 @@ impl DisplayRate {
     }
 }
 
-struct NativeVideoDecoder(*mut RigVideoDecoderOpaque);
+struct NativeVideoDecoder(*mut EnzoVideoDecoderOpaque);
 
+// SAFETY: the opaque handle is uniquely owned by this value. Every operation
+// requires `&mut self`, and `Drop` closes the handle, so moving it to the decode
+// thread cannot create concurrent access or outlive its native resources.
 unsafe impl Send for NativeVideoDecoder {}
 
 enum NativeFrame {
@@ -769,7 +619,7 @@ impl NativeVideoDecoder {
         let mut decoder = std::ptr::null_mut();
         let mut error = ErrorBuffer::new();
         let status = unsafe {
-            rig_video_decoder_open(
+            enzo_video_decoder_open(
                 path.as_ptr(),
                 width.try_into().context("video width is too large")?,
                 height.try_into().context("video height is too large")?,
@@ -798,9 +648,10 @@ impl NativeVideoDecoder {
         let mut pts = 0.0;
         let mut error = ErrorBuffer::new();
         let status = unsafe {
-            rig_video_decoder_next(
+            enzo_video_decoder_next(
                 self.0,
                 frame.as_mut_ptr(),
+                frame.len(),
                 &mut pts,
                 stop.as_ptr(),
                 seek_generation.as_ptr(),
@@ -820,7 +671,7 @@ impl NativeVideoDecoder {
     fn seek(&mut self, position: Duration, exact: bool) -> Result<()> {
         let mut error = ErrorBuffer::new();
         let status = unsafe {
-            rig_video_decoder_seek(
+            enzo_video_decoder_seek(
                 self.0,
                 position.as_secs_f64(),
                 c_int::from(exact),
@@ -839,7 +690,7 @@ impl Drop for NativeVideoDecoder {
     fn drop(&mut self) {
         if !self.0.is_null() {
             unsafe {
-                rig_video_decoder_close(self.0);
+                enzo_video_decoder_close(self.0);
             }
             self.0 = std::ptr::null_mut();
         }
@@ -1385,7 +1236,7 @@ impl AudioPlayer {
         let handle = thread::spawn(move || {
             let mut error = ErrorBuffer::new();
             let status = unsafe {
-                rig_play_audio(
+                enzo_play_audio(
                     path.as_ptr(),
                     audio_stream_index,
                     stop_thread.as_ptr(),
@@ -1539,6 +1390,33 @@ impl ErrorBuffer {
 fn path_cstring(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .with_context(|| format!("path contains an interior NUL byte: {}", path.display()))
+}
+
+pub(crate) fn file_fingerprint_digest(
+    path: &Path,
+    len: u64,
+    chunk_len: u64,
+) -> io::Result<[u8; 32]> {
+    let path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "media path contains NUL"))?;
+    let mut digest = [0_u8; 32];
+    let mut error = ErrorBuffer::new();
+    let status = unsafe {
+        enzo_file_fingerprint(
+            path.as_ptr(),
+            len,
+            chunk_len,
+            digest.as_mut_ptr(),
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::other(
+            error.message("failed to fingerprint media"),
+        ));
+    }
+    Ok(digest)
 }
 
 fn frame_len(width: u32, height: u32) -> Result<usize> {
@@ -1744,20 +1622,20 @@ mod tests {
     #[test]
     fn audio_seek_trimming_discards_early_frames_and_leading_samples() {
         let entirely_early = unsafe {
-            rig_audio_seek_trim_samples(1_000, 0, 1, 1_000, 1_024, 48_000, 1_030_000, 0, 1_024)
+            enzo_audio_seek_trim_samples(1_000, 0, 1, 1_000, 1_024, 48_000, 1_030_000, 0, 1_024)
         };
         let crossing_target = unsafe {
-            rig_audio_seek_trim_samples(1_000, 0, 1, 1_000, 1_024, 48_000, 1_010_000, 17, 1_041)
+            enzo_audio_seek_trim_samples(1_000, 0, 1, 1_000, 1_024, 48_000, 1_010_000, 17, 1_041)
         };
         let normalized_start = unsafe {
-            rig_audio_seek_trim_samples(
+            enzo_audio_seek_trim_samples(
                 11_400, 1_400, 1, 1_000, 1_024, 48_000, 10_005_000, 0, 1_024,
             )
         };
         let leading_silence =
-            unsafe { rig_audio_seek_leading_silence_samples(11_413, 1_400, 1, 1_000, 10_000_000) };
+            unsafe { enzo_audio_seek_leading_silence_samples(11_413, 1_400, 1, 1_000, 10_000_000) };
         let delayed_track_silence =
-            unsafe { rig_audio_seek_leading_silence_samples(500, 0, 1, 1_000, 0) };
+            unsafe { enzo_audio_seek_leading_silence_samples(500, 0, 1, 1_000, 0) };
 
         assert_eq!(entirely_early, -1);
         assert_eq!(crossing_target, 497);
@@ -1792,6 +1670,41 @@ mod tests {
         assert!(summary.starts_with("FFV1"));
         assert!(summary.contains("16×16 · 60 fps"));
 
+        let _ = std::fs::remove_file(media);
+    }
+
+    #[test]
+    fn native_decoder_rejects_an_undersized_frame_buffer() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let media =
+            std::env::temp_dir().join(format!("enzo-frame-bounds-test-{}.mkv", std::process::id()));
+        let status = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("color=size=16x16:duration=0.1:rate=1")
+            .args(["-c:v", "ffv1"])
+            .arg(&media)
+            .status()
+            .expect("ffmpeg should run");
+        if !status.success() {
+            return;
+        }
+
+        let mut decoder =
+            NativeVideoDecoder::open(&media, 16, 16, 1.0).expect("video decoder should open");
+        let mut short_frame = vec![0_u8; 16 * 16 * 3 - 1];
+        let error = decoder
+            .next_frame(&mut short_frame, &AtomicI32::new(0), &AtomicI32::new(0), 0)
+            .err()
+            .expect("undersized output should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("video frame buffer is too small")
+        );
+        drop(decoder);
         let _ = std::fs::remove_file(media);
     }
 

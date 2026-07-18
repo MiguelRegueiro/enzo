@@ -1,5 +1,4 @@
 use std::{
-    ffi::{CString, c_char, c_uchar},
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -11,22 +10,10 @@ use std::os::unix::fs::MetadataExt;
 use super::encoding::{hex_encode, path_to_bytes, stable_hash_hex};
 
 pub(super) const FINGERPRINT_CHUNK_BYTES: u64 = 64 * 1024;
-const FINGERPRINT_ERROR_BYTES: usize = 512;
 const DURATION_TOLERANCE: Duration = Duration::from_secs(1);
 
 pub(super) const FINGERPRINT_ALGORITHM: &str = "sampled-sha256-v1";
 pub(super) const FINGERPRINT_HEX_LEN: usize = 64;
-
-unsafe extern "C" {
-    fn rig_file_fingerprint(
-        path: *const c_char,
-        len: u64,
-        chunk_len: u64,
-        out: *mut c_uchar,
-        err: *mut c_char,
-        err_len: usize,
-    ) -> i32;
-}
 
 #[derive(Clone, Debug)]
 pub(super) struct MediaIdentity {
@@ -101,33 +88,7 @@ pub(super) fn file_fingerprint(path: &Path, len: u64) -> io::Result<Option<Strin
     }
 
     let chunk_len = FINGERPRINT_CHUNK_BYTES.min(len);
-    let path = CString::new(path_to_bytes(path))
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "media path contains NUL"))?;
-    let mut digest = [0_u8; 32];
-    let mut error = [0 as c_char; FINGERPRINT_ERROR_BYTES];
-    let status = unsafe {
-        rig_file_fingerprint(
-            path.as_ptr(),
-            len,
-            chunk_len,
-            digest.as_mut_ptr(),
-            error.as_mut_ptr(),
-            error.len(),
-        )
-    };
-    if status < 0 {
-        let bytes = error
-            .iter()
-            .take_while(|&&byte| byte != 0)
-            .map(|&byte| byte as u8)
-            .collect::<Vec<_>>();
-        let message = if bytes.is_empty() {
-            "failed to fingerprint media".to_string()
-        } else {
-            String::from_utf8_lossy(&bytes).into_owned()
-        };
-        return Err(io::Error::other(message));
-    }
+    let digest = crate::media::file_fingerprint_digest(path, len, chunk_len)?;
     Ok(Some(hex_encode(&digest)))
 }
 

@@ -1,42 +1,33 @@
-use std::{env, path::PathBuf, process::Command};
+const MEDIA_SOURCES: &[&str] = &[
+    "csrc/common.c",
+    "csrc/fingerprint.c",
+    "csrc/probe.c",
+    "csrc/subtitle_decoder.c",
+    "csrc/video_decoder.c",
+    "csrc/audio_output.c",
+    "csrc/audio_player.c",
+];
+
+const MEDIA_HEADERS: &[&str] = &["csrc/media.h", "csrc/internal.h", "csrc/audio_output.h"];
 
 fn main() {
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR should be set"));
-    let object = out_dir.join("enzo_media.o");
-    let library = out_dir.join("libenzo_media.a");
+    let mut build = cc::Build::new();
+    build
+        .include("csrc")
+        .files(MEDIA_SOURCES)
+        .std("c11")
+        .warnings(true)
+        .extra_warnings(true)
+        .pic(true)
+        .flag_if_supported("-Wstrict-prototypes")
+        .flag_if_supported("-Wmissing-prototypes")
+        .flag_if_supported("-Wno-deprecated-declarations")
+        .compile("enzo_media");
 
-    let cc_status = Command::new("cc")
-        .args([
-            "-O3",
-            "-std=c11",
-            "-Wall",
-            "-Wextra",
-            "-Wno-deprecated-declarations",
-            "-fPIC",
-            "-c",
-            "native/media.c",
-            "-o",
-        ])
-        .arg(&object)
-        .status()
-        .expect("failed to start C compiler");
-    if !cc_status.success() {
-        panic!("failed to compile native/media.c");
+    for path in MEDIA_SOURCES.iter().chain(MEDIA_HEADERS) {
+        println!("cargo:rerun-if-changed={path}");
     }
 
-    let ar_status = Command::new("ar")
-        .args(["crs"])
-        .arg(&library)
-        .arg(&object)
-        .status()
-        .expect("failed to start ar");
-    if !ar_status.success() {
-        panic!("failed to archive native media shim");
-    }
-
-    println!("cargo:rerun-if-changed=native/media.c");
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=enzo_media");
     println!("cargo:rustc-link-lib=avformat");
     println!("cargo:rustc-link-lib=avcodec");
     println!("cargo:rustc-link-lib=avutil");
