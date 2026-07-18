@@ -130,10 +130,6 @@ impl SubtitleCatalog {
         !self.tracks.is_empty()
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.tracks.len()
-    }
-
     pub(super) fn find_external(&self, path: &Path) -> Option<usize> {
         self.external_paths
             .iter()
@@ -559,7 +555,7 @@ mod tests {
             catalog.select_from_drop_text(&drop_text),
             DroppedSubtitleSelection::Loaded
         );
-        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.tracks().len(), 1);
         assert_eq!(catalog.selected(), Some(0));
         assert_eq!(catalog.labels().len(), 1);
         assert!(catalog.active().is_some());
@@ -569,7 +565,7 @@ mod tests {
             catalog.select_from_drop_text(&drop_text),
             DroppedSubtitleSelection::SelectedExisting
         );
-        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.tracks().len(), 1);
         assert_eq!(catalog.selected(), Some(0));
 
         let _ = std::fs::remove_dir_all(&temp_dir);

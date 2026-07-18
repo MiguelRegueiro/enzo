@@ -205,10 +205,10 @@ impl<W: Write> InteractionContext<'_, W> {
             position: self.seeking.scrub_position.unwrap_or(self.engine.position),
             duration: self.source.duration,
             audio_available: self.audio.is_available(),
-            audio_count: self.audio.len(),
             subtitles_available: self.subtitles.is_available(),
-            subtitle_count: self.subtitles.len(),
         };
+        let audio_labels = self.audio.labels();
+        let subtitle_labels = self.subtitles.labels();
         if !mouse_events.is_empty()
             && self.seeking.keyboard_commit_at.take().is_some()
             && let (Some(seek), Some(seek_target)) = (
@@ -233,6 +233,7 @@ impl<W: Write> InteractionContext<'_, W> {
                             hit_context,
                             point,
                             self.ui.audio_picker_open,
+                            &audio_labels,
                         )
                     }) {
                         self.seeking.scrub_position = None;
@@ -276,6 +277,7 @@ impl<W: Write> InteractionContext<'_, W> {
                             hit_context,
                             point,
                             self.ui.subtitle_picker_open,
+                            &subtitle_labels,
                         )
                     }) {
                         self.seeking.scrub_position = None;
@@ -338,16 +340,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 }
                 PlaybackMouse::Drag { column, row } if self.seeking.scrub_position.is_some() => {
                     let x = mouse_canvas_x(column, row, self.view.canvas);
-                    let ratio = self.view.overlay.progress_ratio_from_x(
-                        self.view.canvas.width,
-                        self.view.canvas.height,
-                        self.view.canvas.area.rows,
-                        self.view.canvas.overlay_scale_percent,
-                        self.source.duration,
-                        self.subtitles.is_available(),
-                        self.audio.is_available(),
-                        x,
-                    );
+                    let ratio = self.view.overlay.progress_ratio_from_x(hit_context, x);
                     self.seeking.scrub_position =
                         seek_from_progress_ratio(ratio, self.source.duration);
                     self.view.dirty = self.view.have_frame;
@@ -364,16 +357,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 }
                 PlaybackMouse::Up { column, row } if self.seeking.scrub_position.is_some() => {
                     let x = mouse_canvas_x(column, row, self.view.canvas);
-                    let ratio = self.view.overlay.progress_ratio_from_x(
-                        self.view.canvas.width,
-                        self.view.canvas.height,
-                        self.view.canvas.area.rows,
-                        self.view.canvas.overlay_scale_percent,
-                        self.source.duration,
-                        self.subtitles.is_available(),
-                        self.audio.is_available(),
-                        x,
-                    );
+                    let ratio = self.view.overlay.progress_ratio_from_x(hit_context, x);
                     let target = seek_from_progress_ratio(ratio, self.source.duration);
                     self.seeking.scrub_position = None;
                     self.seeking.mouse_commit_at = None;

@@ -64,10 +64,6 @@ impl AudioCatalog {
         !self.tracks.is_empty()
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.tracks.len()
-    }
-
     pub(super) fn playback_summaries(&self) -> Vec<String> {
         self.tracks
             .iter()
