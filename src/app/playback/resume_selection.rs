@@ -5,8 +5,9 @@ use crate::{
     resume::{RestoredPlayback, ResumeAudioSelection, ResumeSubtitleSelection, ResumeTracker},
 };
 
-use super::subtitle_tracks::{
-    PlaybackSubtitleSource, PlaybackSubtitleTrack, normalized_subtitle_path,
+use super::{
+    engine::AudioChoice,
+    subtitles::{PlaybackSubtitleSource, PlaybackSubtitleTrack, normalized_subtitle_path},
 };
 
 pub(super) fn resume_available(resume_enabled: bool, source_seekable: bool) -> bool {
@@ -105,21 +106,18 @@ pub(super) fn restore_subtitle_selection(
     }
 }
 
-pub(super) fn selected_audio_stream(
+pub(super) fn selected_audio_choice(
     tracks: &[AudioTrack],
     selected_audio: Option<usize>,
-) -> Option<usize> {
-    selected_audio
-        .and_then(|index| tracks.get(index))
-        .map(|track| track.stream_index())
-        .filter(|stream_index| *stream_index != usize::MAX)
-}
-
-pub(super) fn selected_audio_stream_choice(
-    tracks: &[AudioTrack],
-    selected_audio: Option<usize>,
-) -> Option<Option<usize>> {
-    selected_audio.map(|_| selected_audio_stream(tracks, selected_audio))
+) -> AudioChoice {
+    let Some(track) = selected_audio.and_then(|index| tracks.get(index)) else {
+        return AudioChoice::Off;
+    };
+    if track.stream_index() == usize::MAX {
+        AudioChoice::Default
+    } else {
+        AudioChoice::Stream(track.stream_index())
+    }
 }
 
 pub(super) fn sync_resume_audio(
@@ -191,7 +189,7 @@ mod tests {
     use std::{path::PathBuf, time::Duration};
 
     use super::*;
-    use crate::app::subtitle_tracks::{
+    use crate::app::playback::subtitles::{
         initial_external_subtitle_paths, load_initial_subtitle_tracks,
     };
     use crate::resume::ResumeSubtitleSelection;
@@ -207,9 +205,11 @@ mod tests {
     fn default_audio_stream_and_disabled_audio_remain_distinct() {
         let tracks = vec![AudioTrack::default_track()];
 
-        assert_eq!(selected_audio_stream(&tracks, Some(0)), None);
-        assert_eq!(selected_audio_stream_choice(&tracks, Some(0)), Some(None));
-        assert_eq!(selected_audio_stream_choice(&tracks, None), None);
+        assert_eq!(
+            selected_audio_choice(&tracks, Some(0)),
+            AudioChoice::Default
+        );
+        assert_eq!(selected_audio_choice(&tracks, None), AudioChoice::Off);
     }
 
     #[test]

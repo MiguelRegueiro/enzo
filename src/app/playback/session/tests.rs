@@ -1,5 +1,14 @@
 use super::*;
-use crate::terminal::ImageArea;
+use std::sync::Arc;
+
+use crate::{overlay::MediaInfoState, terminal::ImageArea};
+
+#[test]
+fn only_completed_playback_clears_resume_state() {
+    assert!(PlaybackOutcome::Completed.clears_resume());
+    assert!(!PlaybackOutcome::Quit.clears_resume());
+    assert!(!PlaybackOutcome::Interrupted.clears_resume());
+}
 
 #[test]
 fn seek_backward_saturates_at_start() {
@@ -105,30 +114,28 @@ fn resize_layout_waits_for_stable_size_and_resets_on_drag() {
     let first = (target_for_test(800, 450), canvas_for_test(800, 450));
     let final_size = (target_for_test(960, 540), canvas_for_test(960, 540));
     let now = Instant::now();
-    let mut pending = None;
+    let mut resize = ResizeTracker::default();
 
     assert_eq!(
-        settled_resize_layout(active.0, active.1, first.0, first.1, &mut pending, now),
+        resize.settled_change(active.0, active.1, first.0, first.1, now),
         None
     );
     assert_eq!(
-        settled_resize_layout(
+        resize.settled_change(
             active.0,
             active.1,
             final_size.0,
             final_size.1,
-            &mut pending,
             now + RESIZE_SETTLE_FOR,
         ),
         None
     );
     assert_eq!(
-        settled_resize_layout(
+        resize.settled_change(
             active.0,
             active.1,
             final_size.0,
             final_size.1,
-            &mut pending,
             now + RESIZE_SETTLE_FOR * 2,
         ),
         Some(final_size)
@@ -229,12 +236,12 @@ fn media_info_display_rate_visibility_matches_rendered_state() {
         false,
         None,
         false,
-        Vec::new(),
+        Arc::default(),
         false,
         None,
         false,
-        Vec::new(),
-        "movie.mp4",
+        Arc::default(),
+        Arc::from("movie.mp4"),
         Some(MediaInfoState {
             info: MediaInfo::new(String::new(), String::new(), Vec::new()),
             selected_audio: None,
@@ -307,19 +314,19 @@ fn overlay_state_uses_scrub_position() {
         false,
         None,
         false,
-        Vec::new(),
+        Arc::default(),
         false,
         None,
         false,
-        Vec::new(),
-        "movie.mp4",
+        Arc::default(),
+        Arc::from("movie.mp4"),
         None,
     );
 
     assert_eq!(state.position, Duration::from_secs(30));
     assert!(state.visible);
     assert_eq!(state.status_message, None);
-    assert_eq!(state.media_title, Some("movie.mp4"));
+    assert_eq!(state.media_title.as_deref(), Some("movie.mp4"));
 }
 
 #[test]

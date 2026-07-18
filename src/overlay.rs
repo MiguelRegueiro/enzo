@@ -23,13 +23,13 @@ pub(crate) struct OverlayState {
     pub(crate) audio_available: bool,
     pub(crate) selected_audio: Option<usize>,
     pub(crate) audio_picker_open: bool,
-    pub(crate) audio_labels: Vec<&'static str>,
+    pub(crate) audio_labels: Arc<[Arc<str>]>,
     pub(crate) subtitles_available: bool,
     pub(crate) selected_subtitle: Option<usize>,
     pub(crate) subtitle_picker_open: bool,
-    pub(crate) subtitle_labels: Vec<&'static str>,
+    pub(crate) subtitle_labels: Arc<[Arc<str>]>,
     pub(crate) status_message: Option<&'static str>,
-    pub(crate) media_title: Option<&'static str>,
+    pub(crate) media_title: Option<Arc<str>>,
     pub(crate) media_info: Option<MediaInfoState>,
 }
 
@@ -438,7 +438,7 @@ fn render_overlay_rgb(
 
     let title_visible =
         (state.visible || state.media_info.is_some()) && state.media_title.is_some();
-    if title_visible && let Some(title) = state.media_title {
+    if title_visible && let Some(title) = state.media_title.as_deref() {
         draw_top_message(
             font.as_deref_mut(),
             frame,
@@ -1075,14 +1075,14 @@ fn draw_track_picker(
     height: u32,
     metrics: OverlayMetrics,
     anchor_x: u32,
-    labels: &[&str],
+    labels: &[Arc<str>],
     selected_track: Option<usize>,
     include_off: bool,
     acrylic: &mut AcrylicScratch,
 ) {
     let max_label_width = labels
         .iter()
-        .copied()
+        .map(AsRef::as_ref)
         .chain(include_off.then_some("Off"))
         .map(|label| picker_text_width(font.as_deref_mut(), label, metrics.fallback_text_scale))
         .max()
@@ -1132,7 +1132,7 @@ fn draw_track_picker(
         }
         let label = fit_picker_text(
             font.as_deref_mut(),
-            label,
+            label.as_ref(),
             metrics.fallback_text_scale,
             text_width,
         );
@@ -2587,11 +2587,11 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: None,
                 media_title: None,
                 media_info: None,
@@ -2634,11 +2634,11 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: None,
                 media_title: None,
                 media_info: None,
@@ -2682,11 +2682,11 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: None,
                 media_title: None,
                 media_info: None,
@@ -2929,11 +2929,11 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: None,
                 media_title: None,
                 media_info: None,
@@ -2970,11 +2970,11 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: Some("MUTE ON"),
                 media_title: None,
                 media_info: None,
@@ -3014,13 +3014,13 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: None,
-                media_title: Some("movie.mkv"),
+                media_title: Some(Arc::from("movie.mkv")),
                 media_info: Some(MediaInfoState {
                     info: MediaInfo::new(
                         "Matroska · 4.0 GiB".to_string(),
@@ -3109,13 +3109,13 @@ mod tests {
                 audio_available: false,
                 selected_audio: None,
                 audio_picker_open: false,
-                audio_labels: Vec::new(),
+                audio_labels: Arc::default(),
                 subtitles_available: false,
                 selected_subtitle: None,
                 subtitle_picker_open: false,
-                subtitle_labels: Vec::new(),
+                subtitle_labels: Arc::default(),
                 status_message: None,
-                media_title: Some("movie.mkv"),
+                media_title: Some(Arc::from("movie.mkv")),
                 media_info: None,
             },
             &mut scratch,

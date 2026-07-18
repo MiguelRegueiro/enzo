@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use crate::drop_target::{is_remote_url_text, media_candidates_from_text};
+use super::path_input::{is_remote_url_text, media_candidates_from_text};
 
 pub(super) struct Config {
     pub(super) path: Option<PathBuf>,

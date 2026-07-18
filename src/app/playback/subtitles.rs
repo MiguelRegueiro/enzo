@@ -1,14 +1,13 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread,
 };
 
 use anyhow::Result;
 
 use crate::{
-    drop_target::media_candidates_from_text,
     resume::{RestoredPlayback, ResumeSubtitleSelection},
     subtitle::{
         EmbeddedSubtitleStream, SubtitleTrack, embedded_subtitle_streams,
@@ -16,7 +15,7 @@ use crate::{
     },
 };
 
-use super::cli::validate_subtitle_path;
+use super::super::{cli::validate_subtitle_path, path_input::media_candidates_from_text};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum PlaybackSubtitleSource {
@@ -70,6 +69,117 @@ pub(super) struct InitialSubtitleLoad {
     pub(super) embedded_jobs: Vec<PendingEmbeddedSubtitle>,
     pub(super) restored_external_load_failed: bool,
     pub(super) restored_external_index: Option<usize>,
+}
+
+pub(super) struct SubtitleCatalog {
+    tracks: Vec<PlaybackSubtitleTrack>,
+    labels: Arc<[Arc<str>]>,
+    selected: Option<usize>,
+    external_paths: Vec<(PathBuf, usize)>,
+    embedded_loader: mpsc::Receiver<LoadedEmbeddedSubtitle>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DroppedSubtitleSelection {
+    Ignored,
+    SelectedExisting,
+    Loaded,
+    Failed,
+}
+
+impl SubtitleCatalog {
+    pub(super) fn new(
+        media_path: PathBuf,
+        initial: InitialSubtitleLoad,
+        selected: Option<usize>,
+    ) -> Self {
+        let labels = build_subtitle_labels(&initial.tracks);
+        let external_paths = external_subtitle_indices(&initial.tracks);
+        let embedded_loader = spawn_embedded_subtitle_loader(media_path, initial.embedded_jobs);
+        Self {
+            tracks: initial.tracks,
+            labels,
+            selected,
+            external_paths,
+            embedded_loader,
+        }
+    }
+
+    pub(super) fn tracks(&self) -> &[PlaybackSubtitleTrack] {
+        &self.tracks
+    }
+
+    pub(super) fn labels(&self) -> Arc<[Arc<str>]> {
+        self.labels.clone()
+    }
+
+    pub(super) fn selected(&self) -> Option<usize> {
+        self.selected
+    }
+
+    pub(super) fn select(&mut self, selected: Option<usize>) {
+        debug_assert!(selected.is_none_or(|index| index < self.tracks.len()));
+        self.selected = selected;
+    }
+
+    pub(super) fn active(&self) -> Option<&SubtitleTrack> {
+        active_subtitle_track(&self.tracks, self.selected)
+    }
+
+    pub(super) fn is_available(&self) -> bool {
+        !self.tracks.is_empty()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.tracks.len()
+    }
+
+    pub(super) fn find_external(&self, path: &Path) -> Option<usize> {
+        self.external_paths
+            .iter()
+            .find_map(|(loaded_path, index)| (loaded_path == path).then_some(*index))
+    }
+
+    pub(super) fn add_external(&mut self, path: PathBuf, track: SubtitleTrack) -> usize {
+        let index = self.tracks.len();
+        self.tracks
+            .push(PlaybackSubtitleTrack::loaded_external(path.clone(), track));
+        self.labels = build_subtitle_labels(&self.tracks);
+        self.external_paths.push((path, index));
+        self.selected = Some(index);
+        index
+    }
+
+    pub(super) fn poll_loaded(&self) -> Option<LoadedEmbeddedSubtitle> {
+        self.embedded_loader.try_recv().ok()
+    }
+
+    pub(super) fn apply_loaded(&mut self, loaded: LoadedEmbeddedSubtitle) -> (usize, bool) {
+        let index = loaded.index;
+        let loaded_ok = loaded.track.is_some();
+        if let Some(slot) = self.tracks.get_mut(index) {
+            slot.track = loaded.track;
+        }
+        (index, loaded_ok)
+    }
+
+    pub(super) fn select_from_drop_text(&mut self, text: &str) -> DroppedSubtitleSelection {
+        let subtitle_path = match subtitle_path_from_drop_text(text) {
+            Ok(Some(path)) => path,
+            Ok(None) => return DroppedSubtitleSelection::Ignored,
+            Err(_) => return DroppedSubtitleSelection::Failed,
+        };
+        let key = normalized_subtitle_path(&subtitle_path);
+        if let Some(index) = self.find_external(&key) {
+            self.select(Some(index));
+            return DroppedSubtitleSelection::SelectedExisting;
+        }
+        let Ok(track) = load_dropped_subtitle_track(&subtitle_path) else {
+            return DroppedSubtitleSelection::Failed;
+        };
+        self.add_external(key, track);
+        DroppedSubtitleSelection::Loaded
+    }
 }
 
 pub(super) fn initial_external_subtitle_paths(
@@ -178,10 +288,10 @@ pub(super) fn spawn_embedded_subtitle_loader(
     receiver
 }
 
-pub(super) fn subtitle_labels(tracks: &[PlaybackSubtitleTrack]) -> Vec<&'static str> {
+pub(super) fn build_subtitle_labels(tracks: &[PlaybackSubtitleTrack]) -> Arc<[Arc<str>]> {
     tracks
         .iter()
-        .map(|track| Box::leak(track.label.clone().into_boxed_str()) as &'static str)
+        .map(|track| Arc::<str>::from(track.label.as_str()))
         .collect()
 }
 
@@ -343,9 +453,10 @@ mod tests {
             "English — Embedded".to_string(),
             Some(0),
         )];
-        let labels = subtitle_labels(&tracks);
+        let labels = build_subtitle_labels(&tracks);
 
-        assert_eq!(labels, vec!["English — Embedded"]);
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].as_ref(), "English — Embedded");
         assert!(active_subtitle_track(&tracks, Some(0)).is_none());
     }
 
@@ -421,6 +532,45 @@ mod tests {
         assert!(loaded.embedded_jobs.is_empty());
         assert!(loaded.restored_external_load_failed);
         assert_eq!(loaded.restored_external_index, None);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn catalog_loads_and_reselects_a_dropped_subtitle_without_duplication() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("enzo-subtitle-catalog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("movie.mkv");
+        let subtitle = temp_dir.join("movie.srt");
+        std::fs::write(&subtitle, "1\n00:00:00,000 --> 00:00:01,000\nhello\n")
+            .expect("subtitle should be written");
+        let initial = InitialSubtitleLoad {
+            tracks: Vec::new(),
+            embedded_jobs: Vec::new(),
+            restored_external_load_failed: false,
+            restored_external_index: None,
+        };
+        let mut catalog = SubtitleCatalog::new(media, initial, None);
+        let drop_text = subtitle.display().to_string();
+
+        assert_eq!(
+            catalog.select_from_drop_text(&drop_text),
+            DroppedSubtitleSelection::Loaded
+        );
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.selected(), Some(0));
+        assert_eq!(catalog.labels().len(), 1);
+        assert!(catalog.active().is_some());
+
+        catalog.select(None);
+        assert_eq!(
+            catalog.select_from_drop_text(&drop_text),
+            DroppedSubtitleSelection::SelectedExisting
+        );
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog.selected(), Some(0));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
