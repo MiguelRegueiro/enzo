@@ -16,7 +16,14 @@ It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resam
 
 - Rust 1.96 or newer and Cargo
 - Development headers for FFmpeg, PulseAudio, and FreeType
+- `pkg-config`/`pkgconf` so the build can discover native compiler and linker flags
 - `cc` and `ar` to build the small native media shim
+
+On FreeBSD:
+
+```sh
+pkg install rust ffmpeg pulseaudio freetype2 pkgconf
+```
 
 The `ffmpeg` and `ffprobe` command-line programs are not required at runtime.
 When `ffmpeg` is available during development, it is used only to generate
