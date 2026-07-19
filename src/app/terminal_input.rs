@@ -3,6 +3,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 
+const INPUT_EVENTS_PER_TICK: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlaybackCommand {
     None,
@@ -60,7 +62,12 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         text: None,
     };
     let mut seek_seconds = 0_i32;
-    while event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
+    // Passive movement can keep the terminal queue continuously non-empty.
+    // Bound each drain so input can never starve frame delivery or UI expiry.
+    for _ in 0..INPUT_EVENTS_PER_TICK {
+        if !event::poll(Duration::from_millis(0)).context("failed to poll terminal input")? {
+            break;
+        }
         match event::read().context("failed to read terminal input")? {
             Event::Key(key) => {
                 if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {

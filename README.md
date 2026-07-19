@@ -75,6 +75,6 @@ Controls:
 - Click or drag the progress bar to seek.
 - `q` quits.
 
-The playback overlay appears while paused, after seeking, and when the video is clicked.
+The playback overlay appears while paused, after seeking, and on mouse movement.
 
 Use `--force` for compatible terminals that do not advertise themselves as Kitty.
