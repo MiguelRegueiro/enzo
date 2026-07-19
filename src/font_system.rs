@@ -30,6 +30,7 @@ const SYSTEM_FONT_DIRS: &[&str] = &[
 ];
 
 const PREFERRED_FONT_PATTERNS: &[&str] = &[
+    "notosans[wght]",
     "notosans-regular",
     "notosans",
     "opensans-regular",
@@ -232,6 +233,29 @@ mod tests {
         assert_eq!(
             system.resolve_all_for_language(FontRole::Ui, Some("ja"))[0],
             latin
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn ui_prefers_plain_fedora_noto_variable_font_over_script_specific_noto_fonts() {
+        let root = temp_font_dir("fedora_noto_variable_font");
+        let cjk = root
+            .join("google-noto-sans-cjk-vf-fonts")
+            .join("NotoSansCJK-VF.ttc");
+        let arabic = root.join("google-noto-vf").join("NotoSansArabic[wght].ttf");
+        let plain = root.join("google-noto-vf").join("NotoSans[wght].ttf");
+        fs::create_dir_all(cjk.parent().expect("cjk parent")).expect("create cjk dir");
+        fs::create_dir_all(plain.parent().expect("plain parent")).expect("create plain dir");
+        File::create(&cjk).expect("create cjk font");
+        File::create(&arabic).expect("create arabic font");
+        File::create(&plain).expect("create plain font");
+
+        let system = FontSystem::from_dirs([root.clone().into_os_string()]);
+
+        assert_eq!(
+            system.resolve_all(FontRole::Ui).next(),
+            Some(plain.as_path())
         );
         fs::remove_dir_all(root).ok();
     }
