@@ -8,7 +8,10 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 
-use super::{env::inside_tmux, layout::ImageArea};
+use super::{
+    env::{inside_tmux, looks_like_kitty},
+    layout::ImageArea,
+};
 
 const KITTY_IMAGE_ID: u32 = 0x52_49_47; // "RIG", within the 24-bit foreground-color-safe range.
 pub(crate) const KITTY_IMAGE_IDS: [u32; 2] = [KITTY_IMAGE_ID, KITTY_IMAGE_ID + 1];
@@ -43,8 +46,8 @@ pub(crate) fn write_kitty_rgb_frame(
     frame: &[u8],
     sequence: &mut Vec<u8>,
 ) -> io::Result<()> {
-    // Keep full-size pixels out of tmux's parser when Kitty shares this host.
-    if local_tmux_session()
+    // Avoid per-frame base64 work when the terminal can read this host's POSIX shm.
+    if shared_memory_preferred()
         && let Ok(mut shared_frame) = SharedMemoryFrame::create(frame)
     {
         write_kitty_shared_memory_image(out, placement, shared_frame.name(), sequence)?;
@@ -55,17 +58,22 @@ pub(crate) fn write_kitty_rgb_frame(
     write_kitty_direct_image(out, placement, frame, sequence)
 }
 
-fn local_tmux_session() -> bool {
-    is_local_tmux_session(
+fn shared_memory_preferred() -> bool {
+    is_shared_memory_preferred(
         inside_tmux(),
+        looks_like_kitty(),
         ["SSH_CONNECTION", "SSH_CLIENT", "MOSH_IP"]
             .iter()
             .any(|name| std::env::var_os(name).is_some()),
     )
 }
 
-fn is_local_tmux_session(inside_tmux: bool, has_remote_session_marker: bool) -> bool {
-    inside_tmux && !has_remote_session_marker
+fn is_shared_memory_preferred(
+    inside_tmux: bool,
+    looks_like_kitty: bool,
+    has_remote_session_marker: bool,
+) -> bool {
+    !has_remote_session_marker && (inside_tmux || looks_like_kitty)
 }
 
 fn write_kitty_direct_image(
@@ -362,9 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn shared_memory_is_only_selected_for_local_tmux() {
-        assert!(is_local_tmux_session(true, false));
-        assert!(!is_local_tmux_session(false, false));
-        assert!(!is_local_tmux_session(true, true));
+    fn shared_memory_is_selected_for_local_kitty_or_tmux_sessions() {
+        assert!(is_shared_memory_preferred(false, true, false));
+        assert!(is_shared_memory_preferred(true, false, false));
+        assert!(is_shared_memory_preferred(true, true, false));
+        assert!(!is_shared_memory_preferred(false, false, false));
+        assert!(!is_shared_memory_preferred(false, true, true));
+        assert!(!is_shared_memory_preferred(true, false, true));
     }
 }
