@@ -25,6 +25,8 @@ use super::{
 const DISPLAY_RATE_WINDOW: Duration = Duration::from_secs(2);
 const VIDEO_CLOCK_LEAD: Duration = Duration::from_millis(5);
 const VIDEO_CLOCK_DROP_LAG: Duration = Duration::from_millis(75);
+const CLOCK_DROP_STARVATION_LIMIT: Duration = Duration::from_millis(200);
+const MAX_CONSECUTIVE_CLOCK_DROPS: u32 = 8;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum FrameStatus {
@@ -81,6 +83,7 @@ enum NativeFrame {
     Frame(f64),
     Ended,
     Interrupted,
+    Dropped,
 }
 
 impl NativeVideoDecoder {
@@ -111,6 +114,7 @@ impl NativeVideoDecoder {
     fn next_frame(
         &mut self,
         frame: &mut [u8],
+        drop_before_pts: f64,
         stop: &AtomicI32,
         seek_generation: &AtomicI32,
         expected_seek_generation: i32,
@@ -123,6 +127,7 @@ impl NativeVideoDecoder {
                 frame.as_mut_ptr(),
                 frame.len(),
                 &mut pts,
+                drop_before_pts,
                 stop.as_ptr(),
                 seek_generation.as_ptr(),
                 expected_seek_generation,
@@ -131,6 +136,7 @@ impl NativeVideoDecoder {
             )
         };
         match status {
+            3 => Ok(NativeFrame::Dropped),
             2 => Ok(NativeFrame::Interrupted),
             1 => Ok(NativeFrame::Frame(pts)),
             0 => Ok(NativeFrame::Ended),
@@ -383,6 +389,8 @@ fn run_video_decode_thread(
     let mut force_next_frame = false;
     let mut clocked_seek_generation = 0;
     let mut last_published_pts = None::<Duration>;
+    let mut last_published_at = Instant::now();
+    let mut consecutive_clock_drops = 0_u32;
 
     loop {
         if stop.load(Ordering::Relaxed) != 0 {
@@ -408,6 +416,8 @@ fn run_video_decode_thread(
                 break;
             }
             force_next_frame = true;
+            consecutive_clock_drops = 0;
+            last_published_at = Instant::now();
         }
 
         if !force_next_frame {
@@ -444,6 +454,8 @@ fn run_video_decode_thread(
                         break;
                     }
                     force_next_frame = true;
+                    consecutive_clock_drops = 0;
+                    last_published_at = Instant::now();
                 }
                 PauseWait::Stopped => {
                     mark_ended(&latest_frame);
@@ -452,19 +464,42 @@ fn run_video_decode_thread(
             }
         }
 
-        let pts =
-            match native.next_frame(&mut buffer, &stop, &seek_generation, seen_seek_generation) {
-                Ok(NativeFrame::Frame(pts)) => pts,
-                Ok(NativeFrame::Interrupted) => continue,
-                Ok(NativeFrame::Ended) => {
-                    mark_ended(&latest_frame);
-                    break;
-                }
-                Err(error) => {
-                    mark_error(&latest_frame, error.to_string());
-                    break;
-                }
-            };
+        let drop_before = (!force_next_frame)
+            .then(|| stale_frame_drop_before(&master_clock))
+            .flatten();
+        let publish_late_frame = drop_before.is_some()
+            && should_publish_late_frame(
+                consecutive_clock_drops,
+                last_published_at,
+                Instant::now(),
+            );
+        let drop_before_pts = if publish_late_frame {
+            f64::NAN
+        } else {
+            drop_before.map(|pts| pts.as_secs_f64()).unwrap_or(f64::NAN)
+        };
+        let pts = match native.next_frame(
+            &mut buffer,
+            drop_before_pts,
+            &stop,
+            &seek_generation,
+            seen_seek_generation,
+        ) {
+            Ok(NativeFrame::Frame(pts)) => pts,
+            Ok(NativeFrame::Dropped) => {
+                consecutive_clock_drops = consecutive_clock_drops.saturating_add(1);
+                continue;
+            }
+            Ok(NativeFrame::Interrupted) => continue,
+            Ok(NativeFrame::Ended) => {
+                mark_ended(&latest_frame);
+                break;
+            }
+            Err(error) => {
+                mark_error(&latest_frame, error.to_string());
+                break;
+            }
+        };
 
         let pts = if pts.is_finite() && pts >= 0.0 {
             pts
@@ -474,7 +509,7 @@ fn run_video_decode_thread(
             pts
         };
         let pts_duration = Duration::from_secs_f64(pts);
-        if !force_next_frame {
+        if !force_next_frame && !publish_late_frame {
             let mut due_at = started_at + pts_duration;
             let mut drop_frame = false;
             loop {
@@ -538,6 +573,9 @@ fn run_video_decode_thread(
                 thread::sleep((due_at - now).min(Duration::from_millis(10)));
             }
             if force_next_frame || drop_frame {
+                if drop_frame {
+                    consecutive_clock_drops = consecutive_clock_drops.saturating_add(1);
+                }
                 continue;
             }
         }
@@ -560,6 +598,8 @@ fn run_video_decode_thread(
                 break;
             }
             force_next_frame = true;
+            consecutive_clock_drops = 0;
+            last_published_at = Instant::now();
             continue;
         }
 
@@ -572,6 +612,8 @@ fn run_video_decode_thread(
             seen_seek_generation,
         );
         last_published_pts = Some(pts_duration);
+        last_published_at = Instant::now();
+        consecutive_clock_drops = 0;
         force_next_frame = false;
     }
 }
@@ -580,6 +622,20 @@ fn master_clock_position(master_clock: &Mutex<Option<Arc<AtomicI64>>>) -> Option
     let clock = master_clock.lock().ok()?.clone()?;
     let micros = clock.load(Ordering::Acquire);
     (micros >= 0).then(|| Duration::from_micros(micros as u64))
+}
+
+fn stale_frame_drop_before(master_clock: &Mutex<Option<Arc<AtomicI64>>>) -> Option<Duration> {
+    master_clock_position(master_clock)
+        .and_then(|position| position.checked_sub(VIDEO_CLOCK_DROP_LAG))
+}
+
+fn should_publish_late_frame(
+    consecutive_clock_drops: u32,
+    last_published_at: Instant,
+    now: Instant,
+) -> bool {
+    consecutive_clock_drops >= MAX_CONSECUTIVE_CLOCK_DROPS
+        || now.saturating_duration_since(last_published_at) >= CLOCK_DROP_STARVATION_LIMIT
 }
 
 struct SeekRequest {
@@ -760,7 +816,13 @@ mod tests {
             NativeVideoDecoder::open(&media, 16, 16, 1.0).expect("video decoder should open");
         let mut short_frame = vec![0_u8; 16 * 16 * 3 - 1];
         let error = decoder
-            .next_frame(&mut short_frame, &AtomicI32::new(0), &AtomicI32::new(0), 0)
+            .next_frame(
+                &mut short_frame,
+                f64::NAN,
+                &AtomicI32::new(0),
+                &AtomicI32::new(0),
+                0,
+            )
             .err()
             .expect("undersized output should be rejected");
 
@@ -771,6 +833,45 @@ mod tests {
         );
         drop(decoder);
         let _ = std::fs::remove_file(media);
+    }
+
+    #[test]
+    fn stale_frame_drop_threshold_trails_audio_clock() {
+        let master_clock = Mutex::new(Some(Arc::new(AtomicI64::new(duration_micros_i64(
+            Duration::from_millis(500),
+        )))));
+
+        assert_eq!(
+            stale_frame_drop_before(&master_clock),
+            Some(Duration::from_millis(425))
+        );
+
+        let master_clock = Mutex::new(Some(Arc::new(AtomicI64::new(duration_micros_i64(
+            Duration::from_millis(50),
+        )))));
+
+        assert_eq!(stale_frame_drop_before(&master_clock), None);
+    }
+
+    #[test]
+    fn clock_drop_policy_bounds_display_starvation() {
+        let now = Instant::now();
+
+        assert!(!should_publish_late_frame(
+            MAX_CONSECUTIVE_CLOCK_DROPS - 1,
+            now,
+            now + CLOCK_DROP_STARVATION_LIMIT - Duration::from_millis(1),
+        ));
+        assert!(should_publish_late_frame(
+            MAX_CONSECUTIVE_CLOCK_DROPS,
+            now,
+            now,
+        ));
+        assert!(should_publish_late_frame(
+            0,
+            now,
+            now + CLOCK_DROP_STARVATION_LIMIT,
+        ));
     }
 
     #[test]

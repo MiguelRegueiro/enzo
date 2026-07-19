@@ -130,6 +130,7 @@ int enzo_video_decoder_next(
     uint8_t *rgb_out,
     size_t rgb_len,
     double *pts_out,
+    double drop_before_pts,
     const int *stop_flag,
     const int *seek_generation,
     int expected_seek_generation,

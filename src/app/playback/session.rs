@@ -418,7 +418,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             }
             FrameStatus::NoFrame => {
                 self.view.output.flush()?;
-                thread::sleep(Duration::from_millis(2));
+                thread::sleep(Duration::from_millis(6));
             }
             FrameStatus::Ended => {
                 self.engine.video_ended = true;

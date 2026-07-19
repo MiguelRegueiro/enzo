@@ -13,6 +13,7 @@ const MEDIA_HEADERS: &[&str] = &["csrc/media.h", "csrc/internal.h", "csrc/audio_
 const PKG_CONFIG_LIBRARIES: &[&str] = &[
     "libavformat",
     "libavcodec",
+    "libavfilter",
     "libswscale",
     "libswresample",
     "libavutil",
@@ -23,6 +24,7 @@ const PKG_CONFIG_LIBRARIES: &[&str] = &[
 const LINUX_LINK_LIBRARIES: &[&str] = &[
     "avformat",
     "avcodec",
+    "avfilter",
     "avutil",
     "swscale",
     "swresample",

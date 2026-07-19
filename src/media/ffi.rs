@@ -131,6 +131,7 @@ unsafe extern "C" {
         rgb_out: *mut c_uchar,
         rgb_len: usize,
         pts_out: *mut c_double,
+        drop_before_pts: c_double,
         stop_flag: *const c_int,
         seek_generation: *const c_int,
         expected_seek_generation: c_int,
