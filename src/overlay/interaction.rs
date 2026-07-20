@@ -76,6 +76,24 @@ pub(super) fn subtitle_picker_action(
         .then_some(SubtitlePickerAction::TogglePicker)
 }
 
+pub(super) fn track_picker_hover_index(
+    metrics: OverlayMetrics,
+    point: OverlayHitPoint,
+    picker: Option<HitboxRect>,
+    row_count: usize,
+    scroll_offset: usize,
+    visible_count: usize,
+) -> Option<usize> {
+    track_picker_row_at_point(
+        metrics,
+        picker?,
+        point,
+        row_count,
+        scroll_offset,
+        visible_count,
+    )
+}
+
 fn track_picker_row_at_point(
     metrics: OverlayMetrics,
     picker: HitboxRect,
@@ -561,6 +579,26 @@ mod tests {
         assert_eq!(
             subtitle_picker_action(metrics, hit_point(picker.left, y), true, 2),
             Some(SubtitlePickerAction::SelectTrack(0))
+        );
+    }
+
+    #[test]
+    fn picker_hover_reports_same_rows_as_click_selection() {
+        let metrics = test_metrics_with_subtitles(320, 180);
+        let picker = test_picker(metrics, 3, true);
+        let second = track_picker_track_rect(metrics, picker, 1);
+        let point = hit_point(
+            picker.left,
+            second.top + second.bottom.saturating_sub(second.top) / 2,
+        );
+
+        assert_eq!(
+            track_picker_hover_index(metrics, point, Some(picker), 4, 0, 4),
+            Some(1)
+        );
+        assert_eq!(
+            subtitle_picker_action(metrics, point, true, 3),
+            Some(SubtitlePickerAction::SelectTrack(1))
         );
     }
 

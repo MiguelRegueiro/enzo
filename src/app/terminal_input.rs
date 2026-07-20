@@ -16,7 +16,8 @@ pub(crate) enum PlaybackCommand {
     ToggleSubtitlePicker,
     ShowMediaInfo,
     ToggleMediaInfo,
-    SeekBySeconds(i32),
+    ConfirmPicker,
+    SeekBySeconds { seconds: i32, picker_direction: i32 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,8 +33,15 @@ pub(crate) enum PlaybackMouse {
     Down { column: u16, row: u16 },
     Drag { column: u16, row: u16 },
     Up { column: u16, row: u16 },
+    Move { column: u16, row: u16 },
     ScrollUp,
     ScrollDown,
+}
+
+impl PlaybackMouse {
+    pub(crate) fn interrupts_keyboard_seek(self) -> bool {
+        !matches!(self, PlaybackMouse::Move { .. })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,6 +66,14 @@ fn seek_seconds_for_key(key: &KeyCode) -> Option<i32> {
     }
 }
 
+fn picker_direction_for_key(key: &KeyCode) -> Option<i32> {
+    match key {
+        KeyCode::Up => Some(-1),
+        KeyCode::Down => Some(1),
+        _ => None,
+    }
+}
+
 fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
     match key {
         KeyCode::Char('q') => PlaybackCommand::Quit,
@@ -68,6 +84,7 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Char('s') => PlaybackCommand::ToggleSubtitlePicker,
         KeyCode::Char('i') => PlaybackCommand::ShowMediaInfo,
         KeyCode::Char('I') => PlaybackCommand::ToggleMediaInfo,
+        KeyCode::Enter => PlaybackCommand::ConfirmPicker,
         _ => PlaybackCommand::None,
     }
 }
@@ -80,6 +97,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         text: None,
     };
     let mut seek_seconds = 0_i32;
+    let mut picker_direction = 0_i32;
     // Passive movement can keep the terminal queue continuously non-empty.
     // Bound each drain so input can never starve frame delivery or UI expiry.
     for _ in 0..INPUT_EVENTS_PER_TICK {
@@ -101,6 +119,9 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 }
                 if let Some(seconds) = seek_seconds_for_key(&key.code) {
                     seek_seconds = seek_seconds.saturating_add(seconds);
+                }
+                if let Some(direction) = picker_direction_for_key(&key.code) {
+                    picker_direction = picker_direction.saturating_add(direction);
                 }
             }
             Event::Mouse(mouse) => {
@@ -130,6 +151,12 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     MouseEventKind::ScrollDown => {
                         input.mouse_events.push(PlaybackMouse::ScrollDown);
                     }
+                    MouseEventKind::Moved => {
+                        input.mouse_events.push(PlaybackMouse::Move {
+                            column: mouse.column,
+                            row: mouse.row,
+                        });
+                    }
                     MouseEventKind::Down(MouseButton::Right) => {
                         input.command = PlaybackCommand::TogglePause;
                     }
@@ -144,7 +171,10 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     }
 
     if seek_seconds != 0 && input.command == PlaybackCommand::None {
-        input.command = PlaybackCommand::SeekBySeconds(seek_seconds);
+        input.command = PlaybackCommand::SeekBySeconds {
+            seconds: seek_seconds,
+            picker_direction,
+        };
     }
 
     Ok(input)
@@ -201,6 +231,24 @@ mod tests {
     }
 
     #[test]
+    fn only_vertical_arrows_drive_picker_navigation() {
+        assert_eq!(picker_direction_for_key(&KeyCode::Up), Some(-1));
+        assert_eq!(picker_direction_for_key(&KeyCode::Down), Some(1));
+        assert_eq!(picker_direction_for_key(&KeyCode::Left), None);
+        assert_eq!(picker_direction_for_key(&KeyCode::Right), None);
+    }
+
+    #[test]
+    fn passive_mouse_movement_does_not_interrupt_keyboard_seek() {
+        assert!(!PlaybackMouse::Move { column: 1, row: 1 }.interrupts_keyboard_seek());
+        assert!(PlaybackMouse::Down { column: 1, row: 1 }.interrupts_keyboard_seek());
+        assert!(PlaybackMouse::Drag { column: 1, row: 1 }.interrupts_keyboard_seek());
+        assert!(PlaybackMouse::Up { column: 1, row: 1 }.interrupts_keyboard_seek());
+        assert!(PlaybackMouse::ScrollUp.interrupts_keyboard_seek());
+        assert!(PlaybackMouse::ScrollDown.interrupts_keyboard_seek());
+    }
+
+    #[test]
     fn letter_keys_map_to_playback_commands() {
         assert_eq!(
             playback_command_for_key(&KeyCode::Char('a')),
@@ -213,6 +261,10 @@ mod tests {
         assert_eq!(
             playback_command_for_key(&KeyCode::Char('v')),
             PlaybackCommand::ToggleSubtitles
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Enter),
+            PlaybackCommand::ConfirmPicker
         );
     }
 }

@@ -149,8 +149,14 @@ impl<W: Write> InteractionContext<'_, W> {
                 }
                 self.view.dirty = self.view.have_frame;
             }
-            PlaybackCommand::ToggleAudioPicker => self.toggle_audio_picker(input_at),
-            PlaybackCommand::ToggleSubtitlePicker => self.toggle_subtitle_picker(input_at),
+            PlaybackCommand::ToggleAudioPicker => {
+                self.release_keyboard_seek_preview()?;
+                self.toggle_audio_picker(input_at);
+            }
+            PlaybackCommand::ToggleSubtitlePicker => {
+                self.release_keyboard_seek_preview()?;
+                self.toggle_subtitle_picker(input_at);
+            }
             PlaybackCommand::ShowMediaInfo => {
                 self.ui.media_info.show(input_at);
                 self.view.dirty = self.view.have_frame;
@@ -159,7 +165,17 @@ impl<W: Write> InteractionContext<'_, W> {
                 self.ui.media_info.toggle();
                 self.view.dirty = self.view.have_frame;
             }
-            PlaybackCommand::SeekBySeconds(seconds) => {
+            PlaybackCommand::SeekBySeconds {
+                seconds,
+                picker_direction,
+            } => {
+                if self.ui.audio_picker_open || self.ui.subtitle_picker_open {
+                    if picker_direction != 0 && self.navigate_open_picker(picker_direction) {
+                        self.ui.show_overlay(input_at);
+                        self.view.dirty = self.view.have_frame;
+                    }
+                    return Ok(None);
+                }
                 let base_position = self.seeking.scrub_position.unwrap_or(self.engine.position);
                 let seek_target = seek_position(base_position, seconds, self.source.duration);
                 if is_end_seek(seek_target, self.source.duration) {
@@ -194,6 +210,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 self.seeking.scrub_position = Some(seek_target);
                 self.seeking.keyboard_commit_at = Some(input_at + KEYBOARD_SEEK_COMMIT_AFTER);
             }
+            PlaybackCommand::ConfirmPicker => self.confirm_open_picker(input_at)?,
             PlaybackCommand::None => {}
         }
         Ok(None)
@@ -236,7 +253,9 @@ impl<W: Write> InteractionContext<'_, W> {
         };
         let audio_labels = self.audio.labels();
         let subtitle_labels = self.subtitles.labels();
-        if !mouse_events.is_empty()
+        if mouse_events
+            .iter()
+            .any(|mouse| mouse.interrupts_keyboard_seek())
             && self.seeking.keyboard_commit_at.take().is_some()
             && let (Some(seek), Some(seek_target)) = (
                 self.seeking.pending.as_mut(),
@@ -275,36 +294,9 @@ impl<W: Write> InteractionContext<'_, W> {
                         self.seeking.scrub_position = None;
                         self.ui.show_overlay(input_at);
                         match action {
-                            AudioPickerAction::TogglePicker => {
-                                self.ui.audio_picker_open = !self.ui.audio_picker_open;
-                                if self.ui.audio_picker_open {
-                                    self.ui.subtitle_picker_open = false;
-                                }
-                            }
+                            AudioPickerAction::TogglePicker => self.toggle_audio_picker(input_at),
                             AudioPickerAction::SelectTrack(index) => {
-                                self.audio.select(Some(index));
-                                sync_resume_audio(
-                                    self.resume,
-                                    self.audio.tracks(),
-                                    self.audio.selected(),
-                                );
-                                self.ui.audio_picker_open = false;
-                                if let Some(mut player) = self.engine.audio.take() {
-                                    player.stop()?;
-                                }
-                                self.engine.audio_done = true;
-                                self.seeking.pending = Some(seek_playback(
-                                    self.path,
-                                    self.source.has_audio,
-                                    &mut self.engine.video,
-                                    &mut self.engine.audio,
-                                    &mut self.engine.audio_done,
-                                    self.audio.choice(),
-                                    self.engine.position,
-                                    true,
-                                    self.engine.paused,
-                                    self.engine.muted,
-                                )?);
+                                self.select_audio_track(index)?
                             }
                         }
                         self.view.dirty = self.view.have_frame;
@@ -321,25 +313,12 @@ impl<W: Write> InteractionContext<'_, W> {
                         self.ui.show_overlay(input_at);
                         match action {
                             SubtitlePickerAction::TogglePicker => {
-                                self.ui.subtitle_picker_open = !self.ui.subtitle_picker_open;
-                                if self.ui.subtitle_picker_open {
-                                    self.ui.audio_picker_open = false;
-                                }
+                                self.toggle_subtitle_picker(input_at)
                             }
                             SubtitlePickerAction::SelectTrack(index) => {
-                                self.subtitles.select(Some(index));
-                                self.sync_subtitle_selection();
-                                self.ui.subtitle_picker_open = false;
-                                self.refresh_subtitle_renderer();
-                                if self.subtitles.active().is_none() {
-                                    self.show_subtitle_status("SUBTITLE LOADING", input_at);
-                                }
+                                self.select_subtitle_track(index, input_at)
                             }
-                            SubtitlePickerAction::SelectOff => {
-                                self.subtitles.select(None);
-                                self.sync_subtitle_selection();
-                                self.ui.subtitle_picker_open = false;
-                            }
+                            SubtitlePickerAction::SelectOff => self.select_subtitle_off(),
                         }
                         self.view.dirty = self.view.have_frame;
                     } else if point.is_some_and(|point| {
@@ -349,7 +328,9 @@ impl<W: Write> InteractionContext<'_, W> {
                     }) {
                         self.seeking.scrub_position = None;
                         self.ui.subtitle_picker_open = false;
+                        self.ui.subtitle_picker_focus = None;
                         self.ui.audio_picker_open = false;
+                        self.ui.audio_picker_focus = None;
                         self.ui.show_overlay(input_at);
                         self.engine.toggle_pause(self.seeking.pending.is_some());
                         self.view.dirty = self.view.have_frame;
@@ -357,7 +338,9 @@ impl<W: Write> InteractionContext<'_, W> {
                         let picker_was_open =
                             self.ui.audio_picker_open || self.ui.subtitle_picker_open;
                         self.ui.audio_picker_open = false;
+                        self.ui.audio_picker_focus = None;
                         self.ui.subtitle_picker_open = false;
+                        self.ui.subtitle_picker_focus = None;
                         self.seeking.scrub_position = point
                             .and_then(|point| {
                                 self.view.overlay.progress_hit_test(hit_context, point)
@@ -372,6 +355,12 @@ impl<W: Write> InteractionContext<'_, W> {
                         if picker_was_open || self.seeking.scrub_position.is_some() {
                             self.view.dirty = self.view.have_frame;
                         }
+                    }
+                    None
+                }
+                PlaybackMouse::Move { column, row } => {
+                    if let Some(point) = mouse_canvas_position(column, row, self.view.canvas) {
+                        self.hover_open_picker(hit_context, point, &audio_labels, &subtitle_labels);
                     }
                     None
                 }
@@ -452,24 +441,40 @@ impl<W: Write> InteractionContext<'_, W> {
     fn scroll_open_picker(&mut self, context: OverlayHitContext, direction: i32) {
         if self.ui.audio_picker_open {
             let row_count = self.audio.labels().len();
+            let visible_count = self
+                .view
+                .overlay
+                .track_picker_visible_row_count(context, row_count);
             self.ui.audio_picker_offset = scrolled_picker_offset(
                 self.ui.audio_picker_offset,
                 direction,
                 row_count,
-                self.view
-                    .overlay
-                    .track_picker_visible_row_count(context, row_count),
+                visible_count,
+            );
+            self.ui.audio_picker_focus = keep_focus_visible(
+                self.ui.audio_picker_focus,
+                self.ui.audio_picker_offset,
+                row_count,
+                visible_count,
             );
             self.view.dirty = self.view.have_frame;
         } else if self.ui.subtitle_picker_open {
             let row_count = self.subtitles.labels().len().saturating_add(1);
+            let visible_count = self
+                .view
+                .overlay
+                .track_picker_visible_row_count(context, row_count);
             self.ui.subtitle_picker_offset = scrolled_picker_offset(
                 self.ui.subtitle_picker_offset,
                 direction,
                 row_count,
-                self.view
-                    .overlay
-                    .track_picker_visible_row_count(context, row_count),
+                visible_count,
+            );
+            self.ui.subtitle_picker_focus = keep_focus_visible(
+                self.ui.subtitle_picker_focus,
+                self.ui.subtitle_picker_offset,
+                row_count,
+                visible_count,
             );
             self.view.dirty = self.view.have_frame;
         }
@@ -480,13 +485,30 @@ impl<W: Write> InteractionContext<'_, W> {
         self.ui.show_overlay(input_at);
         if !self.audio.is_available() {
             self.ui.audio_picker_open = false;
+            self.ui.audio_picker_focus = None;
             self.ui.subtitle_picker_open = false;
+            self.ui.subtitle_picker_focus = None;
             self.ui.status_message = Some(PlaybackUi::status("NO AUDIO TRACKS", input_at));
         } else {
             self.ui.audio_picker_open = !self.ui.audio_picker_open;
             if self.ui.audio_picker_open {
-                self.ui.audio_picker_offset = self.audio.selected().unwrap_or(0);
+                let row_count = self.audio.labels().len();
+                let focus = self
+                    .audio
+                    .selected()
+                    .unwrap_or(0)
+                    .min(row_count.saturating_sub(1));
+                self.ui.audio_picker_focus = (row_count > 0).then_some(focus);
+                self.ui.audio_picker_offset = picker_offset_for_focus(
+                    0,
+                    focus,
+                    row_count,
+                    self.visible_picker_rows(row_count),
+                );
                 self.ui.subtitle_picker_open = false;
+                self.ui.subtitle_picker_focus = None;
+            } else {
+                self.ui.audio_picker_focus = None;
             }
         }
         self.view.dirty = self.view.have_frame;
@@ -497,16 +519,219 @@ impl<W: Write> InteractionContext<'_, W> {
         self.ui.show_overlay(input_at);
         if !self.subtitles.is_available() {
             self.ui.audio_picker_open = false;
+            self.ui.audio_picker_focus = None;
             self.ui.subtitle_picker_open = false;
+            self.ui.subtitle_picker_focus = None;
             self.ui.status_message = Some(PlaybackUi::status("NO SUBTITLES", input_at));
         } else {
             self.ui.subtitle_picker_open = !self.ui.subtitle_picker_open;
             if self.ui.subtitle_picker_open {
-                self.ui.subtitle_picker_offset = self.subtitles.selected().unwrap_or(0);
+                let row_count = self.subtitles.labels().len().saturating_add(1);
+                let focus = self
+                    .subtitles
+                    .selected()
+                    .unwrap_or_else(|| row_count.saturating_sub(1));
+                self.ui.subtitle_picker_focus = (row_count > 0).then_some(focus);
+                self.ui.subtitle_picker_offset = picker_offset_for_focus(
+                    0,
+                    focus,
+                    row_count,
+                    self.visible_picker_rows(row_count),
+                );
                 self.ui.audio_picker_open = false;
+                self.ui.audio_picker_focus = None;
+            } else {
+                self.ui.subtitle_picker_focus = None;
             }
         }
         self.view.dirty = self.view.have_frame;
+    }
+
+    fn release_keyboard_seek_preview(&mut self) -> Result<()> {
+        if self.seeking.keyboard_commit_at.take().is_none() {
+            return Ok(());
+        }
+        let Some(seek_target) = self.seeking.scrub_position.take() else {
+            return Ok(());
+        };
+        if let Some(seek) = self.seeking.pending.as_mut() {
+            if seek.needs_exact_retarget_for_release(seek_target) {
+                seek.retarget_video(&mut self.engine.video, seek_target, true);
+            }
+            seek.request_release();
+        } else {
+            self.seeking.pending = Some(seek_playback(
+                self.path,
+                self.source.has_audio,
+                &mut self.engine.video,
+                &mut self.engine.audio,
+                &mut self.engine.audio_done,
+                self.audio.choice(),
+                seek_target,
+                true,
+                self.engine.paused,
+                self.engine.muted,
+            )?);
+        }
+        self.engine.video_ended = false;
+        self.engine.next_frame_at = Instant::now();
+        self.view.dirty = false;
+        Ok(())
+    }
+
+    fn navigate_open_picker(&mut self, direction: i32) -> bool {
+        if direction == 0 {
+            return false;
+        }
+        if self.ui.audio_picker_open {
+            let row_count = self.audio.labels().len();
+            let Some(next) = moved_picker_focus(self.ui.audio_picker_focus, direction, row_count)
+            else {
+                return false;
+            };
+            self.ui.audio_picker_focus = Some(next);
+            self.ui.audio_picker_offset = picker_offset_for_focus(
+                self.ui.audio_picker_offset,
+                next,
+                row_count,
+                self.visible_picker_rows(row_count),
+            );
+            true
+        } else if self.ui.subtitle_picker_open {
+            let row_count = self.subtitles.labels().len().saturating_add(1);
+            let Some(next) =
+                moved_picker_focus(self.ui.subtitle_picker_focus, direction, row_count)
+            else {
+                return false;
+            };
+            self.ui.subtitle_picker_focus = Some(next);
+            self.ui.subtitle_picker_offset = picker_offset_for_focus(
+                self.ui.subtitle_picker_offset,
+                next,
+                row_count,
+                self.visible_picker_rows(row_count),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn confirm_open_picker(&mut self, input_at: Instant) -> Result<()> {
+        if self.ui.audio_picker_open
+            && let Some(index) = self.ui.audio_picker_focus
+        {
+            self.select_audio_track(index)?;
+            self.view.dirty = self.view.have_frame;
+        } else if self.ui.subtitle_picker_open
+            && let Some(index) = self.ui.subtitle_picker_focus
+        {
+            if index < self.subtitles.labels().len() {
+                self.select_subtitle_track(index, input_at);
+            } else {
+                self.select_subtitle_off();
+            }
+            self.view.dirty = self.view.have_frame;
+        }
+        Ok(())
+    }
+
+    fn hover_open_picker(
+        &mut self,
+        context: OverlayHitContext,
+        point: crate::overlay::OverlayHitPoint,
+        audio_labels: &[std::sync::Arc<str>],
+        subtitle_labels: &[std::sync::Arc<str>],
+    ) {
+        if self.ui.audio_picker_open
+            && let Some(index) = self.view.overlay.audio_picker_hover_index(
+                context,
+                point,
+                true,
+                self.ui.audio_picker_offset,
+                audio_labels,
+            )
+            && self.ui.audio_picker_focus != Some(index)
+        {
+            self.ui.audio_picker_focus = Some(index);
+            self.view.dirty = self.view.have_frame;
+        } else if self.ui.subtitle_picker_open
+            && let Some(index) = self.view.overlay.subtitle_picker_hover_index(
+                context,
+                point,
+                true,
+                self.ui.subtitle_picker_offset,
+                subtitle_labels,
+            )
+            && self.ui.subtitle_picker_focus != Some(index)
+        {
+            self.ui.subtitle_picker_focus = Some(index);
+            self.view.dirty = self.view.have_frame;
+        }
+    }
+
+    fn select_audio_track(&mut self, index: usize) -> Result<()> {
+        if index >= self.audio.labels().len() {
+            return Ok(());
+        }
+        self.audio.select(Some(index));
+        sync_resume_audio(self.resume, self.audio.tracks(), self.audio.selected());
+        self.ui.audio_picker_open = false;
+        self.ui.audio_picker_focus = None;
+        if let Some(mut player) = self.engine.audio.take() {
+            player.stop()?;
+        }
+        self.engine.audio_done = true;
+        self.seeking.pending = Some(seek_playback(
+            self.path,
+            self.source.has_audio,
+            &mut self.engine.video,
+            &mut self.engine.audio,
+            &mut self.engine.audio_done,
+            self.audio.choice(),
+            self.engine.position,
+            true,
+            self.engine.paused,
+            self.engine.muted,
+        )?);
+        Ok(())
+    }
+
+    fn select_subtitle_track(&mut self, index: usize, input_at: Instant) {
+        if index >= self.subtitles.labels().len() {
+            return;
+        }
+        self.subtitles.select(Some(index));
+        self.sync_subtitle_selection();
+        self.ui.subtitle_picker_open = false;
+        self.ui.subtitle_picker_focus = None;
+        self.refresh_subtitle_renderer();
+        if self.subtitles.active().is_none() {
+            self.show_subtitle_status("SUBTITLE LOADING", input_at);
+        }
+    }
+
+    fn select_subtitle_off(&mut self) {
+        self.subtitles.select(None);
+        self.sync_subtitle_selection();
+        self.ui.subtitle_picker_open = false;
+        self.ui.subtitle_picker_focus = None;
+    }
+
+    fn visible_picker_rows(&mut self, row_count: usize) -> usize {
+        let context = OverlayHitContext {
+            width: self.view.canvas.width,
+            height: self.view.canvas.height,
+            terminal_rows: self.view.canvas.area.rows,
+            scale_percent: self.view.canvas.overlay_scale_percent,
+            position: self.seeking.scrub_position.unwrap_or(self.engine.position),
+            duration: self.source.duration,
+            audio_available: self.audio.is_available(),
+            subtitles_available: self.subtitles.is_available(),
+        };
+        self.view
+            .overlay
+            .track_picker_visible_row_count(context, row_count)
     }
 
     fn sync_subtitle_selection(&mut self) {
@@ -543,5 +768,52 @@ fn scrolled_picker_offset(
         offset.saturating_sub(1)
     } else {
         offset.saturating_add(1).min(max_offset)
+    }
+}
+
+fn moved_picker_focus(current: Option<usize>, direction: i32, row_count: usize) -> Option<usize> {
+    if row_count == 0 {
+        return None;
+    }
+    let current = current.unwrap_or(0).min(row_count - 1);
+    if direction < 0 {
+        Some(current.saturating_sub(1))
+    } else {
+        Some(current.saturating_add(1).min(row_count - 1))
+    }
+}
+
+fn keep_focus_visible(
+    focus: Option<usize>,
+    offset: usize,
+    row_count: usize,
+    visible_count: usize,
+) -> Option<usize> {
+    let visible_count = visible_count.max(1).min(row_count.max(1));
+    let last_visible = offset
+        .saturating_add(visible_count)
+        .min(row_count)
+        .saturating_sub(1);
+    let focus = focus?.min(row_count.checked_sub(1)?);
+    Some(focus.clamp(offset, last_visible))
+}
+
+fn picker_offset_for_focus(
+    offset: usize,
+    focus: usize,
+    row_count: usize,
+    visible_count: usize,
+) -> usize {
+    let visible_count = visible_count.max(1).min(row_count.max(1));
+    let max_offset = row_count.saturating_sub(visible_count);
+    if focus < offset {
+        focus.min(max_offset)
+    } else if focus >= offset.saturating_add(visible_count) {
+        focus
+            .saturating_add(1)
+            .saturating_sub(visible_count)
+            .min(max_offset)
+    } else {
+        offset.min(max_offset)
     }
 }

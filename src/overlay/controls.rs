@@ -197,6 +197,7 @@ pub(super) fn draw_track_picker(
     labels: &[Arc<str>],
     selected_track: Option<usize>,
     scroll_offset: usize,
+    focused_track: Option<usize>,
     include_off: bool,
     acrylic: &mut AcrylicScratch,
 ) {
@@ -251,6 +252,17 @@ pub(super) fn draw_track_picker(
         } else {
             selected_track.is_none()
         };
+        if focused_track == Some(index) {
+            draw_picker_focus(
+                frame,
+                width,
+                height,
+                metrics,
+                picker,
+                visible_index,
+                row_count > visible_count,
+            );
+        }
         if selected {
             draw_picker_marker(
                 frame,
@@ -427,6 +439,49 @@ fn fit_picker_text(
         }
     }
     suffix.to_string()
+}
+
+fn draw_picker_focus(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    picker: HitboxRect,
+    visible_index: usize,
+    has_scrollbar: bool,
+) {
+    let pad = picker_padding(metrics);
+    let left_pad = pad / 2;
+    let right_pad = if has_scrollbar { pad.max(8) } else { left_pad };
+    let row = track_picker_track_rect(metrics, picker, visible_index);
+    let top = row.top.saturating_add(1);
+    let row_height = row.bottom.saturating_sub(row.top).saturating_sub(2);
+    let focus_width = row
+        .right
+        .saturating_sub(row.left)
+        .saturating_sub(left_pad)
+        .saturating_sub(right_pad);
+    if row_height == 0 || focus_width == 0 {
+        return;
+    }
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(row.left.saturating_add(left_pad)),
+            y: f64::from(top),
+            width: f64::from(focus_width),
+            height: f64::from(row_height),
+            radius: f64::from(rounded_radius(
+                row.right.saturating_sub(row.left),
+                row_height,
+                metrics.text_size / 4,
+            )),
+        },
+        TEXT_COLOR,
+        32,
+    );
 }
 
 fn draw_picker_marker(

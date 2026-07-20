@@ -24,7 +24,7 @@ use std::sync::Arc;
 use acrylic::AcrylicScratch;
 use interaction::{
     audio_picker_action, playback_button_hit, progress_hit_ratio, progress_ratio_for_x,
-    subtitle_picker_action,
+    subtitle_picker_action, track_picker_hover_index,
 };
 use layout::{
     OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
@@ -157,6 +157,55 @@ impl PlaybackOverlay {
             point,
             picker,
             labels.len(),
+            scroll_offset,
+            visible_count,
+        )
+    }
+
+    pub(crate) fn audio_picker_hover_index(
+        &mut self,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
+        picker_open: bool,
+        scroll_offset: usize,
+        labels: &[Arc<str>],
+    ) -> Option<usize> {
+        let metrics = self.metrics(context);
+        let row_count = labels.len();
+        let visible_count = track_picker_visible_row_count(metrics, row_count);
+        let scroll_offset = scroll_offset.min(row_count.saturating_sub(visible_count));
+        let picker = picker_open.then(|| {
+            track_picker_layout(metrics, labels, false, scroll_offset, self.font.as_mut())
+        });
+        track_picker_hover_index(
+            metrics,
+            point,
+            picker,
+            row_count,
+            scroll_offset,
+            visible_count,
+        )
+    }
+
+    pub(crate) fn subtitle_picker_hover_index(
+        &mut self,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
+        picker_open: bool,
+        scroll_offset: usize,
+        labels: &[Arc<str>],
+    ) -> Option<usize> {
+        let metrics = self.metrics(context);
+        let row_count = labels.len().saturating_add(1);
+        let visible_count = track_picker_visible_row_count(metrics, row_count);
+        let scroll_offset = scroll_offset.min(row_count.saturating_sub(visible_count));
+        let picker = picker_open
+            .then(|| track_picker_layout(metrics, labels, true, scroll_offset, self.font.as_mut()));
+        track_picker_hover_index(
+            metrics,
+            point,
+            picker,
+            row_count,
             scroll_offset,
             visible_count,
         )
