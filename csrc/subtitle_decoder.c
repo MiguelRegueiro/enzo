@@ -3,6 +3,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
 #include <stdint.h>
+#include <string.h>
 
 void enzo_decoded_subtitle_track_free(EnzoDecodedSubtitleTrack *track) {
     if (track == NULL) {
@@ -10,11 +11,39 @@ void enzo_decoded_subtitle_track_free(EnzoDecodedSubtitleTrack *track) {
     }
     for (size_t index = 0; index < track->count; index++) {
         av_free(track->cues[index].text);
+        av_free(track->cues[index].bitmap_indices);
     }
     av_free(track->cues);
     track->cues = NULL;
     track->count = 0;
     track->capacity = 0;
+    track->canvas_width = 0;
+    track->canvas_height = 0;
+}
+
+static int ensure_decoded_subtitle_capacity(
+    EnzoDecodedSubtitleTrack *track,
+    char *err,
+    size_t err_len
+) {
+    if (track->count < track->capacity) {
+        return 0;
+    }
+    size_t capacity = track->capacity == 0 ? 64 : track->capacity * 2;
+    if (capacity < track->capacity ||
+        capacity > SIZE_MAX / sizeof(*track->cues)) {
+        enzo_set_error(err, err_len, "subtitle cue count is too large");
+        return -1;
+    }
+    EnzoDecodedSubtitleCue *cues =
+        av_realloc_array(track->cues, capacity, sizeof(*track->cues));
+    if (cues == NULL) {
+        enzo_set_error(err, err_len, "failed to allocate subtitle cues");
+        return -1;
+    }
+    track->cues = cues;
+    track->capacity = capacity;
+    return 0;
 }
 
 static int append_decoded_subtitle_cue(
@@ -34,23 +63,9 @@ static int append_decoded_subtitle_cue(
         enzo_set_error(err, err_len, "failed to allocate subtitle cue text");
         return -1;
     }
-    if (track->count == track->capacity) {
-        size_t capacity = track->capacity == 0 ? 64 : track->capacity * 2;
-        if (capacity < track->capacity ||
-            capacity > SIZE_MAX / sizeof(*track->cues)) {
-            av_free(text_copy);
-            enzo_set_error(err, err_len, "subtitle cue count is too large");
-            return -1;
-        }
-        EnzoDecodedSubtitleCue *cues =
-            av_realloc_array(track->cues, capacity, sizeof(*track->cues));
-        if (cues == NULL) {
-            av_free(text_copy);
-            enzo_set_error(err, err_len, "failed to allocate subtitle cues");
-            return -1;
-        }
-        track->cues = cues;
-        track->capacity = capacity;
+    if (ensure_decoded_subtitle_capacity(track, err, err_len) < 0) {
+        av_free(text_copy);
+        return -1;
     }
 
     track->cues[track->count] = (EnzoDecodedSubtitleCue) {
@@ -63,12 +78,138 @@ static int append_decoded_subtitle_cue(
     return 0;
 }
 
+static int append_decoded_bitmap_cue(
+    EnzoDecodedSubtitleTrack *track,
+    int64_t start_micros,
+    int64_t end_micros,
+    const AVSubtitleRect *rect,
+    char *err,
+    size_t err_len
+) {
+    if (rect == NULL || rect->x < 0 || rect->y < 0 ||
+        rect->w <= 0 || rect->h <= 0 ||
+        rect->data[0] == NULL || rect->data[1] == NULL ||
+        rect->linesize[0] == 0) {
+        return 0;
+    }
+    size_t width = (size_t)rect->w;
+    size_t height = (size_t)rect->h;
+    if (height > SIZE_MAX / width) {
+        enzo_set_error(err, err_len, "subtitle bitmap is too large");
+        return -1;
+    }
+    size_t bitmap_len = width * height;
+    size_t pitch = (size_t)(rect->linesize[0] < 0
+        ? -(int64_t)rect->linesize[0]
+        : rect->linesize[0]);
+    if (pitch < width) {
+        enzo_set_error(err, err_len, "subtitle bitmap pitch is invalid");
+        return -1;
+    }
+    uint8_t *indices = av_malloc(bitmap_len);
+    if (indices == NULL) {
+        enzo_set_error(err, err_len, "failed to allocate subtitle bitmap");
+        return -1;
+    }
+    for (size_t row = 0; row < height; row++) {
+        size_t source_row =
+            rect->linesize[0] > 0 ? row : height - 1 - row;
+        memcpy(indices + row * width, rect->data[0] + source_row * pitch, width);
+    }
+
+    if (ensure_decoded_subtitle_capacity(track, err, err_len) < 0) {
+        av_free(indices);
+        return -1;
+    }
+
+    EnzoDecodedSubtitleCue cue = {
+        .start_micros = start_micros,
+        .end_micros = end_micros,
+        .text_kind = ENZO_SUBTITLE_BITMAP,
+        .bitmap_x = (uint32_t)rect->x,
+        .bitmap_y = (uint32_t)rect->y,
+        .bitmap_width = (uint32_t)rect->w,
+        .bitmap_height = (uint32_t)rect->h,
+        .bitmap_indices = indices,
+    };
+    size_t palette_bytes = rect->nb_colors > 0
+        ? (size_t)rect->nb_colors * 4
+        : 0;
+    if (palette_bytes > ENZO_SUBTITLE_PALETTE_BYTES) {
+        palette_bytes = ENZO_SUBTITLE_PALETTE_BYTES;
+    }
+    memcpy(cue.palette_rgba, rect->data[1], palette_bytes);
+    track->cues[track->count] = cue;
+    track->count++;
+    return 0;
+}
+
+static void close_open_bitmap_cues(
+    EnzoDecodedSubtitleTrack *track,
+    size_t *open_bitmap_start,
+    int64_t end_micros
+) {
+    if (*open_bitmap_start == SIZE_MAX) {
+        return;
+    }
+    for (size_t index = *open_bitmap_start; index < track->count; index++) {
+        EnzoDecodedSubtitleCue *cue = &track->cues[index];
+        if (cue->text_kind == ENZO_SUBTITLE_BITMAP &&
+            end_micros > cue->start_micros) {
+            cue->end_micros = end_micros;
+        }
+    }
+    *open_bitmap_start = SIZE_MAX;
+}
+
+static void update_pgs_bitmap_canvas(
+    EnzoDecodedSubtitleTrack *track,
+    const AVPacket *packet
+) {
+    if (packet->data == NULL || packet->size <= 0) {
+        return;
+    }
+    size_t packet_size = (size_t)packet->size;
+    size_t offset = 0;
+    while (offset < packet_size) {
+        if (packet_size - offset >= 10 &&
+            packet->data[offset] == 'P' && packet->data[offset + 1] == 'G') {
+            offset += 10;
+        }
+        if ((size_t)packet->size - offset < 3) {
+            return;
+        }
+        uint8_t segment_type = packet->data[offset];
+        size_t segment_len =
+            ((size_t)packet->data[offset + 1] << 8) |
+            packet->data[offset + 2];
+        offset += 3;
+        if (segment_len > packet_size - offset) {
+            return;
+        }
+        if (segment_type == 0x16 && segment_len >= 4) {
+            uint32_t width =
+                ((uint32_t)packet->data[offset] << 8) |
+                packet->data[offset + 1];
+            uint32_t height =
+                ((uint32_t)packet->data[offset + 2] << 8) |
+                packet->data[offset + 3];
+            if (width > 0 && height > 0) {
+                track->canvas_width = width;
+                track->canvas_height = height;
+            }
+        }
+        offset += segment_len;
+    }
+}
+
 static int append_decoded_subtitle(
     EnzoDecodedSubtitleTrack *track,
     const AVSubtitle *subtitle,
     const AVPacket *packet,
     const AVStream *stream,
     int64_t timestamp_origin,
+    size_t *open_bitmap_start,
     char *err,
     size_t err_len
 ) {
@@ -98,9 +239,37 @@ static int append_decoded_subtitle(
     start_micros = start_micros < 0 ? 0 : start_micros;
     end_micros = end_micros < 0 ? 0 : end_micros;
 
+    int has_bitmap = 0;
+    for (unsigned int index = 0; index < subtitle->num_rects; index++) {
+        const AVSubtitleRect *rect = subtitle->rects[index];
+        if (rect != NULL && rect->type == SUBTITLE_BITMAP) {
+            has_bitmap = 1;
+            break;
+        }
+    }
+    if (subtitle->num_rects == 0 || has_bitmap) {
+        close_open_bitmap_cues(track, open_bitmap_start, start_micros);
+    }
+    size_t bitmap_start = track->count;
+
     for (unsigned int index = 0; index < subtitle->num_rects; index++) {
         const AVSubtitleRect *rect = subtitle->rects[index];
         if (rect == NULL) {
+            continue;
+        }
+        if (rect->type == SUBTITLE_BITMAP) {
+            int64_t bitmap_end =
+                end_micros > start_micros ? end_micros : INT64_MAX;
+            if (append_decoded_bitmap_cue(
+                    track,
+                    start_micros,
+                    bitmap_end,
+                    rect,
+                    err,
+                    err_len
+                ) < 0) {
+                return -1;
+            }
             continue;
         }
         const char *text = NULL;
@@ -128,6 +297,9 @@ static int append_decoded_subtitle(
             return -1;
         }
     }
+    if (has_bitmap && track->count > bitmap_start) {
+        *open_bitmap_start = bitmap_start;
+    }
     return 0;
 }
 
@@ -137,10 +309,15 @@ static int decode_subtitle_packet(
     int64_t timestamp_origin,
     const AVPacket *packet,
     EnzoDecodedSubtitleTrack *track,
+    size_t *open_bitmap_start,
     int *got_subtitle_out,
     char *err,
     size_t err_len
 ) {
+    const AVCodecDescriptor *descriptor = avcodec_descriptor_get(codec->codec_id);
+    if (descriptor != NULL && (descriptor->props & AV_CODEC_PROP_BITMAP_SUB) != 0) {
+        update_pgs_bitmap_canvas(track, packet);
+    }
     AVSubtitle subtitle = {0};
     int got_subtitle = 0;
     int ret = avcodec_decode_subtitle2(codec, &subtitle, &got_subtitle, packet);
@@ -159,6 +336,7 @@ static int decode_subtitle_packet(
             packet,
             stream,
             timestamp_origin,
+            open_bitmap_start,
             err,
             err_len
         );
@@ -182,6 +360,8 @@ int enzo_decode_subtitle_stream(
     track_out->cues = NULL;
     track_out->count = 0;
     track_out->capacity = 0;
+    track_out->canvas_width = 0;
+    track_out->canvas_height = 0;
 
     AVFormatContext *format = NULL;
     if (enzo_open_stream_probe(path, &format, err, err_len) < 0) {
@@ -209,10 +389,20 @@ int enzo_decode_subtitle_stream(
     AVStream *stream = format->streams[stream_index];
     const AVCodecDescriptor *descriptor =
         avcodec_descriptor_get(stream->codecpar->codec_id);
-    if (descriptor == NULL || (descriptor->props & AV_CODEC_PROP_TEXT_SUB) == 0) {
-        enzo_set_error(err, err_len, "selected subtitle stream is not text based");
+    if (descriptor == NULL ||
+        (descriptor->props & (AV_CODEC_PROP_TEXT_SUB | AV_CODEC_PROP_BITMAP_SUB)) == 0) {
+        enzo_set_error(err, err_len, "selected subtitle stream is not supported");
         avformat_close_input(&format);
         return -1;
+    }
+    for (unsigned int index = 0; index < format->nb_streams; index++) {
+        const AVCodecParameters *parameters = format->streams[index]->codecpar;
+        if (parameters->codec_type == AVMEDIA_TYPE_VIDEO &&
+            parameters->width > 0 && parameters->height > 0) {
+            track_out->canvas_width = (uint32_t)parameters->width;
+            track_out->canvas_height = (uint32_t)parameters->height;
+            break;
+        }
     }
 
     const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
@@ -253,6 +443,7 @@ int enzo_decode_subtitle_stream(
     }
 
     int status = 0;
+    size_t open_bitmap_start = SIZE_MAX;
     int64_t timestamp_origin = enzo_stream_timestamp_origin(format, stream);
     while ((ret = av_read_frame(format, packet)) >= 0) {
         if (packet->stream_index == stream_index &&
@@ -262,6 +453,7 @@ int enzo_decode_subtitle_stream(
                 timestamp_origin,
                 packet,
                 track_out,
+                &open_bitmap_start,
                 NULL,
                 err,
                 err_len
@@ -290,6 +482,7 @@ int enzo_decode_subtitle_stream(
                     timestamp_origin,
                     &flush_packet,
                     track_out,
+                    &open_bitmap_start,
                     &got_subtitle,
                     err,
                     err_len

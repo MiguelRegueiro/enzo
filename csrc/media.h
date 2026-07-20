@@ -20,6 +20,8 @@
 
 #define ENZO_SUBTITLE_TEXT 1
 #define ENZO_SUBTITLE_ASS 2
+#define ENZO_SUBTITLE_BITMAP 3
+#define ENZO_SUBTITLE_PALETTE_BYTES (256 * 4)
 
 typedef struct EnzoVideoInfo {
     uint32_t width;
@@ -59,12 +61,20 @@ typedef struct EnzoDecodedSubtitleCue {
     int64_t end_micros;
     int text_kind;
     char *text;
+    uint32_t bitmap_x;
+    uint32_t bitmap_y;
+    uint32_t bitmap_width;
+    uint32_t bitmap_height;
+    uint8_t *bitmap_indices;
+    uint8_t palette_rgba[ENZO_SUBTITLE_PALETTE_BYTES];
 } EnzoDecodedSubtitleCue;
 
 typedef struct EnzoDecodedSubtitleTrack {
     EnzoDecodedSubtitleCue *cues;
     size_t count;
     size_t capacity;
+    uint32_t canvas_width;
+    uint32_t canvas_height;
 } EnzoDecodedSubtitleTrack;
 
 typedef struct EnzoVideoDecoder EnzoVideoDecoder;

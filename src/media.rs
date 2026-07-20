@@ -17,5 +17,7 @@ pub(crate) use probe::{
     AudioTrack, SubtitleStreamInfo, VideoInfo, load_audio_tracks, load_subtitle_streams,
     probe_video,
 };
-pub(crate) use subtitle::{DecodedSubtitleCue, DecodedSubtitleTextKind, decode_subtitle_stream};
+pub(crate) use subtitle::{
+    DecodedSubtitleBitmap, DecodedSubtitleCue, DecodedSubtitleTextKind, decode_subtitle_stream,
+};
 pub(crate) use video::{FrameStatus, VideoDecoder};

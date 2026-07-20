@@ -12,6 +12,8 @@ pub(super) const HDR_PQ: c_int = 1;
 pub(super) const HDR_HLG: c_int = 2;
 pub(super) const SUBTITLE_TEXT: c_int = 1;
 pub(super) const SUBTITLE_ASS: c_int = 2;
+pub(super) const SUBTITLE_BITMAP: c_int = 3;
+pub(super) const SUBTITLE_PALETTE_BYTES: usize = 256 * 4;
 
 #[repr(C)]
 pub(super) struct EnzoVideoInfo {
@@ -55,6 +57,12 @@ pub(super) struct EnzoDecodedSubtitleCue {
     pub(super) end_micros: i64,
     pub(super) text_kind: c_int,
     pub(super) text: *mut c_char,
+    pub(super) bitmap_x: u32,
+    pub(super) bitmap_y: u32,
+    pub(super) bitmap_width: u32,
+    pub(super) bitmap_height: u32,
+    pub(super) bitmap_indices: *mut c_uchar,
+    pub(super) palette_rgba: [u8; SUBTITLE_PALETTE_BYTES],
 }
 
 #[repr(C)]
@@ -62,6 +70,8 @@ pub(super) struct EnzoDecodedSubtitleTrack {
     pub(super) cues: *mut EnzoDecodedSubtitleCue,
     pub(super) count: usize,
     pub(super) capacity: usize,
+    pub(super) canvas_width: u32,
+    pub(super) canvas_height: u32,
 }
 
 #[repr(C)]

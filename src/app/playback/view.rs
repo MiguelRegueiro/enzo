@@ -6,7 +6,7 @@ use std::{
 use crate::{
     font_system::FontSystem,
     overlay::{OverlayState, PlaybackOverlay},
-    subtitle::{SubtitleRenderer, SubtitleTrack},
+    subtitle::{SubtitleLayout, SubtitleRenderer, SubtitleTrack},
     terminal::{
         KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, clear_screen_and_images,
         write_kitty_rgb_frame,
@@ -111,8 +111,14 @@ impl<W: Write> PlaybackView<W> {
         if subtitles_visible && let Some(subtitle_track) = subtitle_track {
             self.subtitle_renderer.render(
                 &mut self.composited_frame,
-                self.canvas.width,
-                self.canvas.height,
+                SubtitleLayout {
+                    canvas_width: self.canvas.width,
+                    canvas_height: self.canvas.height,
+                    video_x: self.canvas.video_x,
+                    video_y: self.canvas.video_y,
+                    video_width: self.canvas.video_width,
+                    video_height: self.canvas.video_height,
+                },
                 subtitle_track,
                 playback_position,
                 subtitle_bottom_reserve(self.canvas.height, overlay_state.visible),

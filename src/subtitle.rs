@@ -1,3 +1,5 @@
+mod bitmap;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -8,13 +10,14 @@ use std::{
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
+use bitmap::draw_bitmap_subtitle;
 
 use crate::{
     font::FontRenderer,
     font_system::{FontRole, FontSystem},
     media::{
-        DecodedSubtitleCue, DecodedSubtitleTextKind, SubtitleStreamInfo, decode_subtitle_stream,
-        load_subtitle_streams,
+        DecodedSubtitleBitmap, DecodedSubtitleCue, DecodedSubtitleTextKind, SubtitleStreamInfo,
+        decode_subtitle_stream, load_subtitle_streams,
     },
 };
 
@@ -23,8 +26,9 @@ const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
 const MAX_SUBTITLE_WIDTH_RATIO: f64 = 0.84;
 const MAX_ACTIVE_SUBTITLE_LINES: usize = 3;
 const LANGUAGE_DETECTION_SAMPLE_BYTES: usize = 16 * 1024;
-const TEXT_SUBTITLE_CODECS: &[&str] = &[
+const SUPPORTED_SUBTITLE_CODECS: &[&str] = &[
     "ass",
+    "hdmv_pgs_subtitle",
     "ssa",
     "subrip",
     "srt",
@@ -39,6 +43,7 @@ pub(crate) struct SubtitleCue {
     start: Duration,
     end: Duration,
     lines: Vec<String>,
+    bitmap: Option<DecodedSubtitleBitmap>,
 }
 
 #[derive(Debug)]
@@ -96,18 +101,51 @@ impl SubtitleTrack {
         }
         (!lines.is_empty()).then_some(lines)
     }
+
+    fn active_bitmaps(&self, position: Duration) -> impl Iterator<Item = &DecodedSubtitleBitmap> {
+        let end = self.cues.partition_point(|cue| cue.start <= position);
+        self.cues[..end]
+            .iter()
+            .filter(move |cue| position < cue.end)
+            .filter_map(|cue| cue.bitmap.as_ref())
+    }
 }
 
-pub(crate) fn sidecar_subtitle_path(media_path: &Path) -> Option<PathBuf> {
+pub(crate) fn sidecar_subtitle_paths(media_path: &Path) -> Vec<PathBuf> {
     let text = media_path.as_os_str().to_string_lossy();
     if text.contains("://") {
-        return None;
+        return Vec::new();
     }
 
-    ["srt", "ass", "ssa", "vtt"]
-        .into_iter()
-        .map(|extension| media_path.with_extension(extension))
-        .find(|path| path.is_file())
+    let Some(parent) = media_path.parent() else {
+        return Vec::new();
+    };
+    let Some(stem) = media_path.file_stem().map(|stem| stem.to_string_lossy()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let prefix = format!("{stem}.");
+    let mut paths = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().starts_with(&prefix))
+                .unwrap_or(false)
+                && matches_subtitle_extension(path, &["srt", "ass", "ssa", "vtt"])
+        })
+        .collect::<Vec<_>>();
+    paths.sort_by_key(|path| {
+        (
+            path.file_stem()
+                .is_none_or(|subtitle_stem| subtitle_stem != stem.as_ref()),
+            path.clone(),
+        )
+    });
+    paths
 }
 
 #[cfg(test)]
@@ -127,7 +165,7 @@ pub(crate) fn load_embedded_subtitle_track(
     stream: &EmbeddedSubtitleStream,
     fallback_index: usize,
 ) -> Result<Option<SubtitleTrack>> {
-    if !stream.is_text() {
+    if !stream.is_supported() {
         return Ok(None);
     }
     let subtitle_index = stream.subtitle_index.unwrap_or(fallback_index);
@@ -172,6 +210,14 @@ fn subtitle_language_sample(cues: &[SubtitleCue]) -> String {
 }
 
 fn subtitle_cue_from_decoded(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
+    if matches!(cue.kind, DecodedSubtitleTextKind::Bitmap) {
+        return Some(SubtitleCue {
+            start: cue.start,
+            end: cue.end,
+            lines: Vec::new(),
+            bitmap: cue.bitmap,
+        });
+    }
     if matches!(cue.kind, DecodedSubtitleTextKind::Ass) {
         return subtitle_cue_from_decoded_ass(cue);
     }
@@ -188,6 +234,7 @@ fn subtitle_cue_from_decoded(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
         start: cue.start,
         end: cue.end,
         lines,
+        bitmap: None,
     })
 }
 
@@ -216,6 +263,7 @@ fn subtitle_cue_from_decoded_ass(cue: DecodedSubtitleCue) -> Option<SubtitleCue>
         start: cue.start,
         end: cue.end,
         lines: nonempty_subtitle_lines(text),
+        bitmap: None,
     })
 }
 
@@ -233,6 +281,7 @@ fn subtitle_cue_from_decoded_plain_ass(cue: DecodedSubtitleCue) -> Option<Subtit
         start: cue.start,
         end: cue.end,
         lines,
+        bitmap: None,
     })
 }
 
@@ -264,10 +313,10 @@ impl EmbeddedSubtitleStream {
         self.subtitle_index
     }
 
-    pub(crate) fn is_text(&self) -> bool {
+    pub(crate) fn is_supported(&self) -> bool {
         self.codec
             .as_deref()
-            .map(|codec| TEXT_SUBTITLE_CODECS.contains(&codec))
+            .map(|codec| SUPPORTED_SUBTITLE_CODECS.contains(&codec))
             .unwrap_or(true)
     }
 }
@@ -403,6 +452,16 @@ pub(crate) struct SubtitleRenderer {
     wrapped_lines: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SubtitleLayout {
+    pub(crate) canvas_width: u32,
+    pub(crate) canvas_height: u32,
+    pub(crate) video_x: u32,
+    pub(crate) video_y: u32,
+    pub(crate) video_width: u32,
+    pub(crate) video_height: u32,
+}
+
 impl SubtitleRenderer {
     pub(crate) fn new(fonts: &FontSystem, language: Option<&str>) -> Self {
         let fonts = fonts.resolve_all_for_language(FontRole::Subtitle, language);
@@ -416,14 +475,18 @@ impl SubtitleRenderer {
     pub(crate) fn render(
         &mut self,
         frame: &mut [u8],
-        width: u32,
-        height: u32,
+        layout: SubtitleLayout,
         track: &SubtitleTrack,
         position: Duration,
         bottom_reserve: u32,
     ) {
+        let width = layout.canvas_width;
+        let height = layout.canvas_height;
         if width == 0 || height == 0 || frame.len() < width as usize * height as usize * 3 {
             return;
+        }
+        for bitmap in track.active_bitmaps(position) {
+            draw_bitmap_subtitle(frame, layout, bitmap, bottom_reserve);
         }
         let Some(lines) = track.active_lines(position) else {
             return;
@@ -668,6 +731,7 @@ fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCu
         start,
         end,
         lines: nonempty_subtitle_lines(rendered_text),
+        bitmap: None,
     }))
 }
 
@@ -766,6 +830,7 @@ fn parse_webvtt_block(lines: &[&str], cues: &mut Vec<SubtitleCue>) -> Result<()>
             start,
             end,
             lines: text_lines,
+            bitmap: None,
         });
     }
     Ok(())
@@ -798,6 +863,7 @@ fn parse_srt_block(lines: &[&str], cues: &mut Vec<SubtitleCue>) -> Result<()> {
         start,
         end,
         lines: text_lines,
+        bitmap: None,
     });
     Ok(())
 }
@@ -993,6 +1059,8 @@ fn normalize_language_tag(tag: &str) -> Option<String> {
         "zh" | "chi" | "zho" | "cn" => "zh".to_string(),
         "zh-hans" | "chi-hans" | "zho-hans" => "zh-Hans".to_string(),
         "zh-hant" | "chi-hant" | "zho-hant" => "zh-Hant".to_string(),
+        "sc" | "chs" => "zh-Hans".to_string(),
+        "tc" | "cht" => "zh-Hant".to_string(),
         "ru" | "rus" => "ru".to_string(),
         "es" | "spa" => "es".to_string(),
         "fr" | "fre" | "fra" => "fr".to_string(),
@@ -1537,6 +1605,7 @@ Bye
             end: Duration::from_secs(2),
             kind: DecodedSubtitleTextKind::Ass,
             text: r"0,0,Default,,0,0,0,,{\an8}Hello\Nworld".to_string(),
+            bitmap: None,
         })
         .expect("decoded cue should contain text");
 
@@ -1549,6 +1618,7 @@ Bye
             start: Duration::ZERO,
             end: Duration::from_secs(1),
             lines: vec!["字幕".repeat(LANGUAGE_DETECTION_SAMPLE_BYTES)],
+            bitmap: None,
         }];
 
         let sample = subtitle_language_sample(&cues);
@@ -1628,6 +1698,7 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
             end: Duration::from_secs(2),
             kind: DecodedSubtitleTextKind::Ass,
             text: r"0,0,ED-E,,0,0,0,,{\pos(960,1050)}Not wanting to hide my eyes".to_string(),
+            bitmap: None,
         })
         .expect("translation should remain");
         let romaji = subtitle_cue_from_decoded(DecodedSubtitleCue {
@@ -1635,6 +1706,7 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
             end: Duration::from_secs(2),
             kind: DecodedSubtitleTextKind::Ass,
             text: r"1,0,ED-R1,,0,0,0,,{\pos(439,54)}k".to_string(),
+            bitmap: None,
         });
 
         assert_eq!(translated.lines, ["Not wanting to hide my eyes"]);
@@ -1689,9 +1761,9 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
             forced: false,
         });
 
-        assert!(ass.is_text());
+        assert!(ass.is_supported());
         assert_eq!(ass.label(), "English (en ass) [default]");
-        assert!(!pgs.is_text());
+        assert!(pgs.is_supported());
     }
 
     #[test]
@@ -1783,21 +1855,25 @@ Second line
                     start: Duration::ZERO,
                     end: Duration::from_secs(1),
                     lines: vec![String::from("A")],
+                    bitmap: None,
                 },
                 SubtitleCue {
                     start: Duration::ZERO,
                     end: Duration::from_secs(1),
                     lines: vec![String::from("long translated sentence")],
+                    bitmap: None,
                 },
                 SubtitleCue {
                     start: Duration::ZERO,
                     end: Duration::from_secs(1),
                     lines: vec![String::from("medium label")],
+                    bitmap: None,
                 },
                 SubtitleCue {
                     start: Duration::ZERO,
                     end: Duration::from_secs(1),
                     lines: vec![String::from("another useful line")],
+                    bitmap: None,
                 },
             ],
             language: None,
@@ -1825,7 +1901,7 @@ Second line
         fs::write(&media, "").expect("media placeholder should be written");
         fs::write(&subtitle, "").expect("subtitle placeholder should be written");
 
-        assert_eq!(sidecar_subtitle_path(&media), Some(subtitle));
+        assert_eq!(sidecar_subtitle_paths(&media), [subtitle]);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -1843,9 +1919,30 @@ Second line
         fs::write(&media, "").expect("media placeholder should be written");
         fs::write(&subtitle, "").expect("subtitle placeholder should be written");
 
-        assert_eq!(sidecar_subtitle_path(&media), Some(subtitle));
+        assert_eq!(sidecar_subtitle_paths(&media), [subtitle]);
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn sidecar_paths_include_language_suffixed_siblings() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "enzo-subtitle-siblings-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("movie.mkv");
+        let simplified = temp_dir.join("movie.sc.ass");
+        let traditional = temp_dir.join("movie.tc.ass");
+        let unrelated = temp_dir.join("movie2.ass");
+        for path in [&media, &traditional, &unrelated, &simplified] {
+            fs::write(path, "").expect("fixture should be written");
+        }
+
+        assert_eq!(sidecar_subtitle_paths(&media), [simplified, traditional]);
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -1857,6 +1954,14 @@ Second line
         assert_eq!(
             language_from_filename(Path::new("movie.zh.Hans.srt")),
             Some("zh-Hans".to_string())
+        );
+        assert_eq!(
+            language_from_filename(Path::new("movie.sc.ass")),
+            Some("zh-Hans".to_string())
+        );
+        assert_eq!(
+            language_from_filename(Path::new("movie.tc.ass")),
+            Some("zh-Hant".to_string())
         );
         assert_eq!(language_from_filename(Path::new("movie.srt")), None);
     }
@@ -2110,7 +2215,20 @@ Hello
         let height = 180;
         let mut frame = vec![20_u8; (width * height * 3) as usize];
 
-        renderer.render(&mut frame, width, height, &track, Duration::from_secs(1), 0);
+        renderer.render(
+            &mut frame,
+            SubtitleLayout {
+                canvas_width: width,
+                canvas_height: height,
+                video_x: 0,
+                video_y: 0,
+                video_width: width,
+                video_height: height,
+            },
+            &track,
+            Duration::from_secs(1),
+            0,
+        );
 
         assert!(frame.iter().any(|&value| value > 220));
     }
