@@ -32,6 +32,8 @@ pub(crate) enum PlaybackMouse {
     Down { column: u16, row: u16 },
     Drag { column: u16, row: u16 },
     Up { column: u16, row: u16 },
+    ScrollUp,
+    ScrollDown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,6 +123,12 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                             column: mouse.column,
                             row: mouse.row,
                         });
+                    }
+                    MouseEventKind::ScrollUp => {
+                        input.mouse_events.push(PlaybackMouse::ScrollUp);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        input.mouse_events.push(PlaybackMouse::ScrollDown);
                     }
                     MouseEventKind::Down(MouseButton::Right) => {
                         input.command = PlaybackCommand::TogglePause;

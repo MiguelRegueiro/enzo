@@ -9,11 +9,13 @@ use super::{
     layout::{
         OverlayMetrics, picker_padding, picker_text_y, progress_handle_radius, rounded_radius,
         track_icon_dimensions, track_picker_layout, track_picker_track_rect,
+        track_picker_visible_row_count,
     },
     raster::{
         Circle, Point, RoundedRect, Triangle, fill_circle, fill_rounded_rect, fill_triangle,
         stroke_rounded_rect,
     },
+    state::HitboxRect,
     style::{ACCENT_COLOR, PANEL_COLOR, SHADOW_COLOR, TEXT_COLOR},
     text::{bitmap_text_width, draw_overlay_text},
 };
@@ -194,10 +196,20 @@ pub(super) fn draw_track_picker(
     metrics: OverlayMetrics,
     labels: &[Arc<str>],
     selected_track: Option<usize>,
+    scroll_offset: usize,
     include_off: bool,
     acrylic: &mut AcrylicScratch,
 ) {
-    let picker = track_picker_layout(metrics, labels, include_off, font.as_deref_mut());
+    let row_count = labels.len().saturating_add(usize::from(include_off));
+    let visible_count = track_picker_visible_row_count(metrics, row_count);
+    let scroll_offset = scroll_offset.min(row_count.saturating_sub(visible_count));
+    let picker = track_picker_layout(
+        metrics,
+        labels,
+        include_off,
+        scroll_offset,
+        font.as_deref_mut(),
+    );
     let radius = rounded_radius(
         picker.right.saturating_sub(picker.left),
         picker.bottom.saturating_sub(picker.top),
@@ -224,11 +236,22 @@ pub(super) fn draw_track_picker(
     let marker_x = picker.left.saturating_add(pad);
     let text_x = marker_x.saturating_add(marker_size).saturating_add(pad / 2);
     let text_width = picker.right.saturating_sub(text_x).saturating_sub(pad);
-    for (index, label) in labels.iter().enumerate() {
-        let row = track_picker_track_rect(metrics, picker, index);
+    for visible_index in 0..visible_count {
+        let index = scroll_offset + visible_index;
+        let row = track_picker_track_rect(metrics, picker, visible_index);
         let row_height = row.bottom.saturating_sub(row.top);
         let text_y = picker_text_y(metrics, row);
-        if selected_track == Some(index) {
+        let (label, alpha) = if let Some(label) = labels.get(index) {
+            (label.as_ref(), 244)
+        } else {
+            ("Off", 210)
+        };
+        let selected = if index < labels.len() {
+            selected_track == Some(index)
+        } else {
+            selected_track.is_none()
+        };
+        if selected {
             draw_picker_marker(
                 frame,
                 width,
@@ -241,7 +264,7 @@ pub(super) fn draw_track_picker(
         }
         let label = fit_picker_text(
             font.as_deref_mut(),
-            label.as_ref(),
+            label,
             metrics.fallback_text_scale,
             text_width,
         );
@@ -255,38 +278,61 @@ pub(super) fn draw_track_picker(
             metrics.fallback_text_scale,
             &label,
             TEXT_COLOR,
-            244,
+            alpha,
         );
     }
-
-    if include_off {
-        let row = track_picker_track_rect(metrics, picker, labels.len());
-        let row_height = row.bottom.saturating_sub(row.top);
-        let off_text_y = picker_text_y(metrics, row);
-        if selected_track.is_none() {
-            draw_picker_marker(
-                frame,
-                width,
-                height,
-                marker_x,
-                row.top,
-                row_height,
-                marker_size,
-            );
-        }
-        draw_overlay_text(
-            font,
+    if row_count > visible_count {
+        draw_picker_scrollbar(
             frame,
             width,
             height,
-            text_x,
-            off_text_y,
-            metrics.fallback_text_scale,
-            "Off",
-            TEXT_COLOR,
-            210,
+            picker,
+            scroll_offset,
+            visible_count,
+            row_count,
         );
     }
+}
+
+fn draw_picker_scrollbar(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    picker: HitboxRect,
+    scroll_offset: usize,
+    visible_count: usize,
+    row_count: usize,
+) {
+    let pad = 4;
+    let bar_width = 3;
+    let track_top = picker.top.saturating_add(pad);
+    let track_bottom = picker.bottom.saturating_sub(pad);
+    if track_bottom <= track_top || row_count == 0 {
+        return;
+    }
+    let track_height = track_bottom - track_top;
+    let thumb_height = ((track_height as usize * visible_count) / row_count)
+        .max(8)
+        .min(track_height as usize) as u32;
+    let max_offset = row_count.saturating_sub(visible_count).max(1);
+    let thumb_top = track_top
+        + ((track_height - thumb_height) as usize * scroll_offset.min(max_offset) / max_offset)
+            as u32;
+    let x = picker.right.saturating_sub(pad).saturating_sub(bar_width);
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(x),
+            y: f64::from(thumb_top),
+            width: f64::from(bar_width),
+            height: f64::from(thumb_height),
+            radius: f64::from(bar_width),
+        },
+        ACCENT_COLOR,
+        232,
+    );
 }
 
 fn draw_subtitle_icon(

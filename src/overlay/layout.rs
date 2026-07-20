@@ -244,6 +244,7 @@ pub(super) fn track_picker_layout(
     metrics: OverlayMetrics,
     labels: &[Arc<str>],
     include_off: bool,
+    scroll_offset: usize,
     mut font: Option<&mut FontRenderer>,
 ) -> HitboxRect {
     let max_label_width = labels
@@ -259,7 +260,31 @@ pub(super) fn track_picker_layout(
         .unwrap_or(0);
     let anchor_x = track_picker_anchor_x(metrics);
     let picker_width = track_picker_width(metrics, anchor_x, max_label_width);
-    track_picker_rect(metrics, anchor_x, labels.len(), picker_width, include_off)
+    let row_count = labels.len().saturating_add(usize::from(include_off));
+    let visible_count = track_picker_visible_row_count(metrics, row_count);
+    let offset = scroll_offset.min(row_count.saturating_sub(visible_count));
+    track_picker_rect(
+        metrics,
+        anchor_x,
+        row_count.saturating_sub(offset).min(visible_count),
+        picker_width,
+    )
+}
+
+pub(super) fn track_picker_visible_row_count(metrics: OverlayMetrics, row_count: usize) -> usize {
+    let pad = picker_padding(metrics);
+    let desired_rows_bottom = metrics
+        .panel_y
+        .saturating_sub(track_picker_gap_for_text(metrics.text_size))
+        .saturating_sub(pad);
+    let end_terminal_row = terminal_row_at_or_before_y(metrics, desired_rows_bottom);
+    let start_terminal_row = terminal_row_at_or_after_y(
+        metrics,
+        track_picker_top_margin(metrics).saturating_add(pad),
+    );
+    let row_span = u32::from(metrics.picker_terminal_row_span).max(1);
+    let rows = end_terminal_row.saturating_sub(start_terminal_row) / row_span;
+    row_count.min(rows.max(1) as usize)
 }
 
 fn track_picker_rect(
@@ -267,10 +292,9 @@ fn track_picker_rect(
     anchor_x: u32,
     track_count: usize,
     picker_width: u32,
-    include_off: bool,
 ) -> HitboxRect {
     let pad = picker_padding(metrics);
-    let row_count = track_count.saturating_add(usize::from(include_off));
+    let row_count = track_count;
     let right = anchor_x
         .saturating_add(metrics.control_size)
         .max(picker_width);
@@ -285,7 +309,9 @@ fn track_picker_rect(
     let start_terminal_row = end_terminal_row.saturating_sub(terminal_row_count);
     let rows_top = terminal_row_boundary(metrics, start_terminal_row);
     let rows_bottom = terminal_row_boundary(metrics, end_terminal_row);
-    let top = rows_top.saturating_sub(pad);
+    let top = rows_top
+        .saturating_sub(pad)
+        .max(track_picker_top_margin(metrics));
     let bottom = rows_bottom.saturating_add(pad);
     HitboxRect {
         left,
@@ -303,7 +329,7 @@ fn track_picker_width(metrics: OverlayMetrics, anchor_x: u32, label_width: u32) 
         .saturating_add(marker_size)
         .saturating_add(pad / 2)
         .saturating_add(label_width)
-        .max(scaled_normal_pixels(132, metrics.text_size))
+        .max(scaled_normal_pixels(144, metrics.text_size))
         .max(metrics.control_size);
     desired.min(track_picker_max_width(metrics, anchor_x).max(1))
 }
@@ -347,6 +373,11 @@ pub(super) fn picker_padding(metrics: OverlayMetrics) -> u32 {
     (horizontal_padding_for_text(metrics.text_size) / 2).max(6)
 }
 
+fn track_picker_top_margin(metrics: OverlayMetrics) -> u32 {
+    terminal_row_boundary(metrics, 2)
+        .max(vertical_padding_for_text(metrics.text_size).saturating_mul(2))
+}
+
 pub(super) fn picker_text_y(metrics: OverlayMetrics, row: HitboxRect) -> u32 {
     row.top.saturating_add(
         row.bottom
@@ -374,6 +405,17 @@ fn terminal_row_at_or_before_y(metrics: OverlayMetrics, y: u32) -> u32 {
     y.saturating_add(1)
         .saturating_mul(rows)
         .saturating_sub(1)
+        .checked_div(height)
+        .unwrap_or(0)
+        .min(rows) as u32
+}
+
+fn terminal_row_at_or_after_y(metrics: OverlayMetrics, y: u32) -> u32 {
+    let rows = u64::from(metrics.terminal_rows);
+    let height = u64::from(metrics.canvas_height.max(1));
+    let y = u64::from(y.min(metrics.canvas_height));
+    y.saturating_mul(rows)
+        .saturating_add(height.saturating_sub(1))
         .checked_div(height)
         .unwrap_or(0)
         .min(rows) as u32
@@ -474,6 +516,40 @@ mod tests {
 
         assert!(long > short);
         assert_eq!(long, track_picker_max_width(metrics, anchor_x));
+    }
+
+    #[test]
+    fn track_picker_height_clamps_to_available_rows() {
+        let metrics = test_metrics_with_subtitles(320, 180);
+        let labels = (0..40)
+            .map(|index| Arc::<str>::from(format!("Track {}", index + 1)))
+            .collect::<Vec<_>>();
+        let visible = track_picker_visible_row_count(metrics, labels.len() + 1);
+        let picker = track_picker_layout(metrics, &labels, true, 0, None);
+
+        assert!(visible < labels.len() + 1);
+        assert_eq!(
+            picker.bottom.saturating_sub(picker.top),
+            track_picker_layout(metrics, &labels[..visible], false, 0, None)
+                .bottom
+                .saturating_sub(
+                    track_picker_layout(metrics, &labels[..visible], false, 0, None).top
+                )
+        );
+        assert!(picker.top < metrics.panel_y);
+    }
+
+    #[test]
+    fn track_picker_scroll_offset_keeps_panel_height_stable() {
+        let metrics = test_metrics_with_subtitles(320, 180);
+        let labels = (0..40)
+            .map(|index| Arc::<str>::from(format!("Track {}", index + 1)))
+            .collect::<Vec<_>>();
+        let top = track_picker_layout(metrics, &labels, true, 0, None);
+        let scrolled = track_picker_layout(metrics, &labels, true, 10, None);
+
+        assert_eq!(top.top, scrolled.top);
+        assert_eq!(top.bottom, scrolled.bottom);
     }
 
     #[test]

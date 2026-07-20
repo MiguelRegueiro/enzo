@@ -253,6 +253,14 @@ impl<W: Write> InteractionContext<'_, W> {
         let mut pointer_seek = None;
         for mouse in mouse_events {
             let seek = match mouse {
+                PlaybackMouse::ScrollUp => {
+                    self.scroll_open_picker(hit_context, -1);
+                    None
+                }
+                PlaybackMouse::ScrollDown => {
+                    self.scroll_open_picker(hit_context, 1);
+                    None
+                }
                 PlaybackMouse::Down { column, row } => {
                     let point = mouse_canvas_position(column, row, self.view.canvas);
                     if let Some(action) = point.and_then(|point| {
@@ -260,6 +268,7 @@ impl<W: Write> InteractionContext<'_, W> {
                             hit_context,
                             point,
                             self.ui.audio_picker_open,
+                            self.ui.audio_picker_offset,
                             &audio_labels,
                         )
                     }) {
@@ -304,6 +313,7 @@ impl<W: Write> InteractionContext<'_, W> {
                             hit_context,
                             point,
                             self.ui.subtitle_picker_open,
+                            self.ui.subtitle_picker_offset,
                             &subtitle_labels,
                         )
                     }) {
@@ -439,6 +449,32 @@ impl<W: Write> InteractionContext<'_, W> {
         Ok(None)
     }
 
+    fn scroll_open_picker(&mut self, context: OverlayHitContext, direction: i32) {
+        if self.ui.audio_picker_open {
+            let row_count = self.audio.labels().len();
+            self.ui.audio_picker_offset = scrolled_picker_offset(
+                self.ui.audio_picker_offset,
+                direction,
+                row_count,
+                self.view
+                    .overlay
+                    .track_picker_visible_row_count(context, row_count),
+            );
+            self.view.dirty = self.view.have_frame;
+        } else if self.ui.subtitle_picker_open {
+            let row_count = self.subtitles.labels().len().saturating_add(1);
+            self.ui.subtitle_picker_offset = scrolled_picker_offset(
+                self.ui.subtitle_picker_offset,
+                direction,
+                row_count,
+                self.view
+                    .overlay
+                    .track_picker_visible_row_count(context, row_count),
+            );
+            self.view.dirty = self.view.have_frame;
+        }
+    }
+
     fn toggle_audio_picker(&mut self, input_at: Instant) {
         self.seeking.scrub_position = None;
         self.ui.show_overlay(input_at);
@@ -449,6 +485,7 @@ impl<W: Write> InteractionContext<'_, W> {
         } else {
             self.ui.audio_picker_open = !self.ui.audio_picker_open;
             if self.ui.audio_picker_open {
+                self.ui.audio_picker_offset = self.audio.selected().unwrap_or(0);
                 self.ui.subtitle_picker_open = false;
             }
         }
@@ -465,6 +502,7 @@ impl<W: Write> InteractionContext<'_, W> {
         } else {
             self.ui.subtitle_picker_open = !self.ui.subtitle_picker_open;
             if self.ui.subtitle_picker_open {
+                self.ui.subtitle_picker_offset = self.subtitles.selected().unwrap_or(0);
                 self.ui.audio_picker_open = false;
             }
         }
@@ -491,5 +529,19 @@ impl<W: Write> InteractionContext<'_, W> {
         self.ui.status_message = Some(PlaybackUi::status(text, input_at));
         self.ui.show_overlay(input_at);
         self.view.dirty = self.view.have_frame;
+    }
+}
+
+fn scrolled_picker_offset(
+    offset: usize,
+    direction: i32,
+    row_count: usize,
+    visible_count: usize,
+) -> usize {
+    let max_offset = row_count.saturating_sub(visible_count.max(1));
+    if direction < 0 {
+        offset.saturating_sub(1)
+    } else {
+        offset.saturating_add(1).min(max_offset)
     }
 }

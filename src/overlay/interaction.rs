@@ -28,9 +28,18 @@ pub(super) fn audio_picker_action(
     point: OverlayHitPoint,
     picker: Option<HitboxRect>,
     audio_count: usize,
+    scroll_offset: usize,
+    visible_count: usize,
 ) -> Option<AudioPickerAction> {
     if let Some(picker) = picker
-        && let Some(index) = track_picker_row_at_point(metrics, picker, point, audio_count)
+        && let Some(index) = track_picker_row_at_point(
+            metrics,
+            picker,
+            point,
+            audio_count,
+            scroll_offset,
+            visible_count,
+        )
     {
         return Some(AudioPickerAction::SelectTrack(index));
     }
@@ -44,10 +53,18 @@ pub(super) fn subtitle_picker_action(
     point: OverlayHitPoint,
     picker: Option<HitboxRect>,
     subtitle_count: usize,
+    scroll_offset: usize,
+    visible_count: usize,
 ) -> Option<SubtitlePickerAction> {
     if let Some(picker) = picker
-        && let Some(index) =
-            track_picker_row_at_point(metrics, picker, point, subtitle_count.saturating_add(1))
+        && let Some(index) = track_picker_row_at_point(
+            metrics,
+            picker,
+            point,
+            subtitle_count.saturating_add(1),
+            scroll_offset,
+            visible_count,
+        )
     {
         if index < subtitle_count {
             return Some(SubtitlePickerAction::SelectTrack(index));
@@ -64,15 +81,18 @@ fn track_picker_row_at_point(
     picker: HitboxRect,
     point: OverlayHitPoint,
     row_count: usize,
+    scroll_offset: usize,
+    visible_count: usize,
 ) -> Option<usize> {
     let first_row = track_picker_track_rect(metrics, picker, 0);
     if point.x < first_row.left || point.x >= first_row.right {
         return None;
     }
 
-    (0..row_count).find(|index| {
-        let hitbox = track_picker_row_hit_rect(metrics, picker, *index, row_count);
-        point.y >= hitbox.top && point.y < hitbox.bottom
+    let last_visible = visible_count.min(row_count.saturating_sub(scroll_offset));
+    (0..last_visible).find_map(|visible_index| {
+        let hitbox = track_picker_row_hit_rect(metrics, picker, visible_index, last_visible);
+        (point.y >= hitbox.top && point.y < hitbox.bottom).then_some(scroll_offset + visible_index)
     })
 }
 
@@ -432,6 +452,29 @@ mod tests {
     }
 
     #[test]
+    fn scrolled_audio_picker_maps_visible_rows_to_scrolled_tracks() {
+        let metrics = test_metrics_with_audio_and_subtitles(320, 180);
+        let labels = (0..20)
+            .map(|index| Arc::<str>::from(format!("Track {}", index + 1)))
+            .collect::<Vec<_>>();
+        let offset = 5;
+        let picker = track_picker_layout(metrics, &labels, false, offset, None);
+        let first_visible = track_picker_track_rect(metrics, picker, 0);
+
+        assert_eq!(
+            super::audio_picker_action(
+                metrics,
+                hit_point(first_visible.left + 1, first_visible.top + 1),
+                Some(picker),
+                labels.len(),
+                offset,
+                track_picker_visible_row_count(metrics, labels.len()),
+            ),
+            Some(AudioPickerAction::SelectTrack(offset))
+        );
+    }
+
+    #[test]
     fn terminal_aligned_picker_entry_centers_select_expected_rows() {
         let metrics =
             test_metrics_with_scale_controls_and_terminal_rows(1920, 1080, 24, 100, false, true);
@@ -550,7 +593,7 @@ mod tests {
         track_count: usize,
     ) -> Option<AudioPickerAction> {
         let picker = picker_open.then(|| test_picker(metrics, track_count, false));
-        super::audio_picker_action(metrics, point, picker, track_count)
+        super::audio_picker_action(metrics, point, picker, track_count, 0, track_count)
     }
 
     fn subtitle_picker_action(
@@ -560,14 +603,14 @@ mod tests {
         track_count: usize,
     ) -> Option<SubtitlePickerAction> {
         let picker = picker_open.then(|| test_picker(metrics, track_count, true));
-        super::subtitle_picker_action(metrics, point, picker, track_count)
+        super::subtitle_picker_action(metrics, point, picker, track_count, 0, track_count + 1)
     }
 
     fn test_picker(metrics: OverlayMetrics, track_count: usize, include_off: bool) -> HitboxRect {
         let labels = (0..track_count)
             .map(|index| Arc::<str>::from(format!("Track {}", index + 1)))
             .collect::<Vec<_>>();
-        track_picker_layout(metrics, &labels, include_off, None)
+        track_picker_layout(metrics, &labels, include_off, 0, None)
     }
 
     fn test_metrics(width: u32, height: u32) -> OverlayMetrics {

@@ -188,6 +188,7 @@ pub(super) fn render_overlay_rgb(
                 metrics,
                 &state.audio_labels,
                 state.selected_audio,
+                state.audio_picker_offset,
                 false,
                 acrylic,
             );
@@ -210,6 +211,7 @@ pub(super) fn render_overlay_rgb(
                 metrics,
                 &state.subtitle_labels,
                 state.selected_subtitle,
+                state.subtitle_picker_offset,
                 true,
                 acrylic,
             );
