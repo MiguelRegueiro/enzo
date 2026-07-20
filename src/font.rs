@@ -9,6 +9,13 @@ use std::{
 const FT_LOAD_DEFAULT: c_int = 0;
 const FT_LOAD_RENDER: c_int = 4;
 
+fn is_bidi_format_control(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
 type FtLibrary = *mut c_void;
 type FtFace = *mut FtFaceRec;
 type FtSize = *mut FtSizeRec;
@@ -187,6 +194,9 @@ impl FontRenderer {
     pub(crate) fn text_width(&mut self, text: &str) -> u32 {
         let mut width = 0_i32;
         for ch in text.chars() {
+            if is_bidi_format_control(ch) {
+                continue;
+            }
             let fallback = (!self.has_char(ch))
                 .then(|| {
                     self.fallbacks
@@ -226,6 +236,9 @@ impl FontRenderer {
         let mut pen_x = x;
 
         for ch in text.chars() {
+            if is_bidi_format_control(ch) {
+                continue;
+            }
             if !self.has_char(ch)
                 && let Some(fallback) = self
                     .fallbacks
@@ -588,6 +601,41 @@ mod tests {
         );
 
         assert!(frame.iter().any(|&value| value > 0));
+    }
+
+    #[test]
+    fn bidi_format_controls_are_invisible() {
+        let Some(path) = crate::font_system::FontSystem::discover()
+            .resolve_all(crate::font_system::FontRole::Ui)
+            .next()
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(mut font) = FontRenderer::open_path(&path, 20) else {
+            return;
+        };
+
+        assert_eq!(
+            font.text_width("\u{200e}NETFLIX"),
+            font.text_width("NETFLIX")
+        );
+
+        let mut with_mark = vec![0_u8; 160 * 48 * 3];
+        let mut without_mark = vec![0_u8; with_mark.len()];
+        font.draw_text(
+            &mut with_mark,
+            160,
+            48,
+            4,
+            4,
+            "\u{200e}NETFLIX",
+            [255; 3],
+            255,
+        );
+        font.draw_text(&mut without_mark, 160, 48, 4, 4, "NETFLIX", [255; 3], 255);
+
+        assert_eq!(with_mark, without_mark);
     }
 
     #[test]
