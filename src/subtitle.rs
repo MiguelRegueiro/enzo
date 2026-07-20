@@ -205,16 +205,17 @@ fn subtitle_cue_from_decoded_ass(cue: DecodedSubtitleCue) -> Option<SubtitleCue>
     if is_ass_drawing(fields.text) {
         return None;
     }
-    let line = strip_srt_markup(fields.text).trim().to_string();
-    if line.is_empty()
-        || !ass_dialogue_line_is_useful(fields.style, fields.effect, fields.text, &line)
+    let text = strip_srt_markup(fields.text);
+    let text = text.trim();
+    if text.is_empty()
+        || !ass_dialogue_line_is_useful(fields.style, fields.effect, fields.text, text)
     {
         return None;
     }
     Some(SubtitleCue {
         start: cue.start,
         end: cue.end,
-        lines: vec![line],
+        lines: nonempty_subtitle_lines(text),
     })
 }
 
@@ -656,15 +657,17 @@ fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCu
         return Ok(None);
     }
 
-    let line = strip_srt_markup(text).trim().to_string();
-    if line.is_empty() || !ass_dialogue_line_is_useful(style, effect, text, &line) {
+    let rendered_text = strip_srt_markup(text);
+    let rendered_text = rendered_text.trim();
+    if rendered_text.is_empty() || !ass_dialogue_line_is_useful(style, effect, text, rendered_text)
+    {
         return Ok(None);
     }
 
     Ok(Some(SubtitleCue {
         start,
         end,
-        lines: vec![line],
+        lines: nonempty_subtitle_lines(rendered_text),
     }))
 }
 
@@ -914,7 +917,13 @@ fn normalize_ass_text_escapes(line: &str) -> String {
         }
 
         match chars.peek().copied() {
-            Some('N' | 'n' | 'h') => {
+            Some('N') => {
+                chars.next();
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            Some('n' | 'h') => {
                 chars.next();
                 if !out.ends_with(' ') {
                     out.push(' ');
@@ -924,6 +933,14 @@ fn normalize_ass_text_escapes(line: &str) -> String {
         }
     }
     out
+}
+
+fn nonempty_subtitle_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn decode_subtitle_entities(line: &str) -> String {
@@ -1523,7 +1540,7 @@ Bye
         })
         .expect("decoded cue should contain text");
 
-        assert_eq!(cue.lines, ["Hello world"]);
+        assert_eq!(cue.lines, ["Hello", "world"]);
     }
 
     #[test]
@@ -1558,7 +1575,7 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond ha
         .expect("ass should parse");
 
         assert_eq!(cues.len(), 1);
-        assert_eq!(cues[0].lines, ["Normal line second half"]);
+        assert_eq!(cues[0].lines, ["Normal line", "second half"]);
 
         let track = SubtitleTrack {
             cues,
@@ -1567,7 +1584,10 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond ha
         };
         assert_eq!(
             track.active_lines(Duration::from_millis(1200)),
-            Some(vec![String::from("Normal line second half")])
+            Some(vec![
+                String::from("Normal line"),
+                String::from("second half")
+            ])
         );
     }
 
@@ -1628,7 +1648,7 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
             strip_srt_markup(r"hello {world} &amp; <i>friends</i>"),
             "hello {world} & friends"
         );
-        assert_eq!(strip_srt_markup(r"one\Ntwo\hthree"), "one two three");
+        assert_eq!(strip_srt_markup(r"one\Ntwo\hthree"), "one\ntwo three");
     }
 
     #[test]

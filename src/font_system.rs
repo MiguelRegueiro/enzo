@@ -57,6 +57,22 @@ const JAPANESE_SUBTITLE_FONT_PATTERNS: &[&str] = &[
     "japan",
 ];
 
+const CHINESE_SUBTITLE_FONT_PATTERNS: &[&str] = &[
+    "notosanscjksc",
+    "sourcehansanssc",
+    "wqyzenhei",
+    "wenquanyi",
+    "microsoftyahei",
+    "yahei",
+    "simhei",
+    "simsun",
+    "kaiti",
+    "notosanscjk",
+    "noto-cjk",
+    "sourcehansans",
+    "chinese",
+];
+
 impl FontSystem {
     pub(crate) fn discover() -> Self {
         Self::from_dirs(SYSTEM_FONT_DIRS.iter().map(OsString::from))
@@ -108,10 +124,12 @@ impl FontCandidate {
     }
 
     fn preference_rank(&self, role: FontRole, language: Option<&str>) -> (usize, usize, &Path) {
-        let language_rank = language
-            .filter(|language| role == FontRole::Subtitle && is_japanese_language(language))
-            .and_then(|_| pattern_rank(&self.family_hint, JAPANESE_SUBTITLE_FONT_PATTERNS))
-            .unwrap_or(JAPANESE_SUBTITLE_FONT_PATTERNS.len());
+        let language_patterns = language
+            .filter(|_| role == FontRole::Subtitle)
+            .and_then(subtitle_font_patterns);
+        let language_rank = language_patterns.map_or(0, |patterns| {
+            pattern_rank(&self.family_hint, patterns).unwrap_or(patterns.len())
+        });
         let pattern_rank = pattern_rank(&self.family_hint, PREFERRED_FONT_PATTERNS)
             .unwrap_or(PREFERRED_FONT_PATTERNS.len());
         (language_rank, pattern_rank, self.path.as_path())
@@ -127,6 +145,17 @@ fn pattern_rank(haystack: &str, patterns: &[&str]) -> Option<usize> {
 fn is_japanese_language(language: &str) -> bool {
     let language = language.to_ascii_lowercase();
     language == "ja" || language == "jpn" || language.starts_with("ja-")
+}
+
+fn subtitle_font_patterns(language: &str) -> Option<&'static [&'static str]> {
+    let language = language.to_ascii_lowercase();
+    if is_japanese_language(&language) {
+        Some(JAPANESE_SUBTITLE_FONT_PATTERNS)
+    } else if matches!(language.as_str(), "zh" | "chi" | "zho") || language.starts_with("zh-") {
+        Some(CHINESE_SUBTITLE_FONT_PATTERNS)
+    } else {
+        None
+    }
 }
 
 fn collect_font_candidates(dir: &Path, fonts: &mut Vec<FontCandidate>) {
@@ -232,6 +261,28 @@ mod tests {
         );
         assert_eq!(
             system.resolve_all_for_language(FontRole::Ui, Some("ja"))[0],
+            latin
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn chinese_subtitles_prefer_chinese_cjk_fonts() {
+        let root = temp_font_dir("chinese_subtitle_font");
+        let latin = root.join("NotoSans-Regular.ttf");
+        let chinese = root.join("wenquanyi/wqy-zenhei.ttc");
+        fs::create_dir_all(chinese.parent().expect("chinese parent")).expect("create chinese dir");
+        File::create(&latin).expect("create latin font");
+        File::create(&chinese).expect("create chinese font");
+
+        let system = FontSystem::from_dirs([root.clone().into_os_string()]);
+
+        assert_eq!(
+            system.resolve_all_for_language(FontRole::Subtitle, Some("zh-Hans"))[0],
+            chinese
+        );
+        assert_eq!(
+            system.resolve_all_for_language(FontRole::Ui, Some("zh-Hans"))[0],
             latin
         );
         fs::remove_dir_all(root).ok();
