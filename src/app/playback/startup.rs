@@ -36,7 +36,7 @@ pub(crate) fn play(
     font_system: &FontSystem,
 ) -> Result<()> {
     let source = probe_video(&path)
-        .with_context(|| format!("failed to inspect video metadata for {}", path.display()))?;
+        .with_context(|| format!("could not open media\n  file: {}", path.display()))?;
     let mut resume = ResumeTracker::open(
         &path,
         source.duration,
