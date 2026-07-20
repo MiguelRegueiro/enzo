@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
@@ -289,9 +290,26 @@ pub(super) fn spawn_embedded_subtitle_loader(
 }
 
 pub(super) fn build_subtitle_labels(tracks: &[PlaybackSubtitleTrack]) -> Arc<[Arc<str>]> {
+    let mut totals = HashMap::<&str, usize>::new();
+    for track in tracks {
+        *totals.entry(track.label.as_str()).or_default() += 1;
+    }
+
+    let mut seen = HashMap::<&str, usize>::new();
     tracks
         .iter()
-        .map(|track| Arc::<str>::from(track.label.as_str()))
+        .map(|track| {
+            let total = totals
+                .get(track.label.as_str())
+                .copied()
+                .unwrap_or_default();
+            if total <= 1 {
+                return Arc::<str>::from(track.label.as_str());
+            }
+            let count = seen.entry(track.label.as_str()).or_default();
+            *count += 1;
+            Arc::<str>::from(format!("{} #{}", track.label, count))
+        })
         .collect()
 }
 
@@ -452,6 +470,28 @@ mod tests {
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0].as_ref(), "English — Embedded");
         assert!(active_subtitle_track(&tracks, Some(0)).is_none());
+    }
+
+    #[test]
+    fn duplicate_subtitle_picker_labels_get_stable_suffixes() {
+        let tracks = vec![
+            PlaybackSubtitleTrack::pending_embedded("English [SRT]".to_string(), Some(0)),
+            PlaybackSubtitleTrack::pending_embedded("English [SRT]".to_string(), Some(1)),
+            PlaybackSubtitleTrack::pending_embedded("Spanish [SRT]".to_string(), Some(2)),
+            PlaybackSubtitleTrack::pending_embedded("English [SRT]".to_string(), Some(3)),
+        ];
+
+        let labels = build_subtitle_labels(&tracks);
+
+        assert_eq!(
+            labels.iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
+            [
+                "English [SRT] #1",
+                "English [SRT] #2",
+                "Spanish [SRT]",
+                "English [SRT] #3",
+            ]
+        );
     }
 
     #[test]

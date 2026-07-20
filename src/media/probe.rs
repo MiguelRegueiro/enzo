@@ -2,6 +2,8 @@ use std::{ffi::c_char, path::Path, time::Duration};
 
 use anyhow::{Result, bail};
 
+use crate::subtitle_language::{language_display_name, normalize_language_tag};
+
 use super::{
     ffi::{
         EnzoAudioTrackInfo, EnzoSubtitleStreamInfo, EnzoVideoInfo, HDR_HLG, HDR_PQ, INFO_TEXT_LEN,
@@ -365,36 +367,34 @@ fn format_rate(value: f64) -> String {
 }
 
 fn audio_track_label(track: &AudioTrackProbe, fallback_index: usize) -> String {
-    let mut parts = Vec::<String>::new();
-    let title = track.title.as_deref();
-    if let Some(language) = track
+    let mut label = track
         .language
         .as_deref()
-        .filter(|language| !title_mentions(title, language))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Track {}", fallback_index + 1));
+    let title = track.title.as_deref();
+    if let Some(title) = title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .filter(|title| !title_mentions(Some(title), &label))
     {
-        parts.push(language.to_string());
+        label.push_str(" (");
+        label.push_str(title);
+        label.push(')');
     }
-    if let Some(title) =
-        title.filter(|title| !parts.iter().any(|part| part.eq_ignore_ascii_case(title)))
-    {
-        parts.push(title.to_string());
-    }
-    if let Some(channels) = audio_channel_label(track.channels, track.channel_layout.as_deref())
-        .filter(|channels| !title_mentions_channel(title, channels, track.channels))
-    {
-        parts.push(channels);
-    }
-    if let Some(codec) = track.codec.as_deref() {
-        parts.push(codec.to_uppercase());
+    if let Some(channels) = audio_channel_label(track.channels, track.channel_layout.as_deref()) {
+        label.push(' ');
+        label.push_str(&channels);
     }
     if track.default {
-        parts.push("Default".to_string());
+        label.push_str(" [Default]");
     }
-    if parts.is_empty() {
-        format!("Track {}", fallback_index + 1)
-    } else {
-        parts.join(" — ")
+    if let Some(codec) = track.codec.as_deref() {
+        label.push_str(" [");
+        label.push_str(&codec_display_name(codec));
+        label.push(']');
     }
+    label
 }
 
 fn title_mentions(title: Option<&str>, value: &str) -> bool {
@@ -405,26 +405,9 @@ fn title_mentions(title: Option<&str>, value: &str) -> bool {
     })
 }
 
-fn title_mentions_channel(title: Option<&str>, value: &str, channels: Option<u32>) -> bool {
-    if title_mentions(title, value) {
-        return true;
-    }
-    let Some(title) = title.map(str::to_ascii_lowercase) else {
-        return false;
-    };
-    match channels {
-        Some(1) => title.contains("1.0") || title.contains("mono"),
-        Some(2) => title.contains("2.0") || title.contains("stereo"),
-        Some(6) => title.contains("5.1"),
-        Some(8) => title.contains("7.1"),
-        Some(value) => title.contains(&format!("{value}ch")),
-        None => false,
-    }
-}
-
 fn audio_channel_label(channels: Option<u32>, layout: Option<&str>) -> Option<String> {
     if let Some(layout) = layout.filter(|layout| !layout.is_empty() && *layout != "unknown") {
-        let layout = layout.replace(['(', ')'], " ");
+        let layout = layout.replace("(side)", "").replace(['(', ')'], " ");
         return Some(match layout.trim() {
             "mono" => "Mono".to_string(),
             "stereo" => "Stereo".to_string(),
@@ -440,13 +423,7 @@ fn audio_channel_label(channels: Option<u32>, layout: Option<&str>) -> Option<St
 }
 
 fn normalize_audio_language(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "" | "und" => None,
-        "eng" | "en" => Some("English".to_string()),
-        "jpn" | "ja" | "jp" => Some("Japanese".to_string()),
-        "spa" | "es" => Some("Spanish".to_string()),
-        other => Some(other.to_string()),
-    }
+    normalize_language_tag(value).map(|language| language_display_name(&language))
 }
 
 fn non_empty(value: &str) -> Option<String> {
@@ -466,7 +443,7 @@ mod tests {
             AudioTrackProbe {
                 stream_index: Some(2),
                 codec: Some("aac".to_string()),
-                language: Some("ja".to_string()),
+                language: Some("Japanese".to_string()),
                 title: Some("Japanese 5.1".to_string()),
                 channels: Some(6),
                 channel_layout: Some("5.1".to_string()),
@@ -478,11 +455,30 @@ mod tests {
         .expect("audio track should parse");
 
         assert_eq!(track.stream_index(), 2);
-        assert_eq!(track.label(), "Japanese 5.1 — AAC — Default");
+        assert_eq!(track.label(), "Japanese 5.1 [Default] [AAC]");
         assert_eq!(
             track.playback_summary(),
             "Source: AAC · 5.1 · 48 kHz | Output: PCM S16 · Stereo · 48 kHz"
         );
+    }
+
+    #[test]
+    fn audio_track_label_uses_clean_channel_codec_and_flag_groups() {
+        let track = audio_track_from_probe(
+            AudioTrackProbe {
+                stream_index: Some(1),
+                codec: Some("eac3".to_string()),
+                language: Some("Japanese".to_string()),
+                channels: Some(6),
+                channel_layout: Some("5.1(side)".to_string()),
+                default: true,
+                ..AudioTrackProbe::default()
+            },
+            0,
+        )
+        .expect("audio track should parse");
+
+        assert_eq!(track.label(), "Japanese 5.1 [Default] [E-AC-3]");
     }
 
     #[test]
@@ -538,7 +534,7 @@ mod tests {
         let tracks = load_audio_tracks(&media);
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].stream_index(), 0);
-        assert_eq!(tracks[0].label(), "Japanese 5.1 — FLAC — Default");
+        assert_eq!(tracks[0].label(), "Japanese 5.1 [Default] [FLAC]");
         assert_eq!(
             tracks[0].playback_summary(),
             "Source: FLAC · 5.1 · 48 kHz | Output: PCM S16 · Stereo · 48 kHz"

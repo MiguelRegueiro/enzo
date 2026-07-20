@@ -19,6 +19,9 @@ use crate::{
         DecodedSubtitleBitmap, DecodedSubtitleCue, DecodedSubtitleTextKind, SubtitleStreamInfo,
         decode_subtitle_stream, load_subtitle_streams,
     },
+    subtitle_language::{
+        language_display_name, language_name, normalize_language_tag, subtitle_codec_label,
+    },
 };
 
 const TEXT_COLOR: [u8; 3] = [255, 255, 255];
@@ -340,58 +343,121 @@ fn embedded_subtitle_stream_from_info(info: SubtitleStreamInfo) -> EmbeddedSubti
 }
 
 fn external_subtitle_label(path: &Path, language: Option<&str>) -> String {
-    let mut details = Vec::new();
-    if let Some(language) = language {
-        details.push(language.to_string());
+    let mut label = language
+        .map(language_display_name)
+        .unwrap_or_else(|| "External".to_string());
+    label.push_str(" [External]");
+    if let Some(codec) = path.extension().and_then(|extension| extension.to_str()) {
+        label.push_str(" [");
+        label.push_str(&subtitle_codec_label(codec));
+        label.push(']');
     }
-    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
-        details.push(extension.to_ascii_lowercase());
-    }
-
-    if details.is_empty() {
-        "External".to_string()
-    } else {
-        format!("External ({})", details.join(" "))
-    }
+    label
 }
 
 fn embedded_subtitle_label(stream: &EmbeddedSubtitleStream) -> String {
-    let primary = stream
+    let language = stream.language.as_deref();
+    let mut label = language
+        .map(language_display_name)
+        .unwrap_or_else(|| "Embedded".to_string());
+    let mut flags = Vec::<String>::new();
+    if let Some(title) = stream
         .title
         .as_deref()
         .map(str::trim)
         .filter(|title| !title.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            stream
-                .language
-                .as_deref()
-                .map(language_label)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "Embedded".to_string());
-
-    let mut details = Vec::new();
-    if let Some(language) = stream.language.as_deref() {
-        details.push(language.to_string());
-    }
-    if let Some(codec) = stream.codec.as_deref().filter(|codec| !codec.is_empty()) {
-        details.push(codec.to_string());
-    }
-
-    let mut label = primary;
-    if !details.is_empty() {
+        .and_then(|title| subtitle_title_label_part(language, title, &mut flags))
+    {
         label.push_str(" (");
-        label.push_str(&details.join(" "));
+        label.push_str(&title);
         label.push(')');
     }
     if stream.default {
-        label.push_str(" [default]");
+        push_unique_flag(&mut flags, "Default");
     }
     if stream.forced {
-        label.push_str(" [forced]");
+        push_unique_flag(&mut flags, "Forced");
+    }
+    for flag in flags {
+        label.push_str(" [");
+        label.push_str(&flag);
+        label.push(']');
+    }
+    if let Some(codec) = stream.codec.as_deref().filter(|codec| !codec.is_empty()) {
+        label.push_str(" [");
+        label.push_str(&subtitle_codec_label(codec));
+        label.push(']');
     }
     label
+}
+
+fn subtitle_title_label_part(
+    language: Option<&str>,
+    title: &str,
+    flags: &mut Vec<String>,
+) -> Option<String> {
+    let normalized_title = title.replace('_', " ");
+    let title = normalized_title.trim();
+    if let Some(flag) = subtitle_title_flag(title) {
+        push_unique_flag(flags, flag);
+        return None;
+    }
+    let Some(language_name) = language.map(language_display_name) else {
+        return Some(title.to_string());
+    };
+    if title.eq_ignore_ascii_case(&language_name) {
+        return None;
+    }
+    let variant =
+        title_language_qualifier(title, &language_name).unwrap_or_else(|| title.to_string());
+    let variant = subtitle_variant_label(language, &variant);
+    if let Some(flag) = subtitle_title_flag(&variant) {
+        push_unique_flag(flags, flag);
+        None
+    } else {
+        Some(variant)
+    }
+}
+
+fn subtitle_title_flag(title: &str) -> Option<&'static str> {
+    match title.trim().to_ascii_lowercase().as_str() {
+        "cc" => Some("CC"),
+        "sdh" | "sdh subtitles" | "hearing impaired" => Some("SDH"),
+        "forced" | "forced narrative" => Some("Forced"),
+        _ => None,
+    }
+}
+
+fn push_unique_flag(flags: &mut Vec<String>, flag: &str) {
+    if !flags.iter().any(|existing| existing == flag) {
+        flags.push(flag.to_string());
+    }
+}
+
+fn subtitle_variant_label(language: Option<&str>, variant: &str) -> String {
+    match (language, variant.trim().to_ascii_lowercase().as_str()) {
+        (Some("es"), "european" | "europe" | "spain") => "Spain".to_string(),
+        (Some("pt"), "european" | "europe" | "portugal") => "Portugal".to_string(),
+        (_, "latin american" | "latin america" | "latam") => "Latin America".to_string(),
+        (_, "brazilian" | "brazil") => "Brazil".to_string(),
+        (_, "simplified" | "simplified chinese") => "Simplified".to_string(),
+        (_, "traditional" | "traditional chinese") => "Traditional".to_string(),
+        _ => variant.trim().to_string(),
+    }
+}
+
+fn title_language_qualifier(title: &str, language_name: &str) -> Option<String> {
+    let rest = title.get(..language_name.len()).and_then(|prefix| {
+        prefix
+            .eq_ignore_ascii_case(language_name)
+            .then(|| &title[language_name.len()..])
+    })?;
+    let qualifier = rest
+        .trim_start_matches(|ch: char| {
+            ch.is_ascii_whitespace() || matches!(ch, '-' | '_' | ':' | '(' | '[')
+        })
+        .trim_end_matches(|ch: char| ch.is_ascii_whitespace() || matches!(ch, ')' | ']'));
+    (!qualifier.is_empty()).then(|| qualifier.to_string())
 }
 
 fn load_subtitle_text(path: &Path) -> Result<String> {
@@ -546,27 +612,6 @@ impl SubtitleRenderer {
             );
             y = y.saturating_add(line_height).saturating_add(line_gap);
         }
-    }
-}
-
-fn language_label(language: &str) -> &'static str {
-    match language {
-        "en" => "English",
-        "ja" => "Japanese",
-        "ko" => "Korean",
-        "zh" => "Chinese",
-        "zh-Hans" => "Chinese Simplified",
-        "zh-Hant" => "Chinese Traditional",
-        "ru" => "Russian",
-        "es" => "Spanish",
-        "fr" => "French",
-        "de" => "German",
-        "pt" => "Portuguese",
-        "it" => "Italian",
-        "ar" => "Arabic",
-        "hi" => "Hindi",
-        "tr" => "Turkish",
-        _ => "Subtitles",
     }
 }
 
@@ -1032,13 +1077,13 @@ fn language_from_filename(path: &Path) -> Option<String> {
 
     for pair in parts.windows(2) {
         let candidate = format!("{}-{}", pair[0], pair[1]);
-        if let Some(language) = normalize_language_tag(&candidate) {
+        if let Some(language) = normalize_filename_language_tag(&candidate) {
             return Some(language);
         }
     }
 
     for part in &parts {
-        if let Some(language) = normalize_language_tag(part) {
+        if let Some(language) = normalize_filename_language_tag(part) {
             return Some(language);
         }
     }
@@ -1046,30 +1091,9 @@ fn language_from_filename(path: &Path) -> Option<String> {
     None
 }
 
-fn normalize_language_tag(tag: &str) -> Option<String> {
-    let tag = tag.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
-    if tag.is_empty() {
-        return None;
-    }
-    let lower = tag.to_ascii_lowercase();
-    let normalized = match lower.as_str() {
-        "en" | "eng" => "en".to_string(),
-        "ja" | "jp" | "jpn" => "ja".to_string(),
-        "ko" | "kor" => "ko".to_string(),
-        "zh" | "chi" | "zho" | "cn" => "zh".to_string(),
-        "zh-hans" | "chi-hans" | "zho-hans" => "zh-Hans".to_string(),
-        "zh-hant" | "chi-hant" | "zho-hant" => "zh-Hant".to_string(),
-        "sc" | "chs" => "zh-Hans".to_string(),
-        "tc" | "cht" => "zh-Hant".to_string(),
-        "ru" | "rus" => "ru".to_string(),
-        "es" | "spa" => "es".to_string(),
-        "fr" | "fre" | "fra" => "fr".to_string(),
-        "de" | "ger" | "deu" => "de".to_string(),
-        "it" | "ita" => "it".to_string(),
-        "pt" | "por" => "pt".to_string(),
-        _ => return None,
-    };
-    Some(normalized)
+fn normalize_filename_language_tag(tag: &str) -> Option<String> {
+    let language = normalize_language_tag(tag)?;
+    language_name(&language).is_some().then_some(language)
 }
 
 fn detect_text_language(text: &str) -> Option<String> {
@@ -1762,7 +1786,7 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
         });
 
         assert!(ass.is_supported());
-        assert_eq!(ass.label(), "English (en ass) [default]");
+        assert_eq!(ass.label(), "English [Default] [ASS]");
         assert!(pgs.is_supported());
     }
 
@@ -1782,9 +1806,68 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
         let portuguese = stream(2, "por", "Portuguese(Brazil)");
         let spanish = stream(3, "spa", "Spanish(Latin_America)");
 
-        assert_eq!(cc.label(), "English(CC) (en ass)");
-        assert_eq!(portuguese.label(), "Portuguese(Brazil) (pt ass)");
-        assert_eq!(spanish.label(), "Spanish(Latin_America) (es ass)");
+        assert_eq!(cc.label(), "English [CC] [ASS]");
+        assert_eq!(portuguese.label(), "Portuguese (Brazil) [ASS]");
+        assert_eq!(spanish.label(), "Spanish (Latin America) [ASS]");
+    }
+
+    #[test]
+    fn embedded_subtitle_labels_cover_common_untitled_stream_languages() {
+        let cases = [
+            ("ara", "Arabic [SRT]"),
+            ("cze", "Czech [SRT]"),
+            ("dan", "Danish [SRT]"),
+            ("ger", "German [SRT]"),
+            ("gre", "Greek [SRT]"),
+            ("fin", "Finnish [SRT]"),
+            ("fil", "Filipino [SRT]"),
+            ("fre", "French [SRT]"),
+            ("heb", "Hebrew [SRT]"),
+            ("hrv", "Croatian [SRT]"),
+            ("hun", "Hungarian [SRT]"),
+            ("ind", "Indonesian [SRT]"),
+            ("ita", "Italian [SRT]"),
+            ("kor", "Korean [SRT]"),
+            ("may", "Malay [SRT]"),
+            ("nob", "Norwegian Bokmål [SRT]"),
+            ("dut", "Dutch [SRT]"),
+            ("pol", "Polish [SRT]"),
+            ("por", "Portuguese [SRT]"),
+            ("rum", "Romanian [SRT]"),
+            ("swe", "Swedish [SRT]"),
+            ("tha", "Thai [SRT]"),
+            ("tur", "Turkish [SRT]"),
+            ("ukr", "Ukrainian [SRT]"),
+            ("vie", "Vietnamese [SRT]"),
+            ("chi", "Chinese [SRT]"),
+        ];
+
+        for (language, expected) in cases {
+            let stream = embedded_subtitle_stream_from_info(SubtitleStreamInfo {
+                subtitle_index: 0,
+                codec: Some("subrip".to_string()),
+                language: Some(language.to_string()),
+                title: None,
+                default: false,
+                forced: false,
+            });
+
+            assert_eq!(stream.label(), expected, "language code {language}");
+        }
+    }
+
+    #[test]
+    fn embedded_subtitle_labels_preserve_unknown_language_tags() {
+        let stream = embedded_subtitle_stream_from_info(SubtitleStreamInfo {
+            subtitle_index: 0,
+            codec: Some("subrip".to_string()),
+            language: Some("ast".to_string()),
+            title: None,
+            default: false,
+            forced: false,
+        });
+
+        assert_eq!(stream.label(), "ast [SRT]");
     }
 
     #[test]
@@ -2019,7 +2102,7 @@ But I told them it was not.
         let track = SubtitleTrack::load(&subtitle).expect("external subtitle should load");
 
         assert_eq!(track.language(), Some("ja"));
-        assert_eq!(track.label(), "External (ja srt)");
+        assert_eq!(track.label(), "Japanese [External] [SRT]");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -2040,7 +2123,7 @@ But I told them it was not.
 
         let track = SubtitleTrack::load(&subtitle).expect("UTF-16 subtitle should load");
 
-        assert_eq!(track.label(), "External (srt)");
+        assert_eq!(track.label(), "External [External] [SRT]");
         assert_eq!(
             track.active_lines(Duration::from_secs(1)),
             Some(vec![String::from("Wax on, wax off.")])
