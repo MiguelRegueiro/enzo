@@ -162,6 +162,8 @@ Controls:
   Drop file/URL      play from launcher
   Space, right click  pause/play
   m                  mute/unmute
+  a                  audio track
+  s                  subtitle track
   v                  subtitles on/off
   i                  show media information
   I                  pin/unpin media information

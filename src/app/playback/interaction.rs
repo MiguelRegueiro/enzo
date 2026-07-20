@@ -149,6 +149,8 @@ impl<W: Write> InteractionContext<'_, W> {
                 }
                 self.view.dirty = self.view.have_frame;
             }
+            PlaybackCommand::ToggleAudioPicker => self.toggle_audio_picker(input_at),
+            PlaybackCommand::ToggleSubtitlePicker => self.toggle_subtitle_picker(input_at),
             PlaybackCommand::ShowMediaInfo => {
                 self.ui.media_info.show(input_at);
                 self.view.dirty = self.view.have_frame;
@@ -435,6 +437,38 @@ impl<W: Write> InteractionContext<'_, W> {
         self.engine.next_frame_at = Instant::now();
         self.view.dirty = false;
         Ok(None)
+    }
+
+    fn toggle_audio_picker(&mut self, input_at: Instant) {
+        self.seeking.scrub_position = None;
+        self.ui.show_overlay(input_at);
+        if !self.audio.is_available() {
+            self.ui.audio_picker_open = false;
+            self.ui.subtitle_picker_open = false;
+            self.ui.status_message = Some(PlaybackUi::status("NO AUDIO TRACKS", input_at));
+        } else {
+            self.ui.audio_picker_open = !self.ui.audio_picker_open;
+            if self.ui.audio_picker_open {
+                self.ui.subtitle_picker_open = false;
+            }
+        }
+        self.view.dirty = self.view.have_frame;
+    }
+
+    fn toggle_subtitle_picker(&mut self, input_at: Instant) {
+        self.seeking.scrub_position = None;
+        self.ui.show_overlay(input_at);
+        if !self.subtitles.is_available() {
+            self.ui.audio_picker_open = false;
+            self.ui.subtitle_picker_open = false;
+            self.ui.status_message = Some(PlaybackUi::status("NO SUBTITLES", input_at));
+        } else {
+            self.ui.subtitle_picker_open = !self.ui.subtitle_picker_open;
+            if self.ui.subtitle_picker_open {
+                self.ui.audio_picker_open = false;
+            }
+        }
+        self.view.dirty = self.view.have_frame;
     }
 
     fn sync_subtitle_selection(&mut self) {

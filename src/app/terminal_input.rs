@@ -12,6 +12,8 @@ pub(crate) enum PlaybackCommand {
     TogglePause,
     ToggleMute,
     ToggleSubtitles,
+    ToggleAudioPicker,
+    ToggleSubtitlePicker,
     ShowMediaInfo,
     ToggleMediaInfo,
     SeekBySeconds(i32),
@@ -54,6 +56,20 @@ fn seek_seconds_for_key(key: &KeyCode) -> Option<i32> {
     }
 }
 
+fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
+    match key {
+        KeyCode::Char('q') => PlaybackCommand::Quit,
+        KeyCode::Char(' ') => PlaybackCommand::TogglePause,
+        KeyCode::Char('m') => PlaybackCommand::ToggleMute,
+        KeyCode::Char('v') => PlaybackCommand::ToggleSubtitles,
+        KeyCode::Char('a') => PlaybackCommand::ToggleAudioPicker,
+        KeyCode::Char('s') => PlaybackCommand::ToggleSubtitlePicker,
+        KeyCode::Char('i') => PlaybackCommand::ShowMediaInfo,
+        KeyCode::Char('I') => PlaybackCommand::ToggleMediaInfo,
+        _ => PlaybackCommand::None,
+    }
+}
+
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
@@ -73,24 +89,13 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
-                if matches!(key.code, KeyCode::Char('q')) {
-                    input.command = PlaybackCommand::Quit;
+                let command = playback_command_for_key(&key.code);
+                if command == PlaybackCommand::Quit {
+                    input.command = command;
                     return Ok(input);
                 }
-                if matches!(key.code, KeyCode::Char(' ')) {
-                    input.command = PlaybackCommand::TogglePause;
-                }
-                if matches!(key.code, KeyCode::Char('m')) {
-                    input.command = PlaybackCommand::ToggleMute;
-                }
-                if matches!(key.code, KeyCode::Char('v')) {
-                    input.command = PlaybackCommand::ToggleSubtitles;
-                }
-                if matches!(key.code, KeyCode::Char('i')) {
-                    input.command = PlaybackCommand::ShowMediaInfo;
-                }
-                if matches!(key.code, KeyCode::Char('I')) {
-                    input.command = PlaybackCommand::ToggleMediaInfo;
+                if command != PlaybackCommand::None {
+                    input.command = command;
                 }
                 if let Some(seconds) = seek_seconds_for_key(&key.code) {
                     seek_seconds = seek_seconds.saturating_add(seconds);
@@ -185,5 +190,21 @@ mod tests {
     fn non_seek_keys_have_no_seek_duration() {
         assert_eq!(seek_seconds_for_key(&KeyCode::Char('q')), None);
         assert_eq!(seek_seconds_for_key(&KeyCode::Enter), None);
+    }
+
+    #[test]
+    fn letter_keys_map_to_playback_commands() {
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('a')),
+            PlaybackCommand::ToggleAudioPicker
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('s')),
+            PlaybackCommand::ToggleSubtitlePicker
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('v')),
+            PlaybackCommand::ToggleSubtitles
+        );
     }
 }
