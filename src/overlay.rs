@@ -47,12 +47,22 @@ pub(crate) struct PlaybackOverlay {
 
 impl PlaybackOverlay {
     pub(crate) fn new(fonts: &FontSystem) -> Self {
+        let mut font = fonts
+            .resolve_all(FontRole::Ui)
+            .find_map(|path| FontRenderer::open_path(path, 18));
+        if let Some(font) = font.as_mut() {
+            for language in ["zh", "ja"] {
+                for path in fonts.resolve_all_for_language(FontRole::Subtitle, Some(language)) {
+                    if font.add_fallback_path(&path) {
+                        break;
+                    }
+                }
+            }
+        }
         Self {
             scratch: String::new(),
             acrylic: AcrylicScratch::default(),
-            font: fonts
-                .resolve_all(FontRole::Ui)
-                .find_map(|path| FontRenderer::open_path(path, 18)),
+            font,
         }
     }
 

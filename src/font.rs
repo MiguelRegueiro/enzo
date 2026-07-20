@@ -135,6 +135,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn FT_Done_Face(face: FtFace) -> c_int;
     fn FT_Set_Pixel_Sizes(face: FtFace, pixel_width: c_uint, pixel_height: c_uint) -> c_int;
+    fn FT_Get_Char_Index(face: FtFace, charcode: c_ulong) -> c_uint;
     fn FT_Load_Char(face: FtFace, char_code: c_ulong, load_flags: c_int) -> c_int;
 }
 
@@ -143,6 +144,7 @@ pub(crate) struct FontRenderer {
     face: FtFace,
     pixel_size: u32,
     ascii_glyphs: HashMap<char, CachedGlyph>,
+    fallbacks: Vec<FontRenderer>,
 }
 
 struct CachedGlyph {
@@ -170,6 +172,8 @@ impl FontRenderer {
         if ok {
             self.pixel_size = pixel_size;
             self.ascii_glyphs.clear();
+            self.fallbacks
+                .retain_mut(|fallback| fallback.set_pixel_size(pixel_size));
         }
         ok
     }
@@ -183,7 +187,16 @@ impl FontRenderer {
     pub(crate) fn text_width(&mut self, text: &str) -> u32 {
         let mut width = 0_i32;
         for ch in text.chars() {
-            let advance = if ch.is_ascii() {
+            let fallback = (!self.has_char(ch))
+                .then(|| {
+                    self.fallbacks
+                        .iter_mut()
+                        .find(|fallback| fallback.has_char(ch))
+                })
+                .flatten();
+            let advance = if let Some(fallback) = fallback {
+                fallback.char_advance(ch)
+            } else if ch.is_ascii() {
                 self.ascii_advance(ch)
             } else if self.load_char(ch, FT_LOAD_DEFAULT) {
                 Some(self.current_advance())
@@ -213,6 +226,19 @@ impl FontRenderer {
         let mut pen_x = x;
 
         for ch in text.chars() {
+            if !self.has_char(ch)
+                && let Some(fallback) = self
+                    .fallbacks
+                    .iter_mut()
+                    .find(|fallback| fallback.has_char(ch))
+            {
+                let mut encoded = [0; 4];
+                let text = ch.encode_utf8(&mut encoded);
+                let advance = fallback.text_width(text) as i32;
+                fallback.draw_text(frame, width, height, pen_x, y, text, color, alpha);
+                pen_x = pen_x.saturating_add(advance);
+                continue;
+            }
             if ch.is_ascii() {
                 if !self.ensure_ascii_glyph(ch) {
                     continue;
@@ -254,11 +280,20 @@ impl FontRenderer {
             face,
             pixel_size: 0,
             ascii_glyphs: HashMap::new(),
+            fallbacks: Vec::new(),
         };
         if !renderer.set_pixel_size(pixel_size) {
             return None;
         }
         Some(renderer)
+    }
+
+    pub(crate) fn add_fallback_path(&mut self, path: &Path) -> bool {
+        let Some(fallback) = Self::open_path(path, self.pixel_size) else {
+            return false;
+        };
+        self.fallbacks.push(fallback);
+        true
     }
 
     fn ascent(&self) -> i32 {
@@ -279,6 +314,20 @@ impl FontRenderer {
 
     fn load_char(&mut self, ch: char, flags: c_int) -> bool {
         (unsafe { FT_Load_Char(self.face, ch as c_ulong, flags) }) == 0
+    }
+
+    fn has_char(&self, ch: char) -> bool {
+        !self.face.is_null() && unsafe { FT_Get_Char_Index(self.face, ch as c_ulong) } != 0
+    }
+
+    fn char_advance(&mut self, ch: char) -> Option<i32> {
+        if ch.is_ascii() {
+            self.ascii_advance(ch)
+        } else if self.load_char(ch, FT_LOAD_DEFAULT) {
+            Some(self.current_advance())
+        } else {
+            None
+        }
     }
 
     fn ascii_advance(&mut self, ch: char) -> Option<i32> {
@@ -539,6 +588,33 @@ mod tests {
         );
 
         assert!(frame.iter().any(|&value| value > 0));
+    }
+
+    #[test]
+    fn fallback_font_draws_a_glyph_missing_from_the_primary_face() {
+        let system = crate::font_system::FontSystem::discover();
+        let Some(primary_path) = system.resolve_all(crate::font_system::FontRole::Ui).next() else {
+            return;
+        };
+        let Some(mut renderer) = FontRenderer::open_path(primary_path, 18) else {
+            return;
+        };
+        if renderer.has_char('流') {
+            return;
+        }
+        let Some(fallback_path) = system
+            .resolve_all_for_language(crate::font_system::FontRole::Subtitle, Some("zh"))
+            .into_iter()
+            .find(|path| FontRenderer::open_path(path, 18).is_some_and(|font| font.has_char('流')))
+        else {
+            return;
+        };
+
+        assert!(renderer.add_fallback_path(&fallback_path));
+        let mut frame = vec![0_u8; 64 * 32 * 3];
+        renderer.draw_text(&mut frame, 64, 32, 0, 0, "流", [255; 3], 255);
+
+        assert!(frame.iter().any(|&channel| channel != 0));
     }
 
     #[test]

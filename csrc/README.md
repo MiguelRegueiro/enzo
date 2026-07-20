@@ -23,7 +23,7 @@ sanitizer command below.
   shared FFmpeg input setup.
 - `fingerprint.c` — sampled SHA-256 fingerprints used by resume records.
 - `probe.c` — video, audio-track, and subtitle-stream metadata.
-- `subtitle_decoder.c` — embedded text subtitle decoding and cue ownership.
+- `subtitle_decoder.c` — embedded text/bitmap subtitle decoding and cue ownership.
 - `video_decoder.c` — video decode, seeking, and RGB24 scaling.
 - `audio_output.c` — PulseAudio connection, buffering, pause state, and clock.
 - `audio_player.c` — audio decode, seeking, resampling, and playback

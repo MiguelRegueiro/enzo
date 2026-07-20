@@ -35,7 +35,8 @@ media fixtures for integration tests.
 cargo run --release -- /path/to/video.mp4
 ```
 
-Sidecar subtitles are loaded automatically from `/path/to/video.srt`.
+Sidecar subtitles that share the video stem, such as `/path/to/video.srt` and
+`/path/to/video.en.ass`, are loaded automatically.
 Use `--sub-file` to select a specific SRT file:
 
 ```sh

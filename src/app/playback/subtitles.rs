@@ -11,7 +11,7 @@ use crate::{
     resume::{RestoredPlayback, ResumeSubtitleSelection},
     subtitle::{
         EmbeddedSubtitleStream, SubtitleTrack, embedded_subtitle_streams,
-        load_embedded_subtitle_track, sidecar_subtitle_path,
+        load_embedded_subtitle_track, sidecar_subtitle_paths,
     },
 };
 
@@ -184,8 +184,12 @@ pub(super) fn initial_external_subtitle_paths(
     restored: Option<&RestoredPlayback>,
 ) -> (Vec<InitialSubtitlePath>, bool) {
     let mut paths = Vec::new();
-    if let Some(path) = external_subtitle_path(media_path, sub_file) {
-        push_unique_subtitle_path(&mut paths, path, true, false);
+    if let Some(path) = sub_file {
+        push_unique_subtitle_path(&mut paths, path.to_path_buf(), true, false);
+    } else {
+        for path in sidecar_subtitle_paths(media_path) {
+            push_unique_subtitle_path(&mut paths, path, true, false);
+        }
     }
 
     let mut restored_external_missing = false;
@@ -237,7 +241,7 @@ pub(super) fn load_initial_subtitle_tracks(
         .into_iter()
         .enumerate()
     {
-        if !stream.is_text() {
+        if !stream.is_supported() {
             continue;
         }
         let index = tracks.len();
@@ -332,12 +336,6 @@ pub(super) fn load_dropped_subtitle_track(path: &Path) -> Result<SubtitleTrack> 
         .and_then(|name| name.to_str())
         .unwrap_or("External");
     Ok(SubtitleTrack::load(path)?.with_label(format!("External — {file_name}")))
-}
-
-fn external_subtitle_path(media_path: &Path, sub_file: Option<&Path>) -> Option<PathBuf> {
-    sub_file
-        .map(Path::to_path_buf)
-        .or_else(|| sidecar_subtitle_path(media_path))
 }
 
 fn push_unique_subtitle_path(

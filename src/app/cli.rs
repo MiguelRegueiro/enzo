@@ -175,7 +175,7 @@ Controls:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::subtitle::sidecar_subtitle_path;
+    use crate::subtitle::sidecar_subtitle_paths;
 
     #[test]
     fn joins_shell_split_path_parts() {
@@ -231,8 +231,14 @@ mod tests {
             .expect("drop media should parse");
 
         assert_eq!(from_drop, from_arg);
-        assert_eq!(sidecar_subtitle_path(&from_arg), Some(sidecar.clone()));
-        assert_eq!(sidecar_subtitle_path(&from_drop), Some(sidecar));
+        assert_eq!(
+            sidecar_subtitle_paths(&from_arg),
+            std::slice::from_ref(&sidecar)
+        );
+        assert_eq!(
+            sidecar_subtitle_paths(&from_drop),
+            std::slice::from_ref(&sidecar)
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
