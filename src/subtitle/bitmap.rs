@@ -362,10 +362,7 @@ mod tests {
             language: Some("en".to_string()),
             label: String::from("English (en hdmv_pgs_subtitle)"),
         };
-        let mut renderer = SubtitleRenderer {
-            font: None,
-            wrapped_lines: Vec::new(),
-        };
+        let mut renderer = SubtitleRenderer::without_font();
         let mut frame = vec![0_u8; 8 * 8 * 3];
 
         renderer.render(

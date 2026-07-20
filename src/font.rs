@@ -6,6 +6,8 @@ use std::{
     ptr,
 };
 
+use crate::text_layout::{self, ParagraphDirection, TextLayout};
+
 const FT_LOAD_DEFAULT: c_int = 0;
 const FT_LOAD_RENDER: c_int = 4;
 
@@ -144,6 +146,7 @@ unsafe extern "C" {
     fn FT_Set_Pixel_Sizes(face: FtFace, pixel_width: c_uint, pixel_height: c_uint) -> c_int;
     fn FT_Get_Char_Index(face: FtFace, charcode: c_ulong) -> c_uint;
     fn FT_Load_Char(face: FtFace, char_code: c_ulong, load_flags: c_int) -> c_int;
+    fn FT_Load_Glyph(face: FtFace, glyph_index: c_uint, load_flags: c_int) -> c_int;
 }
 
 pub(crate) struct FontRenderer {
@@ -269,6 +272,57 @@ impl FontRenderer {
         }
     }
 
+    pub(crate) fn shape_text(&mut self, text: &str) -> Option<TextLayout> {
+        self.shape_text_with_direction(text, ParagraphDirection::Auto)
+    }
+
+    pub(crate) fn shape_text_with_direction(
+        &mut self,
+        text: &str,
+        direction: ParagraphDirection,
+    ) -> Option<TextLayout> {
+        let faces = std::iter::once(self.face.cast())
+            .chain(self.fallbacks.iter().map(|font| font.face.cast()))
+            .collect::<Vec<_>>();
+        text_layout::shape_with_direction(&faces, text, direction)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_text_layout(
+        &mut self,
+        frame: &mut [u8],
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        layout: &TextLayout,
+        color: [u8; 3],
+        alpha: u8,
+    ) {
+        let baseline = y.saturating_add(self.ascent());
+        for glyph in layout.glyphs() {
+            let font = if glyph.font_index == 0 {
+                &mut *self
+            } else if let Some(font) = self.fallbacks.get_mut(glyph.font_index as usize - 1) {
+                font
+            } else {
+                continue;
+            };
+            if !font.load_glyph(glyph.index, FT_LOAD_RENDER) {
+                continue;
+            }
+            font.draw_current_glyph(
+                frame,
+                width,
+                height,
+                x.saturating_add(glyph.x),
+                baseline.saturating_sub(glyph.y),
+                color,
+                alpha,
+            );
+        }
+    }
+
     pub(crate) fn open_path(path: &Path, pixel_size: u32) -> Option<Self> {
         if !path.is_file() {
             return None;
@@ -309,6 +363,45 @@ impl FontRenderer {
         true
     }
 
+    pub(crate) fn add_fallback_path_for_text(&mut self, path: &Path, text: &str) -> bool {
+        let before = self.missing_glyph_count(text);
+        let Some(fallback) = Self::open_path(path, self.pixel_size) else {
+            return false;
+        };
+        self.fallbacks.push(fallback);
+        if self.missing_glyph_count(text) < before {
+            true
+        } else {
+            self.fallbacks.pop();
+            false
+        }
+    }
+
+    pub(crate) fn fallback_count(&self) -> usize {
+        self.fallbacks.len()
+    }
+
+    pub(crate) fn covers_text(&mut self, text: &str) -> bool {
+        self.missing_glyph_count(text) == 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_char_for_test(&self, ch: char) -> bool {
+        self.has_char(ch)
+    }
+
+    fn missing_glyph_count(&mut self, text: &str) -> usize {
+        self.shape_text(text)
+            .map(|layout| {
+                layout
+                    .glyphs()
+                    .iter()
+                    .filter(|glyph| glyph.index == 0)
+                    .count()
+            })
+            .unwrap_or(usize::MAX)
+    }
+
     fn ascent(&self) -> i32 {
         self.size_metric(|metrics| to_pixels(metrics.ascender))
             .unwrap_or(self.pixel_size) as i32
@@ -327,6 +420,10 @@ impl FontRenderer {
 
     fn load_char(&mut self, ch: char, flags: c_int) -> bool {
         (unsafe { FT_Load_Char(self.face, ch as c_ulong, flags) }) == 0
+    }
+
+    fn load_glyph(&mut self, glyph_index: u32, flags: c_int) -> bool {
+        (unsafe { FT_Load_Glyph(self.face, glyph_index, flags) }) == 0
     }
 
     fn has_char(&self, ch: char) -> bool {
@@ -636,6 +733,128 @@ mod tests {
         font.draw_text(&mut without_mark, 160, 48, 4, 4, "NETFLIX", [255; 3], 255);
 
         assert_eq!(with_mark, without_mark);
+    }
+
+    #[test]
+    fn arabic_text_is_shaped_and_mixed_runs_use_visual_order() {
+        let system = crate::font_system::FontSystem::discover();
+        let Some(path) = system
+            .resolve_all_for_language(crate::font_system::FontRole::Subtitle, Some("ar"))
+            .into_iter()
+            .find(|path| FontRenderer::open_path(path, 24).is_some_and(|font| font.has_char('ب')))
+        else {
+            return;
+        };
+        let Some(mut font) = FontRenderer::open_path(&path, 24) else {
+            return;
+        };
+        if !font.has_char('A') {
+            for path in system.resolve_all(crate::font_system::FontRole::Ui) {
+                if font.add_fallback_path(path) {
+                    break;
+                }
+            }
+        }
+
+        let isolated = font.shape_text("ب").expect("shape isolated Arabic");
+        let joined = font.shape_text("بب").expect("shape joined Arabic");
+        let isolated_twice = isolated
+            .glyphs()
+            .iter()
+            .chain(isolated.glyphs())
+            .map(|glyph| glyph.index)
+            .collect::<Vec<_>>();
+        let joined_ids = joined
+            .glyphs()
+            .iter()
+            .map(|glyph| glyph.index)
+            .collect::<Vec<_>>();
+        assert!(joined_ids.iter().all(|&glyph| glyph != 0));
+        assert_ne!(joined_ids, isolated_twice);
+
+        let latin = font.shape_text("NETFLIX").expect("shape Latin run");
+        let arabic = font.shape_text("مرحبا").expect("shape Arabic run");
+        let space = font.shape_text(" ").expect("shape space").glyphs()[0];
+        let mixed = font
+            .shape_text("\u{202b}مرحبا NETFLIX\u{202c}")
+            .expect("shape mixed bidi text");
+        let visible_mixed = mixed
+            .glyphs()
+            .iter()
+            .filter(|glyph| (glyph.font_index, glyph.index) != (space.font_index, space.index))
+            .map(|glyph| (glyph.font_index, glyph.index))
+            .collect::<Vec<_>>();
+        let expected = latin
+            .glyphs()
+            .iter()
+            .chain(arabic.glyphs())
+            .map(|glyph| (glyph.font_index, glyph.index))
+            .collect::<Vec<_>>();
+        assert_eq!(visible_mixed, expected);
+        assert!(mixed.width() > 0);
+        assert!(
+            mixed.glyphs().iter().all(|glyph| glyph.index != 0),
+            "{mixed:?}"
+        );
+        let netflix_line = font
+            .shape_text("\u{202b}\"مسلسلات أنيمي NETFLIX\"\u{202c}")
+            .expect("shape Netflix Arabic subtitle");
+        assert_eq!(netflix_line.direction(), ParagraphDirection::RightToLeft);
+        assert!(netflix_line.glyphs().iter().all(|glyph| glyph.index != 0));
+        assert!(
+            netflix_line
+                .glyphs()
+                .iter()
+                .any(|glyph| glyph.font_index != 0)
+        );
+
+        let mut frame = vec![0_u8; 320 * 64 * 3];
+        font.draw_text_layout(&mut frame, 320, 64, 4, 4, &mixed, [255; 3], 255);
+        assert!(frame.iter().any(|&channel| channel != 0));
+    }
+
+    #[test]
+    fn fallback_keeps_an_arabic_base_and_mark_in_one_font_cluster() {
+        let system = crate::font_system::FontSystem::discover();
+        let Some(primary_path) = system
+            .resolve_all(crate::font_system::FontRole::Ui)
+            .find(|path| {
+                FontRenderer::open_path(path, 24)
+                    .is_some_and(|font| font.has_char('A') && !font.has_char('ب'))
+            })
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(fallback_path) = system
+            .resolve_all_for_language(crate::font_system::FontRole::Subtitle, Some("ar"))
+            .into_iter()
+            .find(|path| {
+                FontRenderer::open_path(path, 24)
+                    .is_some_and(|font| font.has_char('ب') && font.has_char('\u{064e}'))
+            })
+        else {
+            return;
+        };
+        let Some(mut font) = FontRenderer::open_path(&primary_path, 24) else {
+            return;
+        };
+
+        assert!(font.add_fallback_path_for_text(&fallback_path, "ب\u{064e}A"));
+        assert!(!font.add_fallback_path_for_text(&fallback_path, "ب\u{064e}A"));
+        assert_eq!(font.fallback_count(), 1);
+        let layout = font
+            .shape_text("ب\u{064e}A")
+            .expect("shape marked Arabic with Latin");
+        let arabic_cluster = layout
+            .glyphs()
+            .iter()
+            .filter(|glyph| glyph.cluster == 0)
+            .collect::<Vec<_>>();
+
+        assert!(!arabic_cluster.is_empty());
+        assert!(arabic_cluster.iter().all(|glyph| glyph.font_index == 1));
+        assert_eq!(layout.cluster_boundaries("ب\u{064e}A"), vec![0, 4, 5]);
     }
 
     #[test]

@@ -11,18 +11,19 @@ It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resam
 - FFmpeg shared libraries: `libavformat`, `libavcodec`, `libavutil`, `libswscale`, `libswresample`
 - A PulseAudio-compatible audio server and `libpulse`
 - The FreeType runtime library
+- HarfBuzz and FriBidi runtime libraries
 
 ## Build requirements
 
 - Rust 1.96 or newer and Cargo
-- Development headers for FFmpeg, PulseAudio, and FreeType
+- Development headers for FFmpeg, PulseAudio, FreeType, HarfBuzz, and FriBidi
 - `pkg-config`/`pkgconf` so the build can discover native compiler and linker flags
 - `cc` and `ar` to build the small native media shim
 
 On FreeBSD:
 
 ```sh
-pkg install rust ffmpeg pulseaudio freetype2 pkgconf
+pkg install rust ffmpeg pulseaudio freetype2 harfbuzz fribidi pkgconf
 ```
 
 The `ffmpeg` and `ffprobe` command-line programs are not required at runtime.

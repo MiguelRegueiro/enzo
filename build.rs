@@ -3,12 +3,18 @@ const MEDIA_SOURCES: &[&str] = &[
     "csrc/fingerprint.c",
     "csrc/probe.c",
     "csrc/subtitle_decoder.c",
+    "csrc/text_layout.c",
     "csrc/video_decoder.c",
     "csrc/audio_output.c",
     "csrc/audio_player.c",
 ];
 
-const MEDIA_HEADERS: &[&str] = &["csrc/media.h", "csrc/internal.h", "csrc/audio_output.h"];
+const MEDIA_HEADERS: &[&str] = &[
+    "csrc/media.h",
+    "csrc/internal.h",
+    "csrc/audio_output.h",
+    "csrc/text_layout.h",
+];
 
 const PKG_CONFIG_LIBRARIES: &[&str] = &[
     "libavformat",
@@ -19,6 +25,8 @@ const PKG_CONFIG_LIBRARIES: &[&str] = &[
     "libavutil",
     "libpulse",
     "freetype2",
+    "harfbuzz",
+    "fribidi",
 ];
 
 const LINUX_LINK_LIBRARIES: &[&str] = &[
@@ -30,6 +38,8 @@ const LINUX_LINK_LIBRARIES: &[&str] = &[
     "swresample",
     "pulse",
     "freetype",
+    "harfbuzz",
+    "fribidi",
 ];
 
 fn main() {

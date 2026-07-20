@@ -1,6 +1,7 @@
 mod bitmap;
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -22,12 +23,14 @@ use crate::{
     subtitle_language::{
         language_display_name, language_name, normalize_language_tag, subtitle_codec_label,
     },
+    text_layout::{ParagraphDirection, TextLayout},
 };
 
 const TEXT_COLOR: [u8; 3] = [255, 255, 255];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
 const MAX_SUBTITLE_WIDTH_RATIO: f64 = 0.84;
 const MAX_ACTIVE_SUBTITLE_LINES: usize = 3;
+const MAX_SUBTITLE_FALLBACK_FONTS: usize = 8;
 const LANGUAGE_DETECTION_SAMPLE_BYTES: usize = 16 * 1024;
 const SUPPORTED_SUBTITLE_CODECS: &[&str] = &[
     "ass",
@@ -515,7 +518,24 @@ fn matches_subtitle_extension(path: &Path, extensions: &[&str]) -> bool {
 
 pub(crate) struct SubtitleRenderer {
     font: Option<FontRenderer>,
-    wrapped_lines: Vec<String>,
+    fallback_paths: Vec<PathBuf>,
+    cached_layout: Option<CachedSubtitleLayout>,
+    #[cfg(test)]
+    layout_generation: usize,
+}
+
+struct CachedSubtitleLayout {
+    source_lines: Vec<String>,
+    font_size: u32,
+    max_width: u32,
+    fallback_scale: u32,
+    lines: Vec<PreparedSubtitleLine>,
+}
+
+struct PreparedSubtitleLine {
+    text: String,
+    width: u32,
+    layout: Option<TextLayout>,
 }
 
 #[derive(Clone, Copy)]
@@ -530,11 +550,28 @@ pub(crate) struct SubtitleLayout {
 
 impl SubtitleRenderer {
     pub(crate) fn new(fonts: &FontSystem, language: Option<&str>) -> Self {
-        let fonts = fonts.resolve_all_for_language(FontRole::Subtitle, language);
-        let font = open_first_font(&fonts, 26);
+        let subtitle_fonts = fonts.resolve_all_for_language(FontRole::Subtitle, language);
+        let font = open_first_font(&subtitle_fonts, 26);
+        let mut fallback_paths = subtitle_fonts;
+        fallback_paths.extend(fonts.resolve_all(FontRole::Ui).map(Path::to_path_buf));
+        let mut unique_paths = HashSet::new();
+        fallback_paths.retain(|path| unique_paths.insert(path.clone()));
         Self {
             font,
-            wrapped_lines: Vec::new(),
+            fallback_paths,
+            cached_layout: None,
+            #[cfg(test)]
+            layout_generation: 0,
+        }
+    }
+
+    #[cfg(test)]
+    fn without_font() -> Self {
+        Self {
+            font: None,
+            fallback_paths: Vec::new(),
+            cached_layout: None,
+            layout_generation: 0,
         }
     }
 
@@ -560,6 +597,7 @@ impl SubtitleRenderer {
 
         let font_size = subtitle_font_size(width, height);
         let fallback_scale = fallback_text_scale(width, height);
+        let max_width = ((f64::from(width) * MAX_SUBTITLE_WIDTH_RATIO).round() as u32).max(1);
         let mut font = if let Some(font) = self.font.as_mut() {
             font.set_pixel_size(font_size).then_some(font)
         } else {
@@ -570,25 +608,48 @@ impl SubtitleRenderer {
             .map(|font| font.line_height())
             .unwrap_or(7 * fallback_scale)
             .max(1);
-        let max_width = (f64::from(width) * MAX_SUBTITLE_WIDTH_RATIO).round() as u32;
-        self.wrapped_lines.clear();
-        wrap_subtitle_lines(
-            &lines,
-            max_width.max(1),
-            fallback_scale,
-            font.as_deref_mut(),
-            &mut self.wrapped_lines,
-        );
-        if self.wrapped_lines.is_empty() {
+        let cache_matches = self.cached_layout.as_ref().is_some_and(|cached| {
+            cached.source_lines == lines
+                && cached.font_size == font_size
+                && cached.max_width == max_width
+                && cached.fallback_scale == fallback_scale
+        });
+        if !cache_matches {
+            if let Some(font) = font.as_deref_mut() {
+                let text = lines.join("\n");
+                let mut loaded = font.fallback_count();
+                for path in &self.fallback_paths {
+                    if loaded >= MAX_SUBTITLE_FALLBACK_FONTS || font.covers_text(&text) {
+                        break;
+                    }
+                    loaded += font.add_fallback_path_for_text(path, &text) as usize;
+                }
+            }
+            let prepared =
+                prepare_subtitle_lines(&lines, max_width, fallback_scale, font.as_deref_mut());
+            self.cached_layout = Some(CachedSubtitleLayout {
+                source_lines: lines,
+                font_size,
+                max_width,
+                fallback_scale,
+                lines: prepared,
+            });
+            #[cfg(test)]
+            {
+                self.layout_generation += 1;
+            }
+        }
+        let Some(cached) = self.cached_layout.as_ref() else {
+            return;
+        };
+        if cached.lines.is_empty() {
             return;
         }
 
         let line_gap = (line_height / 5).max(2);
         let block_height = line_height
-            .saturating_mul(self.wrapped_lines.len() as u32)
-            .saturating_add(
-                line_gap.saturating_mul(self.wrapped_lines.len().saturating_sub(1) as u32),
-            );
+            .saturating_mul(cached.lines.len() as u32)
+            .saturating_add(line_gap.saturating_mul(cached.lines.len().saturating_sub(1) as u32));
         let bottom_margin = subtitle_bottom_margin(height)
             .max(bottom_reserve.saturating_add(8))
             .min(height.saturating_sub(1));
@@ -597,10 +658,9 @@ impl SubtitleRenderer {
             .saturating_sub(block_height);
         let mut y = start_y;
 
-        for line in &self.wrapped_lines {
-            let line_width = text_width(font.as_deref_mut(), line, fallback_scale);
-            let x = width.saturating_sub(line_width) / 2;
-            draw_subtitle_text(
+        for line in &cached.lines {
+            let x = width.saturating_sub(line.width) / 2;
+            draw_prepared_subtitle_line(
                 font.as_deref_mut(),
                 frame,
                 width,
@@ -1101,6 +1161,7 @@ fn detect_text_language(text: &str) -> Option<String> {
     let mut kana = 0_u32;
     let mut hangul = 0_u32;
     let mut cyrillic = 0_u32;
+    let mut arabic = 0_u32;
     let mut latin = 0_u32;
     let mut english_stopwords = 0_u32;
 
@@ -1116,6 +1177,9 @@ fn detect_text_language(text: &str) -> Option<String> {
                 '\u{3400}'..='\u{9fff}' => cjk += 1,
                 '\u{ac00}'..='\u{d7af}' => hangul += 1,
                 '\u{0400}'..='\u{04ff}' => cyrillic += 1,
+                '\u{0600}'..='\u{06ff}' | '\u{0750}'..='\u{077f}' | '\u{0870}'..='\u{08ff}' => {
+                    arabic += 1
+                }
                 ch if ch.is_ascii_alphabetic() => latin += 1,
                 _ => {}
             }
@@ -1142,6 +1206,9 @@ fn detect_text_language(text: &str) -> Option<String> {
     }
     if cyrillic >= 12 {
         return Some("ru".to_string());
+    }
+    if arabic >= 4 {
+        return Some("ar".to_string());
     }
     if latin >= 40 && english_stopwords >= 4 {
         return Some("en".to_string());
@@ -1191,14 +1258,29 @@ fn is_english_stopword(word: &str) -> bool {
     )
 }
 
-fn wrap_subtitle_lines(
+fn prepare_subtitle_lines(
     lines: &[String],
     max_width: u32,
     fallback_scale: u32,
     mut font: Option<&mut FontRenderer>,
-    out: &mut Vec<String>,
-) {
+) -> Vec<PreparedSubtitleLine> {
+    let mut out = Vec::new();
     for line in lines {
+        if let Some(font) = font.as_deref_mut()
+            && let Some(layout) = font.shape_text(line)
+        {
+            if layout.width() <= max_width {
+                out.push(PreparedSubtitleLine {
+                    text: line.clone(),
+                    width: layout.width(),
+                    layout: Some(layout),
+                });
+            } else {
+                wrap_shaped_paragraph(font, line, max_width, layout.direction(), &mut out);
+            }
+            continue;
+        }
+
         let mut current = String::new();
         for word in line.split_whitespace() {
             let candidate = if current.is_empty() {
@@ -1206,23 +1288,128 @@ fn wrap_subtitle_lines(
             } else {
                 format!("{current} {word}")
             };
-            if text_width(font.as_deref_mut(), &candidate, fallback_scale) <= max_width
-                || current.is_empty()
-            {
+            if bitmap_text_width(&candidate, fallback_scale) <= max_width || current.is_empty() {
                 current = candidate;
             } else {
-                out.push(current);
+                out.push(PreparedSubtitleLine {
+                    width: bitmap_text_width(&current, fallback_scale),
+                    text: current,
+                    layout: None,
+                });
                 current = word.to_string();
             }
         }
         if !current.is_empty() {
-            out.push(current);
+            out.push(PreparedSubtitleLine {
+                width: bitmap_text_width(&current, fallback_scale),
+                text: current,
+                layout: None,
+            });
         }
+    }
+    out
+}
+
+fn wrap_shaped_paragraph(
+    font: &mut FontRenderer,
+    text: &str,
+    max_width: u32,
+    direction: ParagraphDirection,
+    out: &mut Vec<PreparedSubtitleLine>,
+) {
+    let mut current = String::new();
+    let mut current_layout = None;
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        let Some(candidate_layout) = font.shape_text_with_direction(&candidate, direction) else {
+            continue;
+        };
+        if candidate_layout.width() <= max_width {
+            current = candidate;
+            current_layout = Some(candidate_layout);
+            continue;
+        }
+        if let Some(layout) = current_layout.take() {
+            out.push(PreparedSubtitleLine {
+                text: std::mem::take(&mut current),
+                width: layout.width(),
+                layout: Some(layout),
+            });
+        }
+        wrap_shaped_word(
+            font,
+            word,
+            max_width,
+            direction,
+            out,
+            &mut current,
+            &mut current_layout,
+        );
+    }
+    if let Some(layout) = current_layout {
+        out.push(PreparedSubtitleLine {
+            text: current,
+            width: layout.width(),
+            layout: Some(layout),
+        });
+    }
+}
+
+fn wrap_shaped_word(
+    font: &mut FontRenderer,
+    word: &str,
+    max_width: u32,
+    direction: ParagraphDirection,
+    out: &mut Vec<PreparedSubtitleLine>,
+    current: &mut String,
+    current_layout: &mut Option<TextLayout>,
+) {
+    let Some(word_layout) = font.shape_text_with_direction(word, direction) else {
+        return;
+    };
+    if word_layout.width() <= max_width {
+        *current = word.to_string();
+        *current_layout = Some(word_layout);
+        return;
+    }
+
+    let boundaries = word_layout.cluster_boundaries(word);
+    let mut chunk_start = 0;
+    let mut chunk_end = 0;
+    let mut chunk_layout = None;
+    for &boundary in boundaries.iter().skip(1) {
+        let candidate = &word[chunk_start..boundary];
+        let Some(candidate_layout) = font.shape_text_with_direction(candidate, direction) else {
+            continue;
+        };
+        if candidate_layout.width() <= max_width || chunk_end == chunk_start {
+            chunk_end = boundary;
+            chunk_layout = Some(candidate_layout);
+            continue;
+        }
+        if let Some(layout) = chunk_layout.take() {
+            out.push(PreparedSubtitleLine {
+                text: word[chunk_start..chunk_end].to_string(),
+                width: layout.width(),
+                layout: Some(layout),
+            });
+        }
+        chunk_start = chunk_end;
+        chunk_end = boundary;
+        chunk_layout = font.shape_text_with_direction(&word[chunk_start..chunk_end], direction);
+    }
+    if let Some(layout) = chunk_layout {
+        *current = word[chunk_start..chunk_end].to_string();
+        *current_layout = Some(layout);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_subtitle_text(
+fn draw_prepared_subtitle_line(
     mut font: Option<&mut FontRenderer>,
     frame: &mut [u8],
     width: u32,
@@ -1230,8 +1417,37 @@ fn draw_subtitle_text(
     x: u32,
     y: u32,
     fallback_scale: u32,
-    text: &str,
+    line: &PreparedSubtitleLine,
 ) {
+    if let Some(font) = font.as_deref_mut()
+        && let Some(layout) = line.layout.as_ref()
+    {
+        for (dx, dy) in [
+            (-2, 0),
+            (2, 0),
+            (0, -2),
+            (0, 2),
+            (-1, -1),
+            (1, -1),
+            (-1, 1),
+            (1, 1),
+        ] {
+            font.draw_text_layout(
+                frame,
+                width,
+                height,
+                x as i32 + dx,
+                y as i32 + dy,
+                layout,
+                SHADOW_COLOR,
+                230,
+            );
+        }
+        font.draw_text_layout(
+            frame, width, height, x as i32, y as i32, layout, TEXT_COLOR, 255,
+        );
+        return;
+    }
     for (dx, dy) in [
         (-2, 0),
         (2, 0),
@@ -1250,7 +1466,7 @@ fn draw_subtitle_text(
             x as i32 + dx,
             y as i32 + dy,
             fallback_scale,
-            text,
+            &line.text,
             SHADOW_COLOR,
             230,
         );
@@ -1263,7 +1479,7 @@ fn draw_subtitle_text(
         x as i32,
         y as i32,
         fallback_scale,
-        text,
+        &line.text,
         TEXT_COLOR,
         255,
     );
@@ -1297,11 +1513,6 @@ fn draw_text(
             alpha,
         );
     }
-}
-
-fn text_width(font: Option<&mut FontRenderer>, text: &str, fallback_scale: u32) -> u32 {
-    font.map(|font| font.text_width(text))
-        .unwrap_or_else(|| bitmap_text_width(text, fallback_scale))
 }
 
 fn subtitle_font_size(width: u32, height: u32) -> u32 {
@@ -2082,6 +2293,10 @@ But I told them it was not.
             detect_text_language("这是中文字幕。"),
             Some("zh".to_string())
         );
+        assert_eq!(
+            detect_text_language("هذه ترجمة عربية."),
+            Some("ar".to_string())
+        );
     }
 
     #[test]
@@ -2290,10 +2505,7 @@ Hello
             language: None,
             label: String::from("Subtitles"),
         };
-        let mut renderer = SubtitleRenderer {
-            font: None,
-            wrapped_lines: Vec::new(),
-        };
+        let mut renderer = SubtitleRenderer::without_font();
         let width = 320;
         let height = 180;
         let mut frame = vec![20_u8; (width * height * 3) as usize];
@@ -2314,5 +2526,84 @@ Hello
         );
 
         assert!(frame.iter().any(|&value| value > 220));
+    }
+
+    #[test]
+    fn renderer_reuses_prepared_lines_until_text_or_geometry_changes() {
+        let track = SubtitleTrack {
+            cues: parse_srt(
+                "\
+1
+00:00:00,000 --> 00:00:10,000
+This subtitle is prepared once
+",
+            )
+            .expect("srt should parse"),
+            language: None,
+            label: String::from("Subtitles"),
+        };
+        let mut renderer = SubtitleRenderer::without_font();
+        let position = Duration::from_secs(1);
+        let small = SubtitleLayout {
+            canvas_width: 320,
+            canvas_height: 180,
+            video_x: 0,
+            video_y: 0,
+            video_width: 320,
+            video_height: 180,
+        };
+        let mut frame = vec![0_u8; 320 * 180 * 3];
+
+        renderer.render(&mut frame, small, &track, position, 0);
+        renderer.render(&mut frame, small, &track, position, 0);
+        assert_eq!(renderer.layout_generation, 1);
+
+        let large = SubtitleLayout {
+            canvas_width: 640,
+            canvas_height: 360,
+            video_width: 640,
+            video_height: 360,
+            ..small
+        };
+        frame.resize(640 * 360 * 3, 0);
+        renderer.render(&mut frame, large, &track, position, 0);
+        assert_eq!(renderer.layout_generation, 2);
+    }
+
+    #[test]
+    fn wrapped_arabic_keeps_paragraph_direction_and_cluster_boundaries() {
+        let system = FontSystem::discover();
+        let Some(path) = system
+            .resolve_all_for_language(FontRole::Subtitle, Some("ar"))
+            .into_iter()
+            .find(|path| {
+                FontRenderer::open_path(path, 26).is_some_and(|font| font.has_char_for_test('م'))
+            })
+        else {
+            return;
+        };
+        let Some(mut font) = FontRenderer::open_path(&path, 26) else {
+            return;
+        };
+        let text = "مَرْحَبًامَرْحَبًامَرْحَبًا";
+        let full_width = font.shape_text(text).expect("shape Arabic").width();
+        let max_width = (full_width / 3).max(1);
+
+        let lines = prepare_subtitle_lines(&[text.to_string()], max_width, 3, Some(&mut font));
+
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| line.width <= max_width));
+        assert!(lines.iter().all(|line| {
+            line.layout
+                .as_ref()
+                .is_some_and(|layout| layout.direction() == ParagraphDirection::RightToLeft)
+        }));
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<String>(),
+            text
+        );
     }
 }

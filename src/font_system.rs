@@ -73,6 +73,16 @@ const CHINESE_SUBTITLE_FONT_PATTERNS: &[&str] = &[
     "chinese",
 ];
 
+const ARABIC_SUBTITLE_FONT_PATTERNS: &[&str] = &[
+    "notosansarabic-regular",
+    "notosansarabic",
+    "notonaskharabic-regular",
+    "notonaskharabic",
+    "notokufiarabic",
+    "arabic",
+    "dejavusans",
+];
+
 impl FontSystem {
     pub(crate) fn discover() -> Self {
         Self::from_dirs(SYSTEM_FONT_DIRS.iter().map(OsString::from))
@@ -153,6 +163,8 @@ fn subtitle_font_patterns(language: &str) -> Option<&'static [&'static str]> {
         Some(JAPANESE_SUBTITLE_FONT_PATTERNS)
     } else if matches!(language.as_str(), "zh" | "chi" | "zho") || language.starts_with("zh-") {
         Some(CHINESE_SUBTITLE_FONT_PATTERNS)
+    } else if matches!(language.as_str(), "ar" | "ara") || language.starts_with("ar-") {
+        Some(ARABIC_SUBTITLE_FONT_PATTERNS)
     } else {
         None
     }
@@ -283,6 +295,27 @@ mod tests {
         );
         assert_eq!(
             system.resolve_all_for_language(FontRole::Ui, Some("zh-Hans"))[0],
+            latin
+        );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn arabic_subtitles_prefer_arabic_fonts() {
+        let root = temp_font_dir("arabic_subtitle_font");
+        let latin = root.join("NotoSans-Regular.ttf");
+        let arabic = root.join("NotoSansArabic-Regular.ttf");
+        File::create(&latin).expect("create latin font");
+        File::create(&arabic).expect("create arabic font");
+
+        let system = FontSystem::from_dirs([root.clone().into_os_string()]);
+
+        assert_eq!(
+            system.resolve_all_for_language(FontRole::Subtitle, Some("ar"))[0],
+            arabic
+        );
+        assert_eq!(
+            system.resolve_all_for_language(FontRole::Ui, Some("ar"))[0],
             latin
         );
         fs::remove_dir_all(root).ok();
