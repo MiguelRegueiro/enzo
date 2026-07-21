@@ -15,9 +15,9 @@ const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 pub(super) const MEDIA_INFO_VISIBLE_FOR: Duration = Duration::from_secs(4);
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct StatusMessage {
-    text: &'static str,
+    text: Arc<str>,
     visible_until: Instant,
 }
 
@@ -104,9 +104,9 @@ impl PlaybackUi {
         }
     }
 
-    pub(super) fn status(text: &'static str, now: Instant) -> StatusMessage {
+    pub(super) fn status(text: impl Into<Arc<str>>, now: Instant) -> StatusMessage {
         StatusMessage {
-            text,
+            text: text.into(),
             visible_until: now + STATUS_VISIBLE_FOR,
         }
     }
@@ -137,7 +137,7 @@ impl PlaybackUi {
             duration,
             paused,
             self.overlay_visible_until,
-            self.status_message,
+            self.status_message.as_ref(),
             audio.is_available(),
             audio.selected(),
             self.audio_picker_open,
@@ -164,7 +164,7 @@ pub(super) fn overlay_state(
     duration: Option<Duration>,
     paused: bool,
     visible_until: Option<Instant>,
-    status_message: Option<StatusMessage>,
+    status_message: Option<&StatusMessage>,
     audio_available: bool,
     selected_audio: Option<usize>,
     audio_picker_open: bool,
@@ -200,7 +200,9 @@ pub(super) fn overlay_state(
         subtitle_picker_offset,
         subtitle_picker_focus,
         subtitle_labels,
-        status_message: status_text(status_message, now),
+        status_message: status_message
+            .filter(|message| now < message.visible_until)
+            .map(|message| Arc::clone(&message.text)),
         media_title: Some(media_title),
         media_info,
     }
@@ -228,8 +230,8 @@ pub(super) fn media_title(path: &Path) -> Arc<str> {
     Arc::from(text)
 }
 
-pub(super) fn status_text(message: Option<StatusMessage>, now: Instant) -> Option<&'static str> {
-    message.and_then(|message| (now < message.visible_until).then_some(message.text))
+pub(super) fn status_text(message: Option<&StatusMessage>, now: Instant) -> Option<&str> {
+    message.and_then(|message| (now < message.visible_until).then_some(message.text.as_ref()))
 }
 
 pub(super) fn overlay_visible(

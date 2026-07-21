@@ -120,6 +120,9 @@ impl<W: Write> InteractionContext<'_, W> {
                 ));
                 self.view.dirty = self.view.have_frame;
             }
+            PlaybackCommand::AdjustVolume { steps } => {
+                self.adjust_volume(steps, input_at);
+            }
             PlaybackCommand::ToggleSubtitles => {
                 self.ui.subtitle_picker_open = false;
                 if !self.subtitles.is_available() {
@@ -198,6 +201,7 @@ impl<W: Write> InteractionContext<'_, W> {
                         true,
                         self.engine.paused,
                         self.engine.muted,
+                        self.engine.volume_percent,
                     )?;
                     seek.hold();
                     self.seeking.pending = Some(seek);
@@ -273,11 +277,19 @@ impl<W: Write> InteractionContext<'_, W> {
         for mouse in mouse_events {
             let seek = match mouse {
                 PlaybackMouse::ScrollUp => {
-                    self.scroll_open_picker(hit_context, -1);
+                    if picker_owns_scroll(self.ui.audio_picker_open, self.ui.subtitle_picker_open) {
+                        self.scroll_open_picker(hit_context, -1);
+                    } else {
+                        self.adjust_volume(1, input_at);
+                    }
                     None
                 }
                 PlaybackMouse::ScrollDown => {
-                    self.scroll_open_picker(hit_context, 1);
+                    if picker_owns_scroll(self.ui.audio_picker_open, self.ui.subtitle_picker_open) {
+                        self.scroll_open_picker(hit_context, 1);
+                    } else {
+                        self.adjust_volume(-1, input_at);
+                    }
                     None
                 }
                 PlaybackMouse::Down { column, row } => {
@@ -421,6 +433,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 true,
                 self.engine.paused,
                 self.engine.muted,
+                self.engine.volume_percent,
             )?);
         } else {
             preview_playback(
@@ -478,6 +491,13 @@ impl<W: Write> InteractionContext<'_, W> {
             );
             self.view.dirty = self.view.have_frame;
         }
+    }
+
+    fn adjust_volume(&mut self, steps: i32, input_at: Instant) {
+        let volume = self.engine.adjust_volume(steps);
+        self.ui.status_message = Some(PlaybackUi::status(format!("VOLUME {volume}%"), input_at));
+        self.ui.show_overlay(input_at);
+        self.view.dirty = self.view.have_frame;
     }
 
     fn toggle_audio_picker(&mut self, input_at: Instant) {
@@ -571,6 +591,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 true,
                 self.engine.paused,
                 self.engine.muted,
+                self.engine.volume_percent,
             )?);
         }
         self.engine.video_ended = false;
@@ -693,6 +714,7 @@ impl<W: Write> InteractionContext<'_, W> {
             true,
             self.engine.paused,
             self.engine.muted,
+            self.engine.volume_percent,
         )?);
         Ok(())
     }
@@ -815,5 +837,22 @@ fn picker_offset_for_focus(
             .min(max_offset)
     } else {
         offset.min(max_offset)
+    }
+}
+
+fn picker_owns_scroll(audio_picker_open: bool, subtitle_picker_open: bool) -> bool {
+    audio_picker_open || subtitle_picker_open
+}
+
+#[cfg(test)]
+mod tests {
+    use super::picker_owns_scroll;
+
+    #[test]
+    fn an_open_track_picker_owns_mouse_wheel_input() {
+        assert!(picker_owns_scroll(true, false));
+        assert!(picker_owns_scroll(false, true));
+        assert!(picker_owns_scroll(true, true));
+        assert!(!picker_owns_scroll(false, false));
     }
 }

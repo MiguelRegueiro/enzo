@@ -61,7 +61,7 @@ pub(super) fn render_overlay_rgb(
         );
     }
 
-    if let Some(message) = state.status_message {
+    if let Some(message) = state.status_message.as_deref() {
         draw_top_message(
             font.as_deref_mut(),
             frame,

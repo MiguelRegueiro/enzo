@@ -11,6 +11,7 @@
 int enzo_stop_requested(const int *stop_flag);
 int enzo_pause_requested(const int *pause_flag);
 int enzo_mute_requested(const int *mute_flag);
+int enzo_volume_percent_value(const int *volume_percent);
 int enzo_seek_generation_value(const int *seek_generation);
 int64_t enzo_seek_micros_value(const int64_t *seek_micros);
 int64_t enzo_stream_timestamp_origin(

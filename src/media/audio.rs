@@ -20,6 +20,7 @@ struct AudioThreadState {
     stop: Arc<AtomicI32>,
     pause: Arc<AtomicI32>,
     mute: Arc<AtomicI32>,
+    volume_percent: Arc<AtomicI32>,
     seek_generation: Arc<AtomicI32>,
     seek_micros: Arc<AtomicI64>,
     released_seek_generation: Arc<AtomicI32>,
@@ -41,6 +42,7 @@ impl AudioPlayer {
         position: Duration,
         paused: bool,
         muted: bool,
+        volume_percent: u8,
     ) -> Result<Self> {
         let path = path_cstring(path)?;
         let audio_stream_index = audio_stream_index
@@ -54,6 +56,7 @@ impl AudioPlayer {
             stop: Arc::new(AtomicI32::new(0)),
             pause: Arc::new(AtomicI32::new(i32::from(paused))),
             mute: Arc::new(AtomicI32::new(i32::from(muted))),
+            volume_percent: Arc::new(AtomicI32::new(i32::from(volume_percent.min(100)))),
             seek_generation: Arc::new(AtomicI32::new(initial_seek_generation)),
             seek_micros: Arc::new(AtomicI64::new(duration_micros_i64(position))),
             released_seek_generation: Arc::new(AtomicI32::new(
@@ -73,6 +76,7 @@ impl AudioPlayer {
                     thread_state.stop.as_ptr(),
                     thread_state.pause.as_ptr(),
                     thread_state.mute.as_ptr(),
+                    thread_state.volume_percent.as_ptr(),
                     thread_state.seek_generation.as_ptr(),
                     thread_state.seek_micros.as_ptr(),
                     thread_state.released_seek_generation.as_ptr(),
@@ -144,6 +148,12 @@ impl AudioPlayer {
 
     pub(crate) fn set_muted(&self, muted: bool) {
         self.shared.mute.store(i32::from(muted), Ordering::Relaxed);
+    }
+
+    pub(crate) fn set_volume(&self, volume_percent: u8) {
+        self.shared
+            .volume_percent
+            .store(i32::from(volume_percent.min(100)), Ordering::Relaxed);
     }
 
     pub(crate) fn seek_held(&self, position: Duration) -> i32 {
@@ -258,7 +268,7 @@ mod tests {
         }
 
         let mut player =
-            AudioPlayer::spawn_held_at(&media, None, Duration::from_millis(750), false, true)
+            AudioPlayer::spawn_held_at(&media, None, Duration::from_millis(750), false, true, 100)
                 .expect("held audio player should start");
         let generation = player.seek_generation();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -285,9 +295,15 @@ mod tests {
             "stopping during a held audio seek should be prompt"
         );
 
-        let mut tail =
-            AudioPlayer::spawn_held_at(&media, None, Duration::from_millis(1_990), false, true)
-                .expect("held tail audio player should start");
+        let mut tail = AudioPlayer::spawn_held_at(
+            &media,
+            None,
+            Duration::from_millis(1_990),
+            false,
+            true,
+            100,
+        )
+        .expect("held tail audio player should start");
         let tail_generation = tail.seek_generation();
         let tail_deadline = Instant::now() + Duration::from_secs(3);
         while !tail.seek_applied(tail_generation) || !tail.seek_buffered(tail_generation) {

@@ -76,12 +76,14 @@ Controls:
 
 - Drop a file or URL on the launcher to play it.
 - Space or right click pauses/resumes playback.
+- `9`/`0` or the mouse wheel decreases/increases volume by 2%.
 - `m` toggles mute.
 - `v` toggles subtitles.
 - `i` shows media information temporarily; `I` pins or unpins it.
 - Left/right arrows seek backward/forward by 5 seconds.
 - Down/up arrows seek backward/forward by 60 seconds.
 - Click or drag the progress bar to seek.
+- While an audio or subtitle menu is open, the mouse wheel scrolls that menu instead of changing volume.
 - `q` quits.
 
 The playback overlay appears while paused, after seeking, and on mouse movement.

@@ -332,6 +332,7 @@ impl<W: Write> PlaybackSession<'_, W> {
                 true,
                 self.engine.paused,
                 self.engine.muted,
+                self.engine.volume_percent,
             )?);
         }
         self.engine.video_ended = false;
@@ -347,7 +348,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             self.seeking.scrub_position.is_some(),
             now,
         );
-        let status_visible = super::ui::status_text(self.ui.status_message, now).is_some();
+        let status_visible = super::ui::status_text(self.ui.status_message.as_ref(), now).is_some();
         let media_info_visible = self.ui.media_info.visible(now);
         let media_info_fps_visible = media_info_visible
             && media_info_display_fps(self.engine.paused, self.engine.video.display_fps(now))

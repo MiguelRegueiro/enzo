@@ -161,6 +161,8 @@ Usage:
 Controls:
   Drop file/URL      play from launcher
   Space, right click  pause/play
+  9, 0               volume down/up by 2%
+  Mouse wheel        volume down/up; scroll an open track menu
   m                  mute/unmute
   a                  audio track
   s                  subtitle track

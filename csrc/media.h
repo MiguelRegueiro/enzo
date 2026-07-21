@@ -184,6 +184,7 @@ int enzo_play_audio(
     const int *stop_flag,
     const int *pause_flag,
     const int *mute_flag,
+    const int *volume_percent,
     const int *seek_generation,
     const int64_t *seek_micros,
     const int *released_seek_generation,

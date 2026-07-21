@@ -409,6 +409,7 @@ static int write_converted_audio(
     const int *stop_flag,
     const int *pause_flag,
     const int *mute_flag,
+    const int *volume_percent,
     const int *seek_generation,
     const int *released_seek_generation,
     int *buffered_seek_generation,
@@ -551,8 +552,15 @@ static int write_converted_audio(
         uint8_t *output_data =
             converter->out_buffer +
             skip_samples * ENZO_AUDIO_OUTPUT_CHANNELS * ENZO_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
-        if (enzo_mute_requested(mute_flag)) {
+        int volume = enzo_volume_percent_value(volume_percent);
+        if (enzo_mute_requested(mute_flag) || volume == 0) {
             memset(output_data, 0, (size_t)bytes);
+        } else if (volume < 100) {
+            int16_t *samples = (int16_t *)output_data;
+            size_t sample_count = (size_t)bytes / sizeof(*samples);
+            for (size_t index = 0; index < sample_count; index++) {
+                samples[index] = (int16_t)((int32_t)samples[index] * volume / 100);
+            }
         }
         int ret = enzo_pulse_output_write(
             pulse,
@@ -587,6 +595,7 @@ int enzo_play_audio(
     const int *stop_flag,
     const int *pause_flag,
     const int *mute_flag,
+    const int *volume_percent,
     const int *seek_generation,
     const int64_t *seek_micros,
     const int *released_seek_generation,
@@ -780,6 +789,7 @@ decode_audio:
                 stop_flag,
                 pause_flag,
                 mute_flag,
+                volume_percent,
                 seek_generation,
                 released_seek_generation,
                 buffered_seek_generation,

@@ -88,6 +88,7 @@ pub(super) fn seek_playback(
     exact_video_seek: bool,
     paused: bool,
     muted: bool,
+    volume_percent: u8,
 ) -> Result<PendingSeek> {
     let video_generation = if exact_video_seek {
         decoder.seek(position)
@@ -101,9 +102,16 @@ pub(super) fn seek_playback(
             audio_generation = Some(audio.seek_held(position));
             audio.set_paused(paused);
             audio.set_muted(muted);
+            audio.set_volume(volume_percent);
         } else {
-            let player =
-                AudioPlayer::spawn_held_at(path, audio_stream_index, position, paused, muted)?;
+            let player = AudioPlayer::spawn_held_at(
+                path,
+                audio_stream_index,
+                position,
+                paused,
+                muted,
+                volume_percent,
+            )?;
             audio_generation = Some(player.seek_generation());
             *audio = Some(player);
         }

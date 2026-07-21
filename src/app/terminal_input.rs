@@ -17,6 +17,7 @@ pub(crate) enum PlaybackCommand {
     ShowMediaInfo,
     ToggleMediaInfo,
     ConfirmPicker,
+    AdjustVolume { steps: i32 },
     SeekBySeconds { seconds: i32, picker_direction: i32 },
 }
 
@@ -40,7 +41,10 @@ pub(crate) enum PlaybackMouse {
 
 impl PlaybackMouse {
     pub(crate) fn interrupts_keyboard_seek(self) -> bool {
-        !matches!(self, PlaybackMouse::Move { .. })
+        !matches!(
+            self,
+            PlaybackMouse::Move { .. } | PlaybackMouse::ScrollUp | PlaybackMouse::ScrollDown
+        )
     }
 }
 
@@ -74,6 +78,14 @@ fn picker_direction_for_key(key: &KeyCode) -> Option<i32> {
     }
 }
 
+fn volume_steps_for_key(key: &KeyCode) -> Option<i32> {
+    match key {
+        KeyCode::Char('9') => Some(-1),
+        KeyCode::Char('0') => Some(1),
+        _ => None,
+    }
+}
+
 fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
     match key {
         KeyCode::Char('q') => PlaybackCommand::Quit,
@@ -98,6 +110,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     };
     let mut seek_seconds = 0_i32;
     let mut picker_direction = 0_i32;
+    let mut volume_steps = 0_i32;
     // Passive movement can keep the terminal queue continuously non-empty.
     // Bound each drain so input can never starve frame delivery or UI expiry.
     for _ in 0..INPUT_EVENTS_PER_TICK {
@@ -122,6 +135,9 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 }
                 if let Some(direction) = picker_direction_for_key(&key.code) {
                     picker_direction = picker_direction.saturating_add(direction);
+                }
+                if let Some(steps) = volume_steps_for_key(&key.code) {
+                    volume_steps = volume_steps.saturating_add(steps);
                 }
             }
             Event::Mouse(mouse) => {
@@ -170,11 +186,17 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
         }
     }
 
-    if seek_seconds != 0 && input.command == PlaybackCommand::None {
-        input.command = PlaybackCommand::SeekBySeconds {
-            seconds: seek_seconds,
-            picker_direction,
-        };
+    if input.command == PlaybackCommand::None {
+        if seek_seconds != 0 {
+            input.command = PlaybackCommand::SeekBySeconds {
+                seconds: seek_seconds,
+                picker_direction,
+            };
+        } else if volume_steps != 0 {
+            input.command = PlaybackCommand::AdjustVolume {
+                steps: volume_steps,
+            };
+        }
     }
 
     Ok(input)
@@ -239,13 +261,20 @@ mod tests {
     }
 
     #[test]
-    fn passive_mouse_movement_does_not_interrupt_keyboard_seek() {
+    fn mpv_volume_keys_map_to_two_percent_steps() {
+        assert_eq!(volume_steps_for_key(&KeyCode::Char('9')), Some(-1));
+        assert_eq!(volume_steps_for_key(&KeyCode::Char('0')), Some(1));
+        assert_eq!(volume_steps_for_key(&KeyCode::Char('m')), None);
+    }
+
+    #[test]
+    fn passive_mouse_and_wheel_input_do_not_interrupt_keyboard_seek() {
         assert!(!PlaybackMouse::Move { column: 1, row: 1 }.interrupts_keyboard_seek());
         assert!(PlaybackMouse::Down { column: 1, row: 1 }.interrupts_keyboard_seek());
         assert!(PlaybackMouse::Drag { column: 1, row: 1 }.interrupts_keyboard_seek());
         assert!(PlaybackMouse::Up { column: 1, row: 1 }.interrupts_keyboard_seek());
-        assert!(PlaybackMouse::ScrollUp.interrupts_keyboard_seek());
-        assert!(PlaybackMouse::ScrollDown.interrupts_keyboard_seek());
+        assert!(!PlaybackMouse::ScrollUp.interrupts_keyboard_seek());
+        assert!(!PlaybackMouse::ScrollDown.interrupts_keyboard_seek());
     }
 
     #[test]

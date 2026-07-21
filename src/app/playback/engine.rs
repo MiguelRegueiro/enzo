@@ -9,6 +9,8 @@ use crate::media::{AudioPlayer, FrameStatus, VideoDecoder};
 
 use super::layout::TargetFrame;
 
+pub(super) const VOLUME_STEP_PERCENT: u8 = 2;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AudioChoice {
     Off,
@@ -33,6 +35,7 @@ pub(super) struct PlaybackEngine {
     pub(super) video_ended: bool,
     pub(super) paused: bool,
     pub(super) muted: bool,
+    pub(super) volume_percent: u8,
     pub(super) position: Duration,
     pub(super) frame_interval: Duration,
     pub(super) next_frame_at: Instant,
@@ -53,7 +56,7 @@ impl PlaybackEngine {
             audio_choice
                 .stream_index()
                 .map(|stream_index| {
-                    AudioPlayer::spawn_held_at(path, stream_index, position, false, false)
+                    AudioPlayer::spawn_held_at(path, stream_index, position, false, false, 100)
                 })
                 .transpose()?
         } else {
@@ -68,6 +71,7 @@ impl PlaybackEngine {
             video_ended: false,
             paused: false,
             muted: false,
+            volume_percent: 100,
             position,
             frame_interval: frame_interval(fps),
             next_frame_at: started_at,
@@ -105,6 +109,14 @@ impl PlaybackEngine {
         if let Some(audio) = self.audio.as_mut() {
             audio.set_muted(self.muted);
         }
+    }
+
+    pub(super) fn adjust_volume(&mut self, steps: i32) -> u8 {
+        self.volume_percent = adjusted_volume(self.volume_percent, steps);
+        if let Some(audio) = self.audio.as_ref() {
+            audio.set_volume(self.volume_percent);
+        }
+        self.volume_percent
     }
 
     pub(super) fn restart_video(
@@ -156,4 +168,29 @@ impl PlaybackEngine {
 
 fn frame_interval(fps: f64) -> Duration {
     Duration::from_secs_f64(1.0 / fps.max(1.0))
+}
+
+fn adjusted_volume(current: u8, steps: i32) -> u8 {
+    let delta = steps.saturating_mul(i32::from(VOLUME_STEP_PERCENT));
+    i32::from(current).saturating_add(delta).clamp(0, 100) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VOLUME_STEP_PERCENT, adjusted_volume};
+
+    #[test]
+    fn volume_step_matches_mpv_default() {
+        assert_eq!(VOLUME_STEP_PERCENT, 2);
+    }
+
+    #[test]
+    fn volume_adjustment_uses_two_percent_steps_and_clamps() {
+        assert_eq!(adjusted_volume(50, 1), 52);
+        assert_eq!(adjusted_volume(50, -2), 46);
+        assert_eq!(adjusted_volume(100, 1), 100);
+        assert_eq!(adjusted_volume(0, -1), 0);
+        assert_eq!(adjusted_volume(50, i32::MAX), 100);
+        assert_eq!(adjusted_volume(50, i32::MIN), 0);
+    }
 }

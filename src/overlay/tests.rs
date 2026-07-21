@@ -252,7 +252,7 @@ fn status_message_can_render_without_playback_controls() {
             subtitle_picker_offset: 0,
             subtitle_picker_focus: None,
             subtitle_labels: Arc::default(),
-            status_message: Some("MUTE ON"),
+            status_message: Some(Arc::from("MUTE ON")),
             media_title: None,
             media_info: None,
         },

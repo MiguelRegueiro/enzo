@@ -165,6 +165,7 @@ unsafe extern "C" {
         stop_flag: *const c_int,
         pause_flag: *const c_int,
         mute_flag: *const c_int,
+        volume_percent: *const c_int,
         seek_generation: *const c_int,
         seek_micros: *const i64,
         released_seek_generation: *const c_int,

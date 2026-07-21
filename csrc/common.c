@@ -18,6 +18,17 @@ int enzo_mute_requested(const int *mute_flag) {
     return mute_flag != NULL && __atomic_load_n(mute_flag, __ATOMIC_ACQUIRE) != 0;
 }
 
+int enzo_volume_percent_value(const int *volume_percent) {
+    if (volume_percent == NULL) {
+        return 100;
+    }
+    int value = __atomic_load_n(volume_percent, __ATOMIC_ACQUIRE);
+    if (value < 0) {
+        return 0;
+    }
+    return value > 100 ? 100 : value;
+}
+
 int enzo_seek_generation_value(const int *seek_generation) {
     return seek_generation == NULL
         ? 0

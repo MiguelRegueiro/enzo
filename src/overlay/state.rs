@@ -20,7 +20,7 @@ pub(crate) struct OverlayState {
     pub(crate) subtitle_picker_offset: usize,
     pub(crate) subtitle_picker_focus: Option<usize>,
     pub(crate) subtitle_labels: Arc<[Arc<str>]>,
-    pub(crate) status_message: Option<&'static str>,
+    pub(crate) status_message: Option<Arc<str>>,
     pub(crate) media_title: Option<Arc<str>>,
     pub(crate) media_info: Option<MediaInfoState>,
 }
