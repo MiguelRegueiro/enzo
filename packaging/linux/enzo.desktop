@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=enzo
+GenericName=Video Player
+Comment=Play videos in a Kitty-compatible terminal
+Icon=enzo
+TryExec=enzo
+Exec=enzo %u
+Terminal=true
+MimeType=application/ogg;application/x-matroska;video/3gpp;video/3gpp2;video/mp2t;video/mp4;video/mpeg;video/ogg;video/quicktime;video/webm;video/x-flv;video/x-m4v;video/x-matroska;video/x-ms-asf;video/x-msvideo;video/x-ms-wmv;video/x-ogm+ogg;video/x-theora+ogg;
+Categories=AudioVideo;Video;Player;ConsoleOnly;
+Keywords=Video;Movie;Media;Player;Terminal;TUI;Kitty;
