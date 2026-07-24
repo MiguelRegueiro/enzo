@@ -1,91 +1,73 @@
-# enzo
+<h1 align="left"><img src="assets/logo.png" width="64" alt="enzo logo" align="absmiddle" />&nbsp;enzo</h1>
 
-Video player for Kitty-compatible terminals.
+Terminal video player for Kitty, with native audio, subtitles, mouse controls, and resume support.
 
-Enzo renders video frames with the Kitty graphics protocol and plays audio through PulseAudio.
-It links directly to FFmpeg libraries for demuxing, decoding, scaling, and resampling.
+enzo plays local files and URLs directly inside the terminal.
 
-## Runtime requirements
+## Features
 
-- Kitty or another terminal that supports the Kitty graphics protocol
-- FFmpeg shared libraries: `libavformat`, `libavcodec`, `libavutil`, `libswscale`, `libswresample`
-- A PulseAudio-compatible audio server and `libpulse`
-- The FreeType runtime library
-- HarfBuzz and FriBidi runtime libraries
+- **Terminal-native playback** — video rendered directly inside Kitty
+- **Subtitles** — detects sidecar subtitles and supports explicit `--sub-file`
+- **Resume support** — restores position, audio track, and subtitle track for local seekable files
+- **Mouse and keyboard controls** — pause, seek, volume, mute, track menus, and overlay controls
+- **Drop target launcher** — run without a path and drop a file or URL to play
 
-## Build requirements
+## Requirements
 
-- Rust 1.96 or newer and Cargo
-- Development headers for FFmpeg, PulseAudio, FreeType, HarfBuzz, and FriBidi
-- `pkg-config`/`pkgconf` so the build can discover native compiler and linker flags
-- `cc` and `ar` to build the small native media shim
+- Kitty
+- FFmpeg libraries
+- PulseAudio-compatible audio
+- FreeType, HarfBuzz, and FriBidi
 
-On FreeBSD:
+## Run from source
 
-```sh
-pkg install rust ffmpeg pulseaudio freetype2 harfbuzz fribidi pkgconf
-```
-
-The `ffmpeg` and `ffprobe` command-line programs are not required at runtime.
-When `ffmpeg` is available during development, it is used only to generate
-media fixtures for integration tests.
-
-## Run
-
-```sh
-cargo run --release -- /path/to/video.mp4
-```
-
-Sidecar subtitles that share the video stem, such as `/path/to/video.srt` and
-`/path/to/video.en.ass`, are loaded automatically.
-Use `--sub-file` to select a specific SRT file:
-
-```sh
-cargo run --release -- --sub-file /path/to/subtitles.srt /path/to/video.mp4
-```
-
-Run without a path to open the drop target:
+Install Rust 1.96+ and the native development headers for the libraries above, then run:
 
 ```sh
 cargo run --release
 ```
 
-Enzo resumes local, seekable videos from their last saved position and restores the
-selected audio and subtitle tracks. It clears the saved entry when playback reaches
-the end. Inputs that cannot seek, such as pipes and some URLs, are never saved.
-
-Resume data is stored under `$XDG_STATE_HOME/enzo/watch_later` (or
-`~/.local/state/enzo/watch_later`). The store contains only compact state records,
-uses private permissions, removes interrupted temporary writes, and limits each
-record to 64 KiB. Exact-path records are retained until playback completes or the
-store is cleared; moved-file recovery examines at most 512 recent records.
-
-Use `--no-resume` to play without reading or writing resume state:
+Pass a file path or URL to start playback directly:
 
 ```sh
-cargo run --release -- --no-resume /path/to/video.mp4
+cargo run --release -- /path/to/video.mp4
 ```
 
-Use `--clear-resume` to remove all Enzo resume records and exit:
+For FreeBSD source builds:
 
 ```sh
-cargo run --release -- --clear-resume
+pkg install rust ffmpeg pulseaudio freetype2 harfbuzz fribidi pkgconf
 ```
 
-Controls:
+## CLI
 
-- Drop a file or URL on the launcher to play it.
-- Space or right click pauses/resumes playback.
-- `9`/`0` or the mouse wheel decreases/increases volume by 2%.
-- `m` toggles mute.
-- `v` toggles subtitles.
-- `i` shows media information temporarily; `I` pins or unpins it.
-- Left/right arrows seek backward/forward by 5 seconds.
-- Down/up arrows seek backward/forward by 60 seconds.
-- Click or drag the progress bar to seek.
-- While an audio or subtitle menu is open, the mouse wheel scrolls that menu instead of changing volume.
-- `q` quits.
+```text
+enzo [--force] [--no-resume] [--sub-file subtitle] [video-or-url]
+enzo --clear-resume
+```
+
+Flags:
+
+- `--force` — run on compatible terminals that do not advertise themselves as Kitty
+- `--sub-file <path>` — load a specific SRT subtitle file
+- `--no-resume` — play without reading or writing resume data
+- `--clear-resume` — remove saved resume data and exit
+
+<details>
+<summary><strong>Controls</strong></summary>
+
+- Drop a file or URL on the launcher to play it
+- Space or right click pauses/resumes playback
+- `9` / `0` or mouse wheel decreases/increases volume by 2%
+- `m` toggles mute
+- `v` toggles subtitles
+- `i` shows media information; `I` pins or unpins it
+- Left/right arrows seek by 5 seconds
+- Down/up arrows seek by 60 seconds
+- Click or drag the progress bar to seek
+- Mouse wheel scrolls open audio/subtitle menus
+- `q` quits
 
 The playback overlay appears while paused, after seeking, and on mouse movement.
 
-Use `--force` for compatible terminals that do not advertise themselves as Kitty.
+</details>
