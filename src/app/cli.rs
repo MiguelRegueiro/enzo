@@ -169,6 +169,9 @@ Controls:
   v                  subtitles on/off
   i                  show media information
   I                  pin/unpin media information
+  ?                  help
+  Esc                close open panel
+  Wheel, Up/Down    scroll help when open
   Left, Right         seek backward/forward by 5 seconds
   Down, Up            seek backward/forward by 60 seconds
   q                  quit

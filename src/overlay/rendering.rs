@@ -8,6 +8,7 @@ use super::{
         draw_audio_control, draw_playback_control, draw_progress_handle, draw_subtitle_control,
         draw_track_picker,
     },
+    help::draw_help_panel,
     layout::{OverlayMetrics, fallback_text_scale, rounded_radius, text_size},
     panels::{draw_media_info_panel, draw_top_message},
     raster::{RoundedRect, fill_rounded_rect},
@@ -32,7 +33,11 @@ pub(super) fn render_overlay_rgb(
     if width == 0 || height == 0 || frame.len() < (width as usize * height as usize * 3) {
         return;
     }
-    if !state.visible && state.status_message.is_none() && state.media_info.is_none() {
+    if !state.visible
+        && state.status_message.is_none()
+        && state.media_info.is_none()
+        && !state.help_visible
+    {
         return;
     }
 
@@ -44,8 +49,9 @@ pub(super) fn render_overlay_rgb(
         .map(|font| font.line_height())
         .unwrap_or(7 * fallback_text_scale);
 
-    let title_visible =
-        (state.visible || state.media_info.is_some()) && state.media_title.is_some();
+    let title_visible = !state.help_visible
+        && (state.visible || state.media_info.is_some())
+        && state.media_title.is_some();
     if title_visible && let Some(title) = state.media_title.as_deref() {
         draw_top_message(
             font.as_deref_mut(),
@@ -91,7 +97,21 @@ pub(super) fn render_overlay_rgb(
         );
     }
 
-    if !state.visible {
+    if state.help_visible {
+        draw_help_panel(
+            font.as_deref_mut(),
+            frame,
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            state.help_scroll_offset,
+            acrylic,
+        );
+    }
+
+    if !state.visible || state.help_visible {
         return;
     }
 

@@ -78,6 +78,8 @@ pub(super) struct PlaybackUi {
     pub(super) subtitle_picker_open: bool,
     pub(super) subtitle_picker_offset: usize,
     pub(super) subtitle_picker_focus: Option<usize>,
+    pub(super) help_visible: bool,
+    pub(super) help_scroll_offset: usize,
     pub(super) overlay_visible_until: Option<Instant>,
     pub(super) status_message: Option<StatusMessage>,
     pub(super) media_info: MediaInfoOverlay,
@@ -97,6 +99,8 @@ impl PlaybackUi {
             subtitle_picker_open: false,
             subtitle_picker_offset: 0,
             subtitle_picker_focus: None,
+            help_visible: false,
+            help_scroll_offset: 0,
             overlay_visible_until: None,
             status_message,
             media_info: MediaInfoOverlay::new(media_info),
@@ -153,6 +157,8 @@ impl PlaybackUi {
             self.media_title.clone(),
             self.media_info
                 .state(audio.selected(), canvas, decoder, paused, Instant::now()),
+            self.help_visible,
+            self.help_scroll_offset,
         )
     }
 }
@@ -179,6 +185,8 @@ pub(super) fn overlay_state(
     subtitle_labels: Arc<[Arc<str>]>,
     media_title: Arc<str>,
     media_info: Option<MediaInfoState>,
+    help_visible: bool,
+    help_scroll_offset: usize,
 ) -> OverlayState {
     let now = Instant::now();
     OverlayState {
@@ -205,6 +213,8 @@ pub(super) fn overlay_state(
             .map(|message| Arc::clone(&message.text)),
         media_title: Some(media_title),
         media_info,
+        help_visible,
+        help_scroll_offset,
     }
 }
 

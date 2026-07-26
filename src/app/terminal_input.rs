@@ -16,6 +16,8 @@ pub(crate) enum PlaybackCommand {
     ToggleSubtitlePicker,
     ShowMediaInfo,
     ToggleMediaInfo,
+    ToggleHelp,
+    CloseTransientUi,
     ConfirmPicker,
     AdjustVolume { steps: i32 },
     SeekBySeconds { seconds: i32, picker_direction: i32 },
@@ -96,6 +98,8 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Char('s') => PlaybackCommand::ToggleSubtitlePicker,
         KeyCode::Char('i') => PlaybackCommand::ShowMediaInfo,
         KeyCode::Char('I') => PlaybackCommand::ToggleMediaInfo,
+        KeyCode::Char('?') => PlaybackCommand::ToggleHelp,
+        KeyCode::Esc => PlaybackCommand::CloseTransientUi,
         KeyCode::Enter => PlaybackCommand::ConfirmPicker,
         _ => PlaybackCommand::None,
     }
@@ -294,6 +298,14 @@ mod tests {
         assert_eq!(
             playback_command_for_key(&KeyCode::Enter),
             PlaybackCommand::ConfirmPicker
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('?')),
+            PlaybackCommand::ToggleHelp
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Esc),
+            PlaybackCommand::CloseTransientUi
         );
     }
 }

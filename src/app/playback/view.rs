@@ -32,6 +32,7 @@ pub(super) struct PlaybackView<W: Write> {
     pub(super) last_status_visible: bool,
     pub(super) last_media_info_visible: bool,
     pub(super) last_media_info_fps_visible: bool,
+    pub(super) last_help_visible: bool,
 }
 
 impl<W: Write> PlaybackView<W> {
@@ -60,6 +61,7 @@ impl<W: Write> PlaybackView<W> {
             last_status_visible: false,
             last_media_info_visible: false,
             last_media_info_fps_visible: false,
+            last_help_visible: false,
         })
     }
 
@@ -71,6 +73,7 @@ impl<W: Write> PlaybackView<W> {
         self.last_status_visible = false;
         self.last_media_info_visible = false;
         self.last_media_info_fps_visible = false;
+        self.last_help_visible = false;
     }
 
     pub(super) fn reset_overlay_cache(&mut self) {
@@ -79,6 +82,7 @@ impl<W: Write> PlaybackView<W> {
         self.last_status_visible = false;
         self.last_media_info_visible = false;
         self.last_media_info_fps_visible = false;
+        self.last_help_visible = false;
     }
 
     pub(super) fn render(
@@ -158,6 +162,7 @@ impl<W: Write> PlaybackView<W> {
             .media_info
             .as_ref()
             .is_some_and(|info| info.display_fps.is_some());
+        self.last_help_visible = overlay_state.help_visible;
         self.dirty = false;
         Ok(())
     }

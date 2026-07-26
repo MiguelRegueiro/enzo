@@ -62,6 +62,7 @@ Flags:
 - `m` toggles mute
 - `v` toggles subtitles
 - `i` shows media information; `I` pins or unpins it
+- `?` toggles help; Esc closes open panels
 - Left/right arrows seek by 5 seconds
 - Down/up arrows seek by 60 seconds
 - Click or drag the progress bar to seek

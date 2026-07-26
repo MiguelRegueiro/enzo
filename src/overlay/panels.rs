@@ -10,7 +10,7 @@ use super::{
     raster::RoundedRect,
     state::MediaInfoState,
     style::{PANEL_COLOR, TEXT_COLOR},
-    text::{bitmap_text_width, draw_overlay_text},
+    text::{bitmap_text_width, draw_overlay_text, fit_overlay_text, overlay_text_width},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -196,51 +196,6 @@ fn display_info_text(info: &MediaInfoState) -> String {
     }
     info.display_fps
         .map_or(output.clone(), |fps| format!("{output} · {fps:.1} fps"))
-}
-
-fn fit_overlay_text(
-    font: &mut Option<&mut FontRenderer>,
-    text: &str,
-    fallback_scale: u32,
-    max_width: u32,
-) -> String {
-    if overlay_text_width(font, text, fallback_scale) <= max_width {
-        return text.to_string();
-    }
-
-    let suffix = "...";
-    if overlay_text_width(font, suffix, fallback_scale) > max_width {
-        return suffix.to_string();
-    }
-
-    let boundaries = text
-        .char_indices()
-        .map(|(index, _)| index)
-        .chain(std::iter::once(text.len()))
-        .collect::<Vec<_>>();
-    let mut fits_through = 0_usize;
-    let mut does_not_fit_from = boundaries.len().saturating_sub(1);
-    while fits_through < does_not_fit_from {
-        let candidate_chars = fits_through + (does_not_fit_from - fits_through).div_ceil(2);
-        let candidate = format!("{}{suffix}", &text[..boundaries[candidate_chars]]);
-        if overlay_text_width(font, &candidate, fallback_scale) <= max_width {
-            fits_through = candidate_chars;
-        } else {
-            does_not_fit_from = candidate_chars.saturating_sub(1);
-        }
-    }
-
-    format!("{}{suffix}", &text[..boundaries[fits_through]])
-}
-
-fn overlay_text_width(
-    font: &mut Option<&mut FontRenderer>,
-    text: &str,
-    fallback_scale: u32,
-) -> u32 {
-    font.as_deref_mut()
-        .map(|font| font.text_width(text))
-        .unwrap_or_else(|| bitmap_text_width(text, fallback_scale))
 }
 
 #[cfg(test)]

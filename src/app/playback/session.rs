@@ -357,7 +357,8 @@ impl<W: Write> PlaybackSession<'_, W> {
             && ((self.view.last_overlay_visible && !overlay_visible)
                 || (self.view.last_status_visible && !status_visible)
                 || (self.view.last_media_info_visible && !media_info_visible)
-                || (self.view.last_media_info_fps_visible && !media_info_fps_visible))
+                || (self.view.last_media_info_fps_visible && !media_info_fps_visible)
+                || (self.view.last_help_visible && !self.ui.help_visible))
         {
             self.view.dirty = true;
         }

@@ -23,6 +23,8 @@ pub(crate) struct OverlayState {
     pub(crate) status_message: Option<Arc<str>>,
     pub(crate) media_title: Option<Arc<str>>,
     pub(crate) media_info: Option<MediaInfoState>,
+    pub(crate) help_visible: bool,
+    pub(crate) help_scroll_offset: usize,
 }
 
 #[derive(Clone, Debug)]

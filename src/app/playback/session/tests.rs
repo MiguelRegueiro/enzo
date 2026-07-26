@@ -254,6 +254,8 @@ fn media_info_display_rate_visibility_matches_rendered_state() {
             display_paused: false,
             display_fps: Some(24.0),
         }),
+        false,
+        0,
     );
 
     assert!(media_info_fps_visible(&state));
@@ -329,12 +331,46 @@ fn overlay_state_uses_scrub_position() {
         Arc::default(),
         Arc::from("movie.mp4"),
         None,
+        false,
+        0,
     );
 
     assert_eq!(state.position, Duration::from_secs(30));
     assert!(state.visible);
     assert_eq!(state.status_message, None);
     assert_eq!(state.media_title.as_deref(), Some("movie.mp4"));
+}
+
+#[test]
+fn help_visibility_is_separate_from_playback_controls() {
+    let state = overlay_state(
+        Duration::from_secs(10),
+        None,
+        Some(Duration::from_secs(60)),
+        false,
+        None,
+        None,
+        false,
+        None,
+        false,
+        0,
+        None,
+        Arc::default(),
+        false,
+        None,
+        false,
+        0,
+        None,
+        Arc::default(),
+        Arc::from("movie.mp4"),
+        None,
+        true,
+        2,
+    );
+
+    assert!(state.help_visible);
+    assert_eq!(state.help_scroll_offset, 2);
+    assert!(!state.visible);
 }
 
 #[test]

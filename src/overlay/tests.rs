@@ -45,6 +45,8 @@ fn paused_overlay_draws_play_button() {
             status_message: None,
             media_title: None,
             media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -96,6 +98,8 @@ fn playing_overlay_draws_pause_button() {
             status_message: None,
             media_title: None,
             media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -148,6 +152,8 @@ fn rendered_overlay_changes_bottom_pixels_only() {
             status_message: None,
             media_title: None,
             media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -210,6 +216,8 @@ fn hidden_overlay_leaves_frame_unchanged() {
             status_message: None,
             media_title: None,
             media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -255,6 +263,8 @@ fn status_message_can_render_without_playback_controls() {
             status_message: Some(Arc::from("MUTE ON")),
             media_title: None,
             media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -317,6 +327,8 @@ fn media_info_stacks_below_title_without_playback_controls() {
                 display_paused: false,
                 display_fps: Some(29.8),
             }),
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -365,6 +377,8 @@ fn media_title_renders_with_playback_controls() {
             status_message: None,
             media_title: Some(Arc::from("movie.mkv")),
             media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
         },
         &mut scratch,
         &mut acrylic,
@@ -372,6 +386,75 @@ fn media_title_renders_with_playback_controls() {
     );
 
     assert_ne!(&frame[..before_top.len()], before_top.as_slice());
+}
+
+#[test]
+fn help_overlay_renders_without_title_or_bottom_controls() {
+    let width = 320;
+    let height = 180;
+    let mut frame = vec![20_u8; (width * height * 3) as usize];
+    let mut scratch = String::new();
+    let mut acrylic = AcrylicScratch::default();
+    let help_state = OverlayState {
+        position: Duration::from_secs(30),
+        duration: Some(Duration::from_secs(120)),
+        paused: false,
+        visible: false,
+        audio_available: true,
+        selected_audio: Some(0),
+        audio_picker_open: false,
+        audio_picker_offset: 0,
+        audio_picker_focus: None,
+        audio_labels: Arc::default(),
+        subtitles_available: true,
+        selected_subtitle: Some(0),
+        subtitle_picker_open: false,
+        subtitle_picker_offset: 0,
+        subtitle_picker_focus: None,
+        subtitle_labels: Arc::default(),
+        status_message: None,
+        media_title: None,
+        media_info: None,
+        help_visible: true,
+        help_scroll_offset: 0,
+    };
+
+    render_overlay_rgb(
+        &mut frame,
+        width,
+        height,
+        height as u16,
+        100,
+        help_state.clone(),
+        &mut scratch,
+        &mut acrylic,
+        None,
+    );
+
+    assert!(
+        frame
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] > 120 && pixel[1] < 90 && pixel[2] < 90)
+    );
+
+    let help_only = frame.clone();
+    let mut controls_requested = vec![20_u8; (width * height * 3) as usize];
+    let mut state = help_state;
+    state.visible = true;
+    state.media_title = Some(Arc::from("movie.mkv"));
+    render_overlay_rgb(
+        &mut controls_requested,
+        width,
+        height,
+        height as u16,
+        100,
+        state,
+        &mut scratch,
+        &mut acrylic,
+        None,
+    );
+
+    assert_eq!(controls_requested, help_only);
 }
 
 fn test_metrics(width: u32, height: u32) -> OverlayMetrics {

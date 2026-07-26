@@ -6,6 +6,7 @@
 
 mod acrylic;
 mod controls;
+mod help;
 mod interaction;
 mod layout;
 mod panels;
@@ -22,6 +23,7 @@ mod tests;
 use std::sync::Arc;
 
 use acrylic::AcrylicScratch;
+use help::help_scroll_limit;
 use interaction::{
     audio_picker_action, playback_button_hit, progress_hit_ratio, progress_ratio_for_x,
     subtitle_picker_action, track_picker_hover_index,
@@ -218,6 +220,15 @@ impl PlaybackOverlay {
     ) -> usize {
         let metrics = self.metrics(context);
         track_picker_visible_row_count(metrics, row_count)
+    }
+
+    pub(crate) fn help_scroll_limit(&mut self, context: OverlayHitContext) -> usize {
+        help_scroll_limit(
+            context.width,
+            context.height,
+            context.scale_percent,
+            self.font.as_mut(),
+        )
     }
 
     fn metrics(&mut self, context: OverlayHitContext) -> OverlayMetrics {
