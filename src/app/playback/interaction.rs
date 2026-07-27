@@ -101,8 +101,12 @@ impl<W: Write> InteractionContext<'_, W> {
         command: PlaybackCommand,
         input_at: Instant,
     ) -> Result<Option<PlaybackOutcome>> {
-        if command == PlaybackCommand::Quit {
-            return Ok(Some(PlaybackOutcome::Quit));
+        match command {
+            PlaybackCommand::Quit => return Ok(Some(PlaybackOutcome::Quit)),
+            PlaybackCommand::QuitWithoutSaving => {
+                return Ok(Some(PlaybackOutcome::QuitWithoutSaving));
+            }
+            _ => {}
         }
         if self.ui.help_visible {
             match command {
@@ -124,6 +128,9 @@ impl<W: Write> InteractionContext<'_, W> {
 
         match command {
             PlaybackCommand::Quit => return Ok(Some(PlaybackOutcome::Quit)),
+            PlaybackCommand::QuitWithoutSaving => {
+                return Ok(Some(PlaybackOutcome::QuitWithoutSaving));
+            }
             PlaybackCommand::TogglePause => {
                 self.toggle_pause(input_at);
             }

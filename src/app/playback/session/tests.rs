@@ -7,7 +7,16 @@ use crate::{overlay::MediaInfoState, terminal::ImageArea};
 fn only_completed_playback_clears_resume_state() {
     assert!(PlaybackOutcome::Completed.clears_resume());
     assert!(!PlaybackOutcome::Quit.clears_resume());
+    assert!(!PlaybackOutcome::QuitWithoutSaving.clears_resume());
     assert!(!PlaybackOutcome::Interrupted.clears_resume());
+}
+
+#[test]
+fn only_explicit_no_save_quit_skips_resume_save() {
+    assert!(!PlaybackOutcome::Completed.skips_resume_save());
+    assert!(!PlaybackOutcome::Quit.skips_resume_save());
+    assert!(PlaybackOutcome::QuitWithoutSaving.skips_resume_save());
+    assert!(!PlaybackOutcome::Interrupted.skips_resume_save());
 }
 
 #[test]

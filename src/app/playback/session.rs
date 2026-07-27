@@ -66,6 +66,7 @@ pub(super) struct PlaybackSession<'fonts, W: Write> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum PlaybackOutcome {
     Quit,
+    QuitWithoutSaving,
     Completed,
     Interrupted,
 }
@@ -73,6 +74,10 @@ pub(super) enum PlaybackOutcome {
 impl PlaybackOutcome {
     fn clears_resume(self) -> bool {
         self == Self::Completed
+    }
+
+    fn skips_resume_save(self) -> bool {
+        self == Self::QuitWithoutSaving
     }
 }
 
@@ -461,6 +466,9 @@ impl<W: Write> PlaybackSession<'_, W> {
     fn finish(mut self, outcome: PlaybackOutcome) -> Result<()> {
         let resume_result = if outcome.clears_resume() {
             self.resume.clear()
+        } else if outcome.skips_resume_save() {
+            self.resume.finish_without_saving();
+            Ok(())
         } else {
             self.resume.save_now()
         };

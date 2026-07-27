@@ -9,6 +9,7 @@ const INPUT_EVENTS_PER_TICK: usize = 64;
 pub(crate) enum PlaybackCommand {
     None,
     Quit,
+    QuitWithoutSaving,
     TogglePause,
     ToggleMute,
     ToggleSubtitles,
@@ -91,6 +92,7 @@ fn volume_steps_for_key(key: &KeyCode) -> Option<i32> {
 fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
     match key {
         KeyCode::Char('q') => PlaybackCommand::Quit,
+        KeyCode::Char('Q') => PlaybackCommand::QuitWithoutSaving,
         KeyCode::Char(' ') => PlaybackCommand::TogglePause,
         KeyCode::Char('m') => PlaybackCommand::ToggleMute,
         KeyCode::Char('v') => PlaybackCommand::ToggleSubtitles,
@@ -127,7 +129,10 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     continue;
                 }
                 let command = playback_command_for_key(&key.code);
-                if command == PlaybackCommand::Quit {
+                if matches!(
+                    command,
+                    PlaybackCommand::Quit | PlaybackCommand::QuitWithoutSaving
+                ) {
                     input.command = command;
                     return Ok(input);
                 }
@@ -298,6 +303,10 @@ mod tests {
         assert_eq!(
             playback_command_for_key(&KeyCode::Enter),
             PlaybackCommand::ConfirmPicker
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('Q')),
+            PlaybackCommand::QuitWithoutSaving
         );
         assert_eq!(
             playback_command_for_key(&KeyCode::Char('?')),

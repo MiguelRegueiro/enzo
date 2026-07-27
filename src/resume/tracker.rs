@@ -150,6 +150,10 @@ impl ResumeTracker {
         result
     }
 
+    pub(crate) fn finish_without_saving(&mut self) {
+        self.finished = true;
+    }
+
     pub(super) fn save_current(
         &mut self,
         mode: SaveMode,

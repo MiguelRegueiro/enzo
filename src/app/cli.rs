@@ -175,6 +175,7 @@ Controls:
   Left, Right         seek backward/forward by 5 seconds
   Down, Up            seek backward/forward by 60 seconds
   q                  quit
+  Q                  quit without saving resume history
 "
     );
 }

@@ -674,6 +674,33 @@ fn failed_final_save_remains_retryable() {
 }
 
 #[test]
+fn finish_without_saving_suppresses_drop_checkpoint() {
+    let temp = test_dir("finish-without-saving");
+    let media = temp.join("movie.mkv");
+    fs::write(&media, b"video").expect("media should write");
+    let store = ResumeStore::new(temp.join("state"));
+    let identity = MediaIdentity::for_path(&media, Some(Duration::from_secs(100)), false);
+    let record_name = record_name_for_path_key(&identity.path_key);
+    let mut tracker = ResumeTracker {
+        store: Some(store.clone()),
+        record_name: record_name.clone(),
+        identity,
+        loaded_record_name: None,
+        restored: None,
+        state: playback_state(12),
+        last_saved_state: None,
+        last_checkpoint_at: Instant::now(),
+        last_error: None,
+        finished: false,
+    };
+
+    tracker.finish_without_saving();
+    drop(tracker);
+
+    assert!(!store.record_path(&record_name).exists());
+}
+
+#[test]
 fn external_subtitle_candidates_follow_media_directory() {
     let old_media = PathBuf::from("/old/movie.mkv");
     let subtitle = PathBuf::from("/old/subs/movie.srt");

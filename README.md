@@ -68,6 +68,7 @@ Flags:
 - Click or drag the progress bar to seek
 - Mouse wheel scrolls open audio/subtitle menus
 - `q` quits
+- `Q` quits without saving resume history
 
 The playback overlay appears while paused, after seeking, and on mouse movement.
 

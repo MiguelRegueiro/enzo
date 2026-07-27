@@ -69,6 +69,10 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 key: "q",
                 action: "Quit",
             },
+            HelpRow {
+                key: "Q",
+                action: "Quit without saving",
+            },
         ],
     },
     HelpSection {
