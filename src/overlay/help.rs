@@ -34,6 +34,7 @@ enum HelpLine {
 enum HelpColumn {
     Left,
     Right,
+    Info,
 }
 
 #[derive(Clone, Copy)]
@@ -43,7 +44,7 @@ struct HelpGeometry {
     content_y: u32,
     content_height: u32,
     column_count: usize,
-    column_widths: [u32; 2],
+    column_widths: [u32; MAX_HELP_COLUMNS],
     column_gap: u32,
     line_pitch: u32,
     key_pad_x: u32,
@@ -51,6 +52,8 @@ struct HelpGeometry {
     key_height: u32,
     scrollbar_width: u32,
 }
+
+const MAX_HELP_COLUMNS: usize = 3;
 
 const HELP_SECTIONS: &[HelpSection] = &[
     HelpSection {
@@ -131,7 +134,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
     },
     HelpSection {
         title: "Info",
-        wide_column: HelpColumn::Left,
+        wide_column: HelpColumn::Info,
         rows: &[
             HelpRow {
                 key: "i",
@@ -426,7 +429,7 @@ fn help_geometry(
     let key_pad_x = if compact { 4_u32 } else { 6 };
     let key_pad_y = if compact { 1_u32 } else { 3 };
     let scrollbar_width = 3;
-    let two_column_gap = if compact {
+    let wide_column_gap = if compact {
         pad_x
     } else {
         key_pad_x.saturating_mul(3) / 2
@@ -436,15 +439,25 @@ fn help_geometry(
         fallback_scale,
         key_pad_x,
         pad_x,
-        two_column_gap,
+        wide_column_gap,
         scrollbar_width,
     );
-    let column_count = if width >= 720 && height >= 150 && two_column_width <= max_panel_width {
+    let three_column_width = help_panel_width_for_columns(
+        3,
+        fallback_scale,
+        key_pad_x,
+        pad_x,
+        wide_column_gap,
+        scrollbar_width,
+    );
+    let column_count = if width >= 960 && height >= 150 && three_column_width <= max_panel_width {
+        3
+    } else if width >= 720 && height >= 150 && two_column_width <= max_panel_width {
         2
     } else {
         1
     };
-    let column_gap = if column_count == 2 { two_column_gap } else { 0 };
+    let column_gap = if column_count > 1 { wide_column_gap } else { 0 };
     let key_height = text_height.saturating_add(key_pad_y.saturating_mul(2));
     let line_pitch = key_height.saturating_add(if compact { 2 } else { 4 });
     let content_line_capacity = max_help_lines(column_count);
@@ -471,17 +484,26 @@ fn help_geometry(
         .saturating_sub(pad_x.saturating_mul(2))
         .saturating_sub(reserved_scrollbar)
         .max(1);
-    let column_widths = if column_count == 2 {
-        let available = inner_width.saturating_sub(column_gap);
+    let column_widths = if column_count > 1 {
+        let available = inner_width
+            .saturating_sub(column_gap.saturating_mul(column_count.saturating_sub(1) as u32));
         let natural_widths = help_column_content_widths(column_count, fallback_scale, key_pad_x);
         let natural_total = natural_widths.iter().sum::<u32>().max(1);
         if natural_total <= available {
             natural_widths
         } else {
-            [available / 2, available.saturating_sub(available / 2)]
+            let mut widths = [0; MAX_HELP_COLUMNS];
+            let even_width = available / column_count as u32;
+            let mut assigned = 0_u32;
+            for width in widths.iter_mut().take(column_count.saturating_sub(1)) {
+                *width = even_width;
+                assigned = assigned.saturating_add(even_width);
+            }
+            widths[column_count - 1] = available.saturating_sub(assigned);
+            widths
         }
     } else {
-        [inner_width, 0]
+        [inner_width, 0, 0]
     };
     let panel_x = width.saturating_sub(panel_width) / 2;
     let panel_y = height.saturating_sub(panel_height) / 2;
@@ -517,15 +539,22 @@ fn help_geometry(
 }
 
 fn help_columns(column_count: usize) -> Vec<Vec<HelpLine>> {
-    let mut columns = vec![Vec::new(); column_count.max(1)];
+    let column_count = column_count.clamp(1, MAX_HELP_COLUMNS);
+    let mut columns = vec![Vec::new(); column_count];
     columns[0].push(HelpLine::Title("Active Controls"));
     for section in HELP_SECTIONS {
         let column = if column_count == 1 {
             0
+        } else if column_count == 2 {
+            match section.wide_column {
+                HelpColumn::Left | HelpColumn::Info => 0,
+                HelpColumn::Right => 1,
+            }
         } else {
             match section.wide_column {
                 HelpColumn::Left => 0,
                 HelpColumn::Right => 1,
+                HelpColumn::Info => 2,
             }
         };
         columns[column].push(HelpLine::Section(section.title));
@@ -567,10 +596,10 @@ fn help_column_content_widths(
     column_count: usize,
     fallback_scale: u32,
     key_pad_x: u32,
-) -> [u32; 2] {
+) -> [u32; MAX_HELP_COLUMNS] {
     let columns = help_columns(column_count);
     let column_gap = (key_pad_x / 2).max(6);
-    let mut widths = [0, 0];
+    let mut widths = [0; MAX_HELP_COLUMNS];
     for (index, width) in columns
         .iter()
         .map(|lines| {
@@ -644,20 +673,36 @@ mod tests {
     }
 
     #[test]
-    fn help_uses_two_columns_when_space_allows() {
+    fn help_uses_three_columns_when_space_allows() {
         let geometry = help_geometry(1280, 720, 18, 22, 2);
 
-        assert_eq!(geometry.column_count, 2);
+        assert_eq!(geometry.column_count, 3);
         assert!(
-            geometry.panel.width as u32 <= 505,
+            geometry.panel.width as u32 <= 750,
             "panel width was {}",
             geometry.panel.width as u32
         );
         assert!(geometry.column_gap <= 12);
-        assert!(geometry.column_widths[0] >= 240);
-        assert!(geometry.column_widths[1] >= 140);
+        assert!(geometry.column_widths[0] >= 260);
+        assert!(geometry.column_widths[1] >= 200);
+        assert!(geometry.column_widths[2] >= 150);
         assert!(geometry.panel.width as u32 <= 1000);
         assert_eq!(help_scroll_limit(1280, 720, 100, None), 0);
+    }
+
+    #[test]
+    fn help_uses_two_columns_on_medium_canvases() {
+        let geometry = help_geometry(800, 720, 18, 22, 2);
+
+        assert_eq!(geometry.column_count, 2);
+        assert!(
+            geometry.panel.width as u32 <= 520,
+            "panel width was {}",
+            geometry.panel.width as u32
+        );
+        assert!(geometry.column_widths[0] >= 260);
+        assert!(geometry.column_widths[1] >= 200);
+        assert_eq!(help_scroll_limit(800, 720, 100, None), 0);
     }
 
     #[test]
@@ -687,19 +732,41 @@ mod tests {
     fn help_does_not_sprawl_on_fullscreen_canvases() {
         let geometry = help_geometry(1920, 1080, 18, 22, 2);
 
-        assert_eq!(geometry.column_count, 2);
+        assert_eq!(geometry.column_count, 3);
         assert!(geometry.panel.width as u32 <= 1000);
     }
 
     #[test]
     fn help_title_lives_in_the_first_content_column() {
-        let columns = help_columns(2);
+        let columns = help_columns(3);
 
         assert!(matches!(
             columns[0].first(),
             Some(HelpLine::Title("Active Controls"))
         ));
         assert!(!matches!(columns[1].first(), Some(HelpLine::Title(_))));
+        assert!(!matches!(columns[2].first(), Some(HelpLine::Title(_))));
+    }
+
+    #[test]
+    fn help_info_lives_in_third_column_when_available() {
+        let columns = help_columns(3);
+
+        assert!(
+            columns[2]
+                .iter()
+                .any(|line| matches!(line, HelpLine::Section("Info")))
+        );
+        assert!(
+            !columns[0]
+                .iter()
+                .any(|line| matches!(line, HelpLine::Section("Info")))
+        );
+        assert!(
+            !columns[1]
+                .iter()
+                .any(|line| matches!(line, HelpLine::Section("Info")))
+        );
     }
 
     #[test]
