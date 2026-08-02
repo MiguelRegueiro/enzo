@@ -170,6 +170,13 @@ impl ResumeTracker {
             self.last_saved_state = Some(self.state.clone());
             return Ok(());
         }
+        if self.identity.duration.is_some()
+            && resume_position(self.state.position, self.identity.duration).is_none()
+        {
+            self.remove_saved_records(&store, durability)?;
+            self.last_saved_state = Some(self.state.clone());
+            return Ok(());
+        }
         self.identity.ensure_fingerprint();
         let record = ResumeRecord::from_state(&self.identity, self.state.clone());
         store.write_record(&self.record_name, &record, durability)?;

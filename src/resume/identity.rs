@@ -11,6 +11,7 @@ use super::encoding::{hex_encode, path_to_bytes, stable_hash_hex};
 
 pub(super) const FINGERPRINT_CHUNK_BYTES: u64 = 64 * 1024;
 const DURATION_TOLERANCE: Duration = Duration::from_secs(1);
+const RESUME_END_MARGIN: Duration = Duration::from_secs(1);
 
 pub(super) const FINGERPRINT_ALGORITHM: &str = "sampled-sha256-v1";
 pub(super) const FINGERPRINT_HEX_LEN: usize = 64;
@@ -79,7 +80,13 @@ pub(super) fn resume_position(position: Duration, duration: Option<Duration>) ->
     if position.is_zero() {
         return None;
     }
-    Some(duration.map_or(position, |duration| position.min(duration)))
+    let Some(duration) = duration else {
+        return Some(position);
+    };
+    if position >= duration.saturating_sub(RESUME_END_MARGIN) {
+        return None;
+    }
+    Some(position.min(duration))
 }
 
 pub(super) fn file_fingerprint(path: &Path, len: u64) -> io::Result<Option<String>> {

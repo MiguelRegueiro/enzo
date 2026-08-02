@@ -12,7 +12,8 @@ use std::os::unix::fs::PermissionsExt;
 use super::{
     identity::{
         FINGERPRINT_CHUNK_BYTES, FileMetadata, MediaIdentity, duration_millis_close,
-        file_fingerprint, path_key_for_media, record_name_for_path_key, system_time_millis,
+        file_fingerprint, path_key_for_media, record_name_for_path_key, resume_position,
+        system_time_millis,
     },
     model::{ResumeAudioSelection, ResumePlaybackState, ResumeSubtitleSelection},
     record::ResumeRecord,
@@ -273,6 +274,22 @@ fn duration_matching_tolerates_small_probe_drift() {
 }
 
 #[test]
+fn restore_ignores_positions_at_or_near_the_end() {
+    assert_eq!(
+        resume_position(Duration::from_secs(30), Some(Duration::from_secs(60))),
+        Some(Duration::from_secs(30))
+    );
+    assert_eq!(
+        resume_position(Duration::from_millis(59_001), Some(Duration::from_secs(60))),
+        None
+    );
+    assert_eq!(
+        resume_position(Duration::from_secs(60), Some(Duration::from_secs(60))),
+        None
+    );
+}
+
+#[test]
 fn independent_records_coexist_without_shared_index_updates() {
     let temp = test_dir("coexist");
     let store = ResumeStore::new(temp.join("state"));
@@ -366,6 +383,55 @@ fn below_threshold_save_removes_existing_record_and_empty_store() {
     tracker
         .save_current(SaveMode::CleanupBelowThreshold, Durability::Final)
         .expect("below-threshold save should remove stale resume");
+    tracker.finished = true;
+
+    assert!(
+        store
+            .read_record(&record_name)
+            .expect("record read should not fail")
+            .is_none()
+    );
+    assert!(!store.dir.exists());
+}
+
+#[test]
+fn near_end_save_removes_existing_record_and_empty_store() {
+    let temp = test_dir("near-end-remove");
+    let media = temp.join("movie.mkv");
+    fs::write(&media, b"video").expect("media should be written");
+    let store = ResumeStore::new(temp.join("state"));
+    let identity = MediaIdentity::for_path(&media, Some(Duration::from_secs(100)), true);
+    let record_name = record_name_for_path_key(&identity.path_key);
+    let saved_state = ResumePlaybackState {
+        position: Duration::from_secs(20),
+        audio: ResumeAudioSelection::Unspecified,
+        subtitle: ResumeSubtitleSelection::Off,
+    };
+    let record = ResumeRecord::from_state(&identity, saved_state);
+    store
+        .write_record(&record_name, &record, Durability::Checkpoint)
+        .expect("record should write");
+
+    let mut tracker = ResumeTracker {
+        store: Some(store.clone()),
+        identity,
+        record_name: record_name.clone(),
+        loaded_record_name: None,
+        restored: None,
+        state: ResumePlaybackState {
+            position: Duration::from_millis(99_250),
+            audio: ResumeAudioSelection::Unspecified,
+            subtitle: ResumeSubtitleSelection::Off,
+        },
+        last_saved_state: None,
+        last_checkpoint_at: Instant::now(),
+        last_error: None,
+        finished: false,
+    };
+
+    tracker
+        .save_current(SaveMode::CleanupBelowThreshold, Durability::Final)
+        .expect("near-end save should remove stale resume");
     tracker.finished = true;
 
     assert!(
