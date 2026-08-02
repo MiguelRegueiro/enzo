@@ -4,6 +4,8 @@ Terminal video player for Kitty, with native audio, subtitles, mouse controls, a
 
 enzo plays local files and URLs directly inside the terminal.
 
+![Enzo playback](assets/screenshots/enzo-night-sky-playback.png)
+
 ## Features
 
 - **Terminal-native playback** — video rendered directly inside Kitty
