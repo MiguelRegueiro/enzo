@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 use crate::terminal::{ImageArea, terminal_pixel_size};
 
 const MAX_DECODE_WIDTH: u32 = 1920;
-const MAX_DECODE_HEIGHT: u32 = 1080;
+const MAX_DECODE_HEIGHT: u32 = 1200;
 const MAX_CANVAS_WIDTH: u32 = 1920;
-const MAX_CANVAS_HEIGHT: u32 = 1200;
+const MAX_CANVAS_HEIGHT: u32 = MAX_DECODE_HEIGHT;
 const NORMAL_OVERLAY_SCALE_PERCENT: u32 = 100;
 const MAX_OVERLAY_SCALE_PERCENT: u32 = 125;
 pub(super) const RESIZE_SETTLE_FOR: Duration = Duration::from_millis(140);
@@ -103,7 +103,6 @@ pub(super) fn terminal_target_and_canvas(
     let cols = cols.max(1);
     let rows = rows.max(1);
     let (pixel_width, pixel_height) = terminal_pixel_size(cols, rows);
-    let target = target_for_bounds(source_width, source_height, pixel_width, pixel_height);
     let canvas = canvas_for_terminal(
         source_width,
         source_height,
@@ -111,6 +110,14 @@ pub(super) fn terminal_target_and_canvas(
         rows,
         pixel_width,
         pixel_height,
+    );
+    // Decode directly to the dimensions Kitty will display. This avoids a
+    // second nearest-neighbour enlargement in the Rust compositor.
+    let target = target_for_bounds(
+        source_width,
+        source_height,
+        canvas.video_width,
+        canvas.video_height,
     );
     (target, canvas)
 }
@@ -160,11 +167,8 @@ fn target_for_bounds(
     pixel_width: u32,
     pixel_height: u32,
 ) -> TargetFrame {
-    let max_width = pixel_width.min(MAX_DECODE_WIDTH).min(source_width).max(1);
-    let max_height = pixel_height
-        .min(MAX_DECODE_HEIGHT)
-        .min(source_height)
-        .max(1);
+    let max_width = pixel_width.clamp(1, MAX_DECODE_WIDTH);
+    let max_height = pixel_height.clamp(1, MAX_DECODE_HEIGHT);
     let capped = fit_pixels(source_width, source_height, max_width, max_height);
 
     TargetFrame {
@@ -238,10 +242,10 @@ mod tests {
     }
 
     #[test]
-    fn target_does_not_upscale_small_sources() {
+    fn target_upscales_small_sources_to_the_display_bounds() {
         let target = target_for_bounds(1280, 720, 3840, 2160);
-        assert_eq!(target.width, 1280);
-        assert_eq!(target.height, 720);
+        assert_eq!(target.width, 1920);
+        assert_eq!(target.height, 1080);
     }
 
     #[test]

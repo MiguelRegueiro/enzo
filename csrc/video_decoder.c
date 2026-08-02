@@ -758,7 +758,7 @@ static int scale_video_frame(
         decoder->out_width,
         decoder->out_height,
         AV_PIX_FMT_RGB24,
-        SWS_FAST_BILINEAR,
+        SWS_BILINEAR,
         NULL,
         NULL,
         NULL

@@ -8,6 +8,7 @@
 #include <libavutil/mathematics.h>
 #include <libavutil/time.h>
 #include <libswresample/swresample.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -18,6 +19,7 @@ typedef struct EnzoAudioConverter {
     int src_rate;
     uint8_t *out_buffer;
     int out_capacity;
+    size_t out_buffer_bytes;
     int configured;
 } EnzoAudioConverter;
 
@@ -128,6 +130,7 @@ static void audio_converter_close(EnzoAudioConverter *converter) {
     audio_converter_reset(converter);
     av_freep(&converter->out_buffer);
     converter->out_capacity = 0;
+    converter->out_buffer_bytes = 0;
 }
 
 static int copy_audio_frame_layout(
@@ -426,24 +429,33 @@ static int write_converted_audio(
     }
 
     int64_t delayed_input_samples = swr_get_delay(converter->swr, converter->src_rate);
-    int delayed_output_samples = (int)av_rescale_rnd(
+    int64_t delayed_output_samples_scaled = av_rescale_rnd(
         delayed_input_samples,
         ENZO_AUDIO_OUTPUT_RATE,
         converter->src_rate,
         AV_ROUND_UP
     );
-    int out_samples = (int)av_rescale_rnd(
+    int64_t out_samples_scaled = av_rescale_rnd(
         delayed_input_samples + frame->nb_samples,
         ENZO_AUDIO_OUTPUT_RATE,
         converter->src_rate,
         AV_ROUND_UP
     );
-    if (out_samples <= 0) {
+    if (out_samples_scaled <= 0) {
         return 0;
     }
+    if (delayed_output_samples_scaled < 0 || delayed_output_samples_scaled > INT_MAX ||
+        out_samples_scaled > INT_MAX) {
+        enzo_set_error(err, err_len, "converted audio frame is too large");
+        return -1;
+    }
+    int delayed_output_samples = (int)delayed_output_samples_scaled;
+    int out_samples = (int)out_samples_scaled;
 
     if (out_samples > converter->out_capacity) {
         av_freep(&converter->out_buffer);
+        converter->out_capacity = 0;
+        converter->out_buffer_bytes = 0;
         int line_size = 0;
         int ret = av_samples_alloc(
             &converter->out_buffer,
@@ -457,7 +469,13 @@ static int write_converted_audio(
             enzo_set_ffmpeg_error(err, err_len, "failed to allocate audio buffer", ret);
             return -1;
         }
+        if (converter->out_buffer == NULL || line_size <= 0) {
+            enzo_set_error(err, err_len, "audio buffer allocation returned an invalid layout");
+            av_freep(&converter->out_buffer);
+            return -1;
+        }
         converter->out_capacity = out_samples;
+        converter->out_buffer_bytes = (size_t)line_size;
     }
 
     uint8_t *output_planes[1] = {converter->out_buffer};
@@ -470,6 +488,10 @@ static int write_converted_audio(
     );
     if (converted < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to resample audio", converted);
+        return -1;
+    }
+    if (converted > out_samples) {
+        enzo_set_error(err, err_len, "audio resampler exceeded its output capacity");
         return -1;
     }
 
@@ -514,6 +536,14 @@ static int write_converted_audio(
         enzo_set_ffmpeg_error(err, err_len, "failed to size audio buffer", bytes);
         return -1;
     }
+    size_t output_offset =
+        (size_t)skip_samples * ENZO_AUDIO_OUTPUT_CHANNELS *
+        ENZO_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
+    if (output_offset > converter->out_buffer_bytes ||
+        (size_t)bytes > converter->out_buffer_bytes - output_offset) {
+        enzo_set_error(err, err_len, "converted audio exceeded its allocated buffer");
+        return -1;
+    }
 
     if (bytes > 0) {
         const int silence_chunk_bytes =
@@ -550,8 +580,7 @@ static int write_converted_audio(
         }
 
         uint8_t *output_data =
-            converter->out_buffer +
-            skip_samples * ENZO_AUDIO_OUTPUT_CHANNELS * ENZO_AUDIO_OUTPUT_BYTES_PER_SAMPLE;
+            converter->out_buffer + output_offset;
         int volume = enzo_volume_percent_value(volume_percent);
         if (enzo_mute_requested(mute_flag) || volume == 0) {
             memset(output_data, 0, (size_t)bytes);

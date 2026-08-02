@@ -27,6 +27,11 @@ const VIDEO_CLOCK_LEAD: Duration = Duration::from_millis(5);
 const VIDEO_CLOCK_DROP_LAG: Duration = Duration::from_millis(75);
 const CLOCK_DROP_STARVATION_LIMIT: Duration = Duration::from_millis(200);
 const MAX_CONSECUTIVE_CLOCK_DROPS: u32 = 8;
+// RGB conversion crosses an unsafe native boundary. Keep a protected tail
+// after the payload so an overrun is reported before it reaches allocator
+// metadata.
+const FRAME_GUARD_BYTES: usize = 4 * 1024;
+const FRAME_GUARD_VALUE: u8 = 0xa5;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum FrameStatus {
@@ -176,11 +181,21 @@ impl Drop for NativeVideoDecoder {
 #[derive(Default)]
 struct LatestFrame {
     frame: Option<Vec<u8>>,
+    ready: bool,
     pts: Duration,
     seek_generation: i32,
     ended: bool,
     error: Option<String>,
     serial: u64,
+}
+
+impl LatestFrame {
+    fn with_reusable_buffer(frame_len: usize) -> Result<Self> {
+        Ok(Self {
+            frame: Some(new_frame_buffer(frame_len)?),
+            ..Self::default()
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -218,7 +233,7 @@ impl VideoDecoder {
         )));
         let initial_seek_generation = seek_generation.load(Ordering::Relaxed);
         let shared = VideoThreadState {
-            latest_frame: Arc::new(Mutex::new(LatestFrame::default())),
+            latest_frame: Arc::new(Mutex::new(LatestFrame::with_reusable_buffer(frame_len)?)),
             stop: Arc::new(AtomicI32::new(0)),
             pause: Arc::new(AtomicI32::new(i32::from(paused))),
             seek_generation,
@@ -247,21 +262,25 @@ impl VideoDecoder {
             .latest_frame
             .lock()
             .map_err(|_| io::Error::other("video frame state is poisoned"))?;
-        if state.serial != self.delivered_serial {
+        if state.serial != self.delivered_serial && state.ready {
             let Some(latest_frame) = state.frame.as_ref() else {
-                return Ok(FrameStatus::NoFrame);
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    "video frame buffer is unavailable",
+                ));
             };
-            if latest_frame.len() != frame.len() {
+            if latest_frame.len() != frame_storage_len(frame.len()).unwrap_or(usize::MAX) {
                 return Err(io::Error::new(
                     ErrorKind::InvalidData,
                     format!(
-                        "video frame has {} bytes, expected {}",
+                        "video frame storage has {} bytes, expected {} plus its guard",
                         latest_frame.len(),
                         frame.len()
                     ),
                 ));
             }
-            frame.copy_from_slice(latest_frame);
+            validate_frame_guard(latest_frame, frame.len()).map_err(io::Error::other)?;
+            frame.copy_from_slice(&latest_frame[..frame.len()]);
             self.delivered_serial = state.serial;
             let pts = state.pts;
             drop(state);
@@ -325,7 +344,7 @@ impl VideoDecoder {
             .wrapping_add(1);
         self.display_rate.delivered_at.clear();
         if let Ok(mut state) = self.shared.latest_frame.lock() {
-            state.frame = None;
+            state.ready = false;
             state.error = None;
             state.ended = false;
             state.serial = state.serial.wrapping_add(1);
@@ -336,7 +355,7 @@ impl VideoDecoder {
 
     pub(crate) fn seek_frame(&self, generation: i32) -> Option<Duration> {
         let state = self.shared.latest_frame.lock().ok()?;
-        (state.frame.is_some() && state.seek_generation == generation).then_some(state.pts)
+        (state.ready && state.seek_generation == generation).then_some(state.pts)
     }
 
     pub(crate) fn seek_generation(&self) -> i32 {
@@ -384,7 +403,13 @@ fn run_video_decode_thread(
     let mut started_at = Instant::now();
     let fallback_interval = 1.0 / fps.max(1.0);
     let mut fallback_pts = 0.0;
-    let mut buffer = vec![0_u8; frame_len];
+    let mut buffer = match new_frame_buffer(frame_len) {
+        Ok(buffer) => buffer,
+        Err(error) => {
+            mark_error(&latest_frame, error.to_string());
+            return;
+        }
+    };
     let mut seen_seek_generation = 0;
     let mut force_next_frame = false;
     let mut clocked_seek_generation = 0;
@@ -500,6 +525,10 @@ fn run_video_decode_thread(
                 break;
             }
         };
+        if let Err(error) = validate_frame_guard(&buffer, frame_len) {
+            mark_error(&latest_frame, error.to_string());
+            break;
+        }
 
         let pts = if pts.is_finite() && pts >= 0.0 {
             pts
@@ -606,7 +635,6 @@ fn run_video_decode_thread(
         buffer = store_latest_frame(
             &latest_frame,
             buffer,
-            frame_len,
             pts_duration,
             &seek_generation,
             seen_seek_generation,
@@ -722,10 +750,39 @@ fn frame_len(width: u32, height: u32) -> Result<usize> {
         .ok_or_else(|| anyhow!("frame buffer is too large"))
 }
 
+fn frame_storage_len(frame_len: usize) -> Result<usize> {
+    frame_len
+        .checked_add(FRAME_GUARD_BYTES)
+        .ok_or_else(|| anyhow!("video frame storage is too large"))
+}
+
+fn new_frame_buffer(frame_len: usize) -> Result<Vec<u8>> {
+    let storage_len = frame_storage_len(frame_len)?;
+    let mut frame = vec![0_u8; storage_len];
+    frame[frame_len..].fill(FRAME_GUARD_VALUE);
+    Ok(frame)
+}
+
+fn validate_frame_guard(frame: &[u8], frame_len: usize) -> Result<()> {
+    let expected_len = frame_storage_len(frame_len)?;
+    if frame.len() != expected_len {
+        bail!(
+            "video frame storage has {} bytes, expected {expected_len}",
+            frame.len()
+        );
+    }
+    if frame[frame_len..]
+        .iter()
+        .any(|byte| *byte != FRAME_GUARD_VALUE)
+    {
+        bail!("native video decoder wrote past the RGB frame boundary");
+    }
+    Ok(())
+}
+
 fn store_latest_frame(
     state: &Arc<Mutex<LatestFrame>>,
     frame: Vec<u8>,
-    frame_len: usize,
     pts: Duration,
     seek_generation: &AtomicI32,
     seen_seek_generation: i32,
@@ -741,17 +798,24 @@ fn store_latest_frame(
         return frame;
     }
 
-    let old_frame = state.frame.replace(frame);
+    let Some(old_frame) = state.frame.take() else {
+        state.error = Some("reusable video frame buffer is unavailable".to_string());
+        state.ended = true;
+        state.serial = state.serial.wrapping_add(1);
+        return frame;
+    };
+    state.frame = Some(frame);
+    state.ready = true;
     state.pts = pts;
     state.seek_generation = seen_seek_generation;
     state.ended = false;
     state.serial = state.serial.wrapping_add(1);
-    old_frame.unwrap_or_else(|| vec![0_u8; frame_len])
+    old_frame
 }
 
 fn reset_frame_state(state: &Arc<Mutex<LatestFrame>>) {
     if let Ok(mut state) = state.lock() {
-        state.frame = None;
+        state.ready = false;
         state.error = None;
         state.ended = false;
         state.serial = state.serial.wrapping_add(1);
@@ -880,19 +944,53 @@ mod tests {
         let seek_generation = AtomicI32::new(2);
         let frame = vec![7, 8, 9];
 
-        let buffer = store_latest_frame(
-            &state,
-            frame,
-            3,
-            Duration::from_secs(1),
-            &seek_generation,
-            1,
-        );
+        let buffer = store_latest_frame(&state, frame, Duration::from_secs(1), &seek_generation, 1);
 
         assert_eq!(buffer, vec![7, 8, 9]);
         let state = state.lock().expect("frame state should not be poisoned");
         assert!(state.frame.is_none());
         assert_eq!(state.serial, 0);
+    }
+
+    #[test]
+    fn seek_reset_keeps_the_reusable_frame_allocation() {
+        let mut latest =
+            LatestFrame::with_reusable_buffer(3).expect("frame buffer should allocate");
+        latest.ready = true;
+        let original = latest
+            .frame
+            .as_ref()
+            .expect("reusable frame should exist")
+            .as_ptr();
+        let state = Arc::new(Mutex::new(latest));
+
+        reset_frame_state(&state);
+
+        let latest = state.lock().expect("frame state should not be poisoned");
+        assert!(!latest.ready);
+        assert_eq!(
+            latest
+                .frame
+                .as_ref()
+                .expect("seek should preserve the reusable frame")
+                .as_ptr(),
+            original
+        );
+    }
+
+    #[test]
+    fn frame_guard_detects_native_output_overrun() {
+        let mut frame = new_frame_buffer(3).expect("frame buffer should allocate");
+        assert!(validate_frame_guard(&frame, 3).is_ok());
+
+        frame[3] = 0;
+
+        assert!(
+            validate_frame_guard(&frame, 3)
+                .expect_err("changed guard should be rejected")
+                .to_string()
+                .contains("past the RGB frame boundary")
+        );
     }
 
     #[test]

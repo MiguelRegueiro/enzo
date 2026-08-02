@@ -288,13 +288,13 @@ impl<W: Write> InteractionContext<'_, W> {
                 match mouse {
                     PlaybackMouse::ScrollUp => self.scroll_help(-1),
                     PlaybackMouse::ScrollDown => self.scroll_help(1),
-                    PlaybackMouse::Down { .. } => {
+                    PlaybackMouse::Down { .. }
                         if close_help_on_outside_click(
                             &mut self.ui.help_visible,
                             &mut self.ui.help_scroll_offset,
-                        ) {
-                            self.view.dirty = self.view.have_frame;
-                        }
+                        ) =>
+                    {
+                        self.view.dirty = self.view.have_frame;
                     }
                     _ => {}
                 }
