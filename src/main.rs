@@ -30,6 +30,10 @@ fn run() -> Result<()> {
             print!("{}", cli::HELP);
             Ok(())
         }
+        cli::Action::Version => {
+            println!("{}", cli::VERSION);
+            Ok(())
+        }
     }
 }
 

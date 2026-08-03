@@ -5,35 +5,27 @@ use anyhow::{Result, bail};
 use crate::media_input::{media_path_from_argument, validate_subtitle_path};
 
 pub(crate) const HELP: &str = "\
-enzo - video player for Kitty-compatible terminals
+enzo - terminal video player
 
 Usage:
-  enzo [--force] [--no-resume] [--sub-file subtitle] [video-or-url]
+  enzo [OPTIONS] [VIDEO-OR-URL]
   enzo --clear-resume
 
-Controls:
-  Drop file/URL       play from launcher
-  Space, right click  pause/play
-  9, 0                volume down/up by 2%
-  Mouse wheel         volume down/up; scroll an open track menu
-  m                   mute/unmute
-  a                   audio track
-  s                   subtitle track
-  v                   subtitles on/off
-  i                   show media information
-  I                   pin/unpin media information
-  ?                   help
-  Esc                 close open panel
-  Wheel, Up/Down      scroll help when open
-  Left, Right         seek backward/forward by 5 seconds
-  Down, Up            seek backward/forward by 60 seconds
-  q                   quit
-  Q                   quit without saving resume history
+Options:
+  -h, --help          Print help
+  -V, --version       Print version
+      --force         Run in a compatible terminal not detected as Kitty
+      --sub-file PATH Load a specific SRT subtitle file
+      --no-resume     Disable reading and writing resume data
+      --clear-resume  Remove saved playback state and exit
 ";
+
+pub(crate) const VERSION: &str = concat!("enzo ", env!("CARGO_PKG_VERSION"));
 
 pub(crate) enum Action {
     Run(Options),
     Help,
+    Version,
 }
 
 pub(crate) struct Options {
@@ -48,6 +40,9 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     let args = args.collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         return Ok(Action::Help);
+    }
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        return Ok(Action::Version);
     }
     let mut force = false;
     let mut sub_file = None::<PathBuf>;
@@ -126,7 +121,7 @@ mod tests {
     fn run_options(args: Vec<OsString>) -> Options {
         match parse_args(args.into_iter()).expect("args should parse") {
             Action::Run(options) => options,
-            Action::Help => panic!("expected run options"),
+            Action::Help | Action::Version => panic!("expected run options"),
         }
     }
 
@@ -165,10 +160,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_args_recognizes_help() {
+    fn parse_args_recognizes_help_and_version() {
         assert!(matches!(
             parse_args(vec![OsString::from("--help")].into_iter()),
             Ok(Action::Help)
+        ));
+        assert!(matches!(
+            parse_args(vec![OsString::from("-V")].into_iter()),
+            Ok(Action::Version)
         ));
     }
 
