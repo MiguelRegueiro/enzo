@@ -1,25 +1,29 @@
 <h1 align="left"><img src="assets/logo.png" width="64" alt="enzo logo" align="absmiddle" />&nbsp;enzo</h1>
 
-Terminal video player for Kitty, with native audio, subtitles, mouse controls, and resume support.
-
-enzo plays local files and URLs directly inside the terminal.
+Terminal video player with a graphical interface.
 
 ![Enzo playback](assets/screenshots/enzo-night-sky-playback.png)
 
 ## Features
 
-- **Terminal-native playback** — video rendered directly inside Kitty
-- **Subtitles** — detects sidecar subtitles and supports explicit `--sub-file`
-- **Resume support** — restores position, audio track, and subtitle track for local seekable files
-- **Mouse and keyboard controls** — pause, seek, volume, mute, track menus, and overlay controls
-- **Drop target launcher** — run without a path and drop a file or URL to play
+- **Playback** — local files and URLs rendered through Kitty graphics
+- **Interface** — timeline, playback controls, track menus, media information, and help
+- **Audio** — synchronized playback with volume, mute, and track selection
+- **Subtitles** — external and embedded text or bitmap tracks with automatic sidecar detection
+- **Resume** — restores position and selected tracks for local seekable files
+- **Input** — mouse and keyboard controls, plus a drop-target launcher
 
 ## Requirements
 
-- Kitty
-- FFmpeg libraries
-- PulseAudio-compatible audio
-- FreeType, HarfBuzz, and FriBidi
+- Linux or FreeBSD
+- Kitty terminal
+- FFmpeg, PulseAudio, FreeType, HarfBuzz, and FriBidi
+
+## Installation
+
+```sh
+cargo install enzo
+```
 
 ## Run from source
 
@@ -35,23 +39,19 @@ Pass a file path or URL to start playback directly:
 cargo run --release -- /path/to/video.mp4
 ```
 
-For FreeBSD source builds:
-
-```sh
-pkg install rust ffmpeg pulseaudio freetype2 harfbuzz fribidi pkgconf
-```
-
 ## CLI
 
 ```text
-enzo [--force] [--no-resume] [--sub-file subtitle] [video-or-url]
+enzo [OPTIONS] [VIDEO-OR-URL]
 enzo --clear-resume
 ```
 
 Flags:
 
-- `--force` — run on compatible terminals that do not advertise themselves as Kitty
-- `--sub-file <path>` — load a specific SRT subtitle file
+- `-h`, `--help` — show command-line help and exit
+- `-V`, `--version` — show the Enzo version and exit
+- `--force` — bypass Kitty terminal detection
+- `--sub-file <path>` — load an external SRT, WebVTT, SSA, or ASS subtitle file
 - `--no-resume` — play without reading or writing resume data
 - `--clear-resume` — remove saved resume data and exit
 
@@ -62,15 +62,17 @@ Flags:
 - Space or right click pauses/resumes playback
 - `9` / `0` or mouse wheel decreases/increases volume by 2%
 - `m` toggles mute
+- `a` opens the audio-track menu
+- `s` opens the subtitle-track menu
 - `v` toggles subtitles
 - `i` shows media information; `I` pins or unpins it
 - `?` toggles help; Esc closes open panels
 - Left/right arrows seek by 5 seconds
-- Down/up arrows seek by 60 seconds
+- Down/up arrows seek by 60 seconds, or navigate an open track menu
 - Click or drag the progress bar to seek
 - Mouse wheel scrolls open audio/subtitle menus
 - `q` quits
-- `Q` quits without saving resume history
+- `Q` quits without saving resume state
 
 The playback overlay appears while paused, after seeking, and on mouse movement.
 
