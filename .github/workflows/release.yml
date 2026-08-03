@@ -1,0 +1,341 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      crate_name: ${{ steps.release.outputs.crate_name }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Validate tag and package versions
+        id: release
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${RELEASE_TAG_INPUT}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tags must use stable SemVer: vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          crate_name="$(awk '
+            /^\[package\]$/ { in_package = 1; next }
+            /^\[/ { in_package = 0 }
+            in_package && /^name = / {
+              gsub(/^name = "|"$/, "")
+              print
+              exit
+            }
+          ' Cargo.toml)"
+          manifest_version="$(awk '
+            /^\[package\]$/ { in_package = 1; next }
+            /^\[/ { in_package = 0 }
+            in_package && /^version = / {
+              gsub(/^version = "|"$/, "")
+              print
+              exit
+            }
+          ' Cargo.toml)"
+          lock_version="$(awk -v crate="${crate_name}" '
+            /^\[\[package\]\]$/ { in_package = 0 }
+            $0 == "name = \"" crate "\"" { in_package = 1 }
+            in_package && /^version = / {
+              gsub(/^version = "|"$/, "")
+              print
+              exit
+            }
+          ' Cargo.lock)"
+
+          if [[ -z "${crate_name}" || -z "${manifest_version}" || -z "${lock_version}" ]]; then
+            echo "Could not read package metadata from Cargo.toml and Cargo.lock" >&2
+            exit 1
+          fi
+          if [[ "${version}" != "${manifest_version}" ]]; then
+            echo "Tag ${tag} does not match Cargo.toml version ${manifest_version}" >&2
+            exit 1
+          fi
+          if [[ "${version}" != "${lock_version}" ]]; then
+            echo "Tag ${tag} does not match Cargo.lock version ${lock_version}" >&2
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/${tag}"; then
+            echo "${tag} is not an existing Git tag" >&2
+            exit 1
+          fi
+
+          commit="$(git rev-list -n 1 "${tag}")"
+          if [[ "$(git rev-parse HEAD)" != "${commit}" ]]; then
+            echo "The checked-out commit does not match ${tag}" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${commit}" FETCH_HEAD; then
+            echo "The commit tagged ${tag} is not part of main" >&2
+            exit 1
+          fi
+
+          {
+            echo "commit=${commit}"
+            echo "crate_name=${crate_name}"
+            echo "tag=${tag}"
+            echo "version=${version}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Extract release notes from changelog
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          awk -v version="${VERSION}" '
+            index($0, "## [" version "]") == 1 { capture = 1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          sed -i '/./,$!d' RELEASE_NOTES.md
+
+          if [[ ! -s RELEASE_NOTES.md ]]; then
+            echo "CHANGELOG.md has no release notes for ${VERSION}" >&2
+            exit 1
+          fi
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-notes
+          path: RELEASE_NOTES.md
+          if-no-files-found: error
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            ffmpeg \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libfreetype6-dev \
+            libfribidi-dev \
+            libharfbuzz-dev \
+            libpulse-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
+      - name: Run release gate tests
+        run: cargo test --locked
+
+  linux:
+    name: Build Ubuntu release asset
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            ffmpeg \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libfreetype6-dev \
+            libfribidi-dev \
+            libharfbuzz-dev \
+            libpulse-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
+      - name: Build release binary
+        run: cargo build --locked --release --all-features
+
+      - name: Package Ubuntu release asset
+        env:
+          CRATE_NAME: ${{ needs.validate.outputs.crate_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          host_target="$(rustc -vV | sed -n 's/^host: //p')"
+          if [[ -z "${host_target}" ]]; then
+            echo "Could not determine the Rust host target" >&2
+            exit 1
+          fi
+          bundle="${CRATE_NAME}-${VERSION}-${host_target}"
+          install -Dm755 "target/release/${CRATE_NAME}" "dist/${bundle}/${CRATE_NAME}"
+          install -Dm644 README.md "dist/${bundle}/README.md"
+          install -Dm644 CHANGELOG.md "dist/${bundle}/CHANGELOG.md"
+          install -Dm644 LICENSE "dist/${bundle}/LICENSE"
+          install -d "dist/${bundle}/packaging"
+          cp -R packaging/linux "dist/${bundle}/packaging/"
+          tar -C dist -czf "dist/${bundle}.tar.gz" "${bundle}"
+
+      - name: Upload Ubuntu release asset
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-asset-ubuntu
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  freebsd:
+    name: Build FreeBSD release asset
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Build and package on FreeBSD
+        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1
+        with:
+          release: "14.4"
+          usesh: true
+          prepare: |
+            env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
+            pkg update -f
+            pkg install -y rust ffmpeg pulseaudio freetype2 harfbuzz fribidi pkgconf
+          run: |
+            set -eu
+
+            crate_name="${{ needs.validate.outputs.crate_name }}"
+            version="${{ needs.validate.outputs.version }}"
+
+            rustc --version
+            cargo --version
+            host_target="$(rustc -vV | sed -n 's/^host: //p')"
+            if [ -z "${host_target}" ]; then
+              echo "Could not determine the Rust host target" >&2
+              exit 1
+            fi
+            bundle="${crate_name}-${version}-${host_target}"
+            cargo build --locked --release --all-features
+            install -d "dist/${bundle}"
+            install -m 0755 "target/release/${crate_name}" "dist/${bundle}/${crate_name}"
+            install -m 0644 README.md "dist/${bundle}/README.md"
+            install -m 0644 CHANGELOG.md "dist/${bundle}/CHANGELOG.md"
+            install -m 0644 LICENSE "dist/${bundle}/LICENSE"
+            install -d "dist/${bundle}/packaging"
+            cp -R packaging/linux "dist/${bundle}/packaging/"
+            tar -C dist -czf "dist/${bundle}.tar.gz" "${bundle}"
+
+      - name: Upload FreeBSD release asset
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-asset-freebsd
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub release
+    needs:
+      - validate
+      - linux
+      - freebsd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release notes
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-notes
+          path: release-notes
+
+      - name: Download Ubuntu release asset
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-asset-ubuntu
+          path: dist
+
+      - name: Download FreeBSD release asset
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-asset-freebsd
+          path: dist
+
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Publish GitHub release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file release-notes/RELEASE_NOTES.md
+            gh release upload "${RELEASE_TAG}" dist/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" dist/* \
+              --verify-tag \
+              --title "${RELEASE_TAG}" \
+              --notes-file release-notes/RELEASE_NOTES.md
+          fi
