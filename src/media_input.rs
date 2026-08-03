@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Result, bail};
 
 pub(crate) fn media_candidates_from_text(text: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
@@ -24,6 +26,63 @@ pub(crate) fn is_remote_url_text(text: &str) -> bool {
         return false;
     };
     !scheme.eq_ignore_ascii_case("file") && is_url_scheme(scheme)
+}
+
+pub(crate) fn media_path_from_argument(path: PathBuf) -> Result<PathBuf> {
+    let text = path.as_os_str().to_string_lossy();
+    let path = media_candidates_from_text(&text)
+        .into_iter()
+        .next()
+        .unwrap_or(path);
+    validate_media_path(&path)?;
+    Ok(path)
+}
+
+pub(crate) fn media_path_from_drop_text(text: &str) -> Result<PathBuf> {
+    let candidates = media_candidates_from_text(text);
+    if candidates.is_empty() {
+        bail!("drop a video file or URL to play");
+    }
+
+    let mut last_error = None::<String>;
+    for candidate in candidates {
+        match validate_media_path(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+
+    bail!(
+        "{}",
+        last_error.unwrap_or_else(|| "drop a video file or URL to play".to_string())
+    )
+}
+
+pub(crate) fn validate_subtitle_path(path: &Path) -> Result<()> {
+    if !path.exists() {
+        bail!("subtitle file does not exist: {}", path.display());
+    }
+    if !path.is_file() {
+        bail!("subtitle path is not a file: {}", path.display());
+    }
+    Ok(())
+}
+
+fn validate_media_path(path: &Path) -> Result<()> {
+    let text = path.as_os_str().to_string_lossy();
+    if is_remote_url_text(&text) {
+        return Ok(());
+    }
+    if !path.exists() {
+        bail!(
+            "video does not exist: {}. If the path contains spaces, quote it.",
+            path.display()
+        );
+    }
+    if !path.is_file() {
+        bail!("video path is not a file: {}", path.display());
+    }
+    Ok(())
 }
 
 fn push_candidate(candidates: &mut Vec<PathBuf>, text: &str) {
@@ -163,6 +222,35 @@ fn dedupe_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subtitle::sidecar_subtitle_paths;
+
+    #[test]
+    fn argument_and_drop_resolve_the_same_media_and_sidecar_paths() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("enzo-media-input-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir(&temp_dir).expect("temp dir should be created");
+        let media = temp_dir.join("Fabricated City.mkv");
+        let sidecar = temp_dir.join("Fabricated City.srt");
+        std::fs::write(&media, "video").expect("video should be written");
+        std::fs::write(&sidecar, "subtitle").expect("subtitle should be written");
+
+        let from_arg = media_path_from_argument(media.clone()).expect("arg media should parse");
+        let from_drop = media_path_from_drop_text(&media.display().to_string())
+            .expect("drop media should parse");
+
+        assert_eq!(from_drop, from_arg);
+        assert_eq!(
+            sidecar_subtitle_paths(&from_arg),
+            std::slice::from_ref(&sidecar)
+        );
+        assert_eq!(
+            sidecar_subtitle_paths(&from_drop),
+            std::slice::from_ref(&sidecar)
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
     #[test]
     fn parses_plain_path_drop() {

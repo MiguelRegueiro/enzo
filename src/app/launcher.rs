@@ -13,11 +13,11 @@ use crossterm::{
 
 use crate::{
     font_system::FontSystem,
+    media_input::media_path_from_drop_text,
     terminal::{TerminalGuard, clear_screen_and_images},
 };
 
 use super::{
-    cli::media_path_from_drop_text,
     playback,
     terminal_input::{DropCommand, read_drop_events},
 };

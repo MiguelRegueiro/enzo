@@ -1,7 +1,9 @@
 mod app;
+mod cli;
 mod font;
 mod font_system;
 mod media;
+mod media_input;
 mod overlay;
 mod resume;
 mod shutdown;
@@ -10,10 +12,24 @@ mod subtitle_language;
 mod terminal;
 mod text_layout;
 
+use std::env;
+
+use anyhow::Result;
+
 fn main() {
-    if let Err(error) = app::run() {
+    if let Err(error) = run() {
         print_error(&error);
         std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    match cli::parse_args(env::args_os().skip(1))? {
+        cli::Action::Run(options) => app::run(options),
+        cli::Action::Help => {
+            print!("{}", cli::HELP);
+            Ok(())
+        }
     }
 }
 

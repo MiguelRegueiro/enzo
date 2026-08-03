@@ -9,14 +9,13 @@ use std::{
 use anyhow::Result;
 
 use crate::{
+    media_input::{media_candidates_from_text, validate_subtitle_path},
     resume::{RestoredPlayback, ResumeSubtitleSelection},
     subtitle::{
         EmbeddedSubtitleStream, SubtitleTrack, embedded_subtitle_streams,
         load_embedded_subtitle_track, sidecar_subtitle_paths,
     },
 };
-
-use super::super::{cli::validate_subtitle_path, path_input::media_candidates_from_text};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum PlaybackSubtitleSource {
