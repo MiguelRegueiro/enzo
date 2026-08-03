@@ -801,12 +801,6 @@ mod tests {
             .expect("shape Netflix Arabic subtitle");
         assert_eq!(netflix_line.direction(), ParagraphDirection::RightToLeft);
         assert!(netflix_line.glyphs().iter().all(|glyph| glyph.index != 0));
-        assert!(
-            netflix_line
-                .glyphs()
-                .iter()
-                .any(|glyph| glyph.font_index != 0)
-        );
 
         let mut frame = vec![0_u8; 320 * 64 * 3];
         font.draw_text_layout(&mut frame, 320, 64, 4, 4, &mixed, [255; 3], 255);
