@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=enzo
-GenericName=Video Player
-Comment=Play videos in the Kitty terminal
+GenericName=Terminal Video Player
+Comment=Terminal video player with a graphical interface
 Icon=enzo
 TryExec=enzo
 Exec=enzo %u
