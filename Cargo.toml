@@ -1,11 +1,13 @@
 [package]
 name = "enzo"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Kitty terminal video player"
+description = "Terminal video player"
 license = "MIT"
 repository = "https://github.com/MiguelRegueiro/enzo"
+keywords = ["video-player", "media-player", "terminal", "kitty", "ffmpeg"]
+categories = ["multimedia::video", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0"
