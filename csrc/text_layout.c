@@ -41,6 +41,7 @@ static int append_shaped_run(
         hb_buffer_destroy(buffer);
         return -1;
     }
+    hb_buffer_set_content_type(buffer, HB_BUFFER_CONTENT_TYPE_UNICODE);
     FriBidiStrIndex run_end = start + len;
     for (FriBidiStrIndex cluster_start = start; cluster_start < run_end;) {
         FriBidiStrIndex end = cluster_end(text, run_end, cluster_start);
