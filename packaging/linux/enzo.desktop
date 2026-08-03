@@ -2,7 +2,7 @@
 Type=Application
 Name=enzo
 GenericName=Video Player
-Comment=Play videos in a Kitty-compatible terminal
+Comment=Play videos in the Kitty terminal
 Icon=enzo
 TryExec=enzo
 Exec=enzo %u

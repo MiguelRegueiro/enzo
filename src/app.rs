@@ -21,9 +21,7 @@ pub(crate) fn run(options: Options) -> Result<()> {
     shutdown::install_signal_handlers().context("failed to install shutdown handlers")?;
     let font_system = FontSystem::discover();
     if !options.force && !looks_like_kitty() {
-        bail!(
-            "Enzo targets Kitty graphics; run from kitty or pass --force if your terminal is compatible"
-        );
+        bail!("Enzo requires Kitty; pass --force to bypass terminal detection");
     }
 
     if inside_tmux() {

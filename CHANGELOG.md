@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Drop-target launcher for opening local files and URLs when Enzo starts without a media argument.
 - Kitty graphics passthrough inside tmux and shared-memory frame transfer for smoother local playback.
 - Linux and FreeBSD support, plus Linux desktop entry and application icon assets.
-- Command-line help and version output, terminal compatibility override, explicit subtitle selection, and resume controls.
+- Command-line help and version output, terminal detection override, explicit subtitle selection, and resume controls.
 
 [Unreleased]: https://github.com/MiguelRegueiro/enzo/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/MiguelRegueiro/enzo/releases/tag/v1.0.0

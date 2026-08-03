@@ -14,8 +14,8 @@ Usage:
 Options:
   -h, --help          Print help
   -V, --version       Print version
-      --force         Run in a compatible terminal not detected as Kitty
-      --sub-file PATH Load a specific SRT subtitle file
+      --force         Bypass Kitty terminal detection
+      --sub-file PATH Load an external subtitle file
       --no-resume     Disable reading and writing resume data
       --clear-resume  Remove saved playback state and exit
 ";
