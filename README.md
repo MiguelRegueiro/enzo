@@ -21,7 +21,20 @@ Terminal video player with a graphical interface.
 
 ## Installation
 
-```sh
+### Fedora
+
+Enable the COPR repository and install with `dnf`:
+
+```bash
+sudo dnf copr enable miguelregueiro/enzo
+sudo dnf install enzo
+```
+
+### Cargo
+
+Install from crates.io:
+
+```bash
 cargo install enzo
 ```
 
