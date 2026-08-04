@@ -318,7 +318,7 @@ jobs:
 
       - name: Create checksums
         working-directory: dist
-        run: sha256sum *.tar.gz > SHA256SUMS
+        run: sha256sum -- *.tar.gz > SHA256SUMS
 
       - name: Publish GitHub release
         env:
@@ -339,3 +339,79 @@ jobs:
               --title "${RELEASE_TAG}" \
               --notes-file release-notes/RELEASE_NOTES.md
           fi
+
+  update-copr:
+    name: Publish COPR package
+    needs:
+      - validate
+      - github-release
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    container:
+      image: fedora:43
+    env:
+      COPR_PROJECT: enzo
+
+    steps:
+      - name: Install COPR build tooling
+        shell: bash
+        run: |
+          set -euxo pipefail
+          dnf -y install \
+            cargo \
+            copr-cli \
+            git \
+            make \
+            rpm-build \
+            zstd
+
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Trust checked-out repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Configure COPR credentials
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${COPR_CONFIG:-}" ]]; then
+            echo "COPR_CONFIG is not configured" >&2
+            exit 1
+          fi
+
+          mkdir -p ~/.config
+          printf '%s\n' "${COPR_CONFIG}" > ~/.config/copr
+          chmod 600 ~/.config/copr
+
+      - name: Build and submit COPR SRPM
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          srpm_dir="$(mktemp -d)"
+          trap 'rm -rf "${srpm_dir}"' EXIT
+
+          make -f .copr/Makefile srpm \
+            outdir="${srpm_dir}" \
+            spec=packaging/fedora/enzo.spec \
+            release=1
+
+          srpm_path="$(find "${srpm_dir}" -maxdepth 1 -name '*.src.rpm' -print -quit)"
+          if [[ -z "${srpm_path}" ]]; then
+            echo "No source RPM was created in ${srpm_dir}" >&2
+            exit 1
+          fi
+
+          copr-cli build "${COPR_PROJECT}" "${srpm_path}"
