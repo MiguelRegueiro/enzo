@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -340,11 +340,106 @@ jobs:
               --notes-file release-notes/RELEASE_NOTES.md
           fi
 
+  publish-crates:
+    name: Publish crate
+    needs:
+      - validate
+      - github-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Check whether version exists on crates.io
+        id: crates
+        env:
+          CRATE_NAME: ${{ needs.validate.outputs.crate_name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "${GITHUB_OUTPUT}"
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.request
+
+          crate_name = os.environ["CRATE_NAME"]
+          version = os.environ["VERSION"]
+          url = f"https://crates.io/api/v1/crates/{crate_name}"
+
+          try:
+              with urllib.request.urlopen(url) as response:
+                  payload = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code == 404:
+                  print("published=false")
+                  sys.exit(0)
+              raise
+
+          versions = {entry["num"] for entry in payload.get("versions", [])}
+          if version in versions:
+              print("published=true")
+          else:
+              print("published=false")
+          PY
+
+      - name: Install native dependencies
+        if: steps.crates.outputs.published != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            ffmpeg \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libfreetype6-dev \
+            libfribidi-dev \
+            libharfbuzz-dev \
+            libpulse-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
+      - name: Authenticate with crates.io
+        id: auth
+        if: steps.crates.outputs.published != 'true'
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+
+      - name: Publish to crates.io
+        if: steps.crates.outputs.published != 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked
+
+      - name: Skip crates.io publish
+        if: steps.crates.outputs.published == 'true'
+        env:
+          CRATE_NAME: ${{ needs.validate.outputs.crate_name }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: echo "${CRATE_NAME} ${RELEASE_VERSION} is already published on crates.io"
+
   update-copr:
     name: Publish COPR package
     needs:
       - validate
-      - github-release
+      - publish-crates
     runs-on: ubuntu-latest
     environment: release
     permissions:
