@@ -1,5 +1,1 @@
 blank_issues_enabled: true
-contact_links:
-  - name: 🔒 Report a Security Vulnerability
-    url: https://github.com/MiguelRegueiro/enzo/security/advisories/new
-    about: Report security vulnerabilities privately through GitHub.
