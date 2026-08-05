@@ -9,7 +9,6 @@ enzo - terminal video player
 
 Usage:
   enzo [OPTIONS] [VIDEO-OR-URL]
-  enzo --clear-resume
 
 Options:
   -h, --help          Print help

@@ -56,7 +56,6 @@ cargo run --release -- /path/to/video.mp4
 
 ```text
 enzo [OPTIONS] [VIDEO-OR-URL]
-enzo --clear-resume
 ```
 
 Flags:
