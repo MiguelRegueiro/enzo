@@ -1,0 +1,43 @@
+name: 🐛 Bug Report
+description: Report broken behavior in Enzo.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for reproducible runtime issues.
+
+        For suspected vulnerabilities, use private vulnerability reporting instead.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before Opening
+      options:
+        - label: I have searched the existing issues.
+          required: true
+        - label: I can reproduce this on the latest released version, or on `main` when practical.
+          required: false
+  - type: textarea
+    id: report
+    attributes:
+      label: Bug Report
+      value: |
+        **Describe the bug**
+        A clear description of what happened and what you expected instead.
+
+        **To reproduce**
+        Steps to reproduce the behavior.
+
+        **Environment**
+        - Enzo version or commit:
+        - Operating system:
+        - Kitty version:
+        - tmux version, if used:
+        - Media or subtitle format, if relevant:
+        - Local file or URL, if relevant:
+
+        **Additional context**
+        Add logs, screenshots, recordings, dependency versions, or safe sample details.
+    validations:
+      required: true
