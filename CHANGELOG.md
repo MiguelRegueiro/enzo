@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - HLS playback with nonstandard segment extensions.
+- Audio continuity after seeking HLS streams.
 - Custom media titles supplied by external launchers.
 - Resume playback for titled HLS streams across rotating media URLs.
 

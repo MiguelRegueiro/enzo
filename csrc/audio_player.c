@@ -2,6 +2,7 @@
 #include "internal.h"
 
 #include <libavcodec/avcodec.h>
+#include <libavutil/avstring.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/mem.h>
@@ -25,6 +26,7 @@ typedef struct EnzoAudioConverter {
 
 typedef struct EnzoAudioSeekState {
     int active;
+    int stream_relative;
     int64_t target_micros;
 } EnzoAudioSeekState;
 
@@ -247,25 +249,42 @@ static int audio_converter_configure(
 static int seek_audio_decoder(
     EnzoInput *input,
     AVCodecContext *codec,
+    AVStream *stream,
     int64_t micros,
+    int stream_relative,
     const int *stop_flag,
     char *err,
     size_t err_len
 ) {
     AVFormatContext *format = enzo_input_format(input);
-    int64_t timestamp = micros;
-    if (format->start_time != AV_NOPTS_VALUE) {
-        timestamp += format->start_time;
+    int seek_stream_index = -1;
+    int64_t timestamp;
+
+    if (stream_relative) {
+        /*
+         * A container-level HLS seek normally follows the default video
+         * stream and its keyframe boundaries. Reusing that seek for the
+         * independent audio decoder can land on the following segment.
+         * Seek on the selected audio timeline instead; frames without a
+         * timestamp are discarded below until exact trimming is possible.
+         */
+        seek_stream_index = stream->index;
+        timestamp = av_rescale_q(micros, AV_TIME_BASE_Q, stream->time_base) +
+            enzo_stream_timestamp_origin(format, stream);
+    } else {
+        /*
+         * Other containers use their shared timeline so formats such as
+         * Matroska can use video cues. Seeking by audio stream can fall back
+         * to a very early byte position when no audio cues are available.
+         */
+        timestamp = micros;
+        if (format->start_time != AV_NOPTS_VALUE) {
+            timestamp += format->start_time;
+        }
     }
-    /*
-     * Seek on the container timeline so formats such as Matroska can use
-     * their video cues. Seeking by audio stream can fall back to a very early
-     * byte position when the file has no audio cues, forcing a huge scan.
-     * Decoded audio is still trimmed against the exact target below.
-     */
     int ret = enzo_input_seek_frame(
         input,
-        -1,
+        seek_stream_index,
         timestamp,
         AVSEEK_FLAG_BACKWARD,
         stop_flag
@@ -286,6 +305,7 @@ static int sync_audio_seek(
     EnzoPulseOutput *pulse,
     EnzoInput *input,
     AVCodecContext *codec,
+    AVStream *stream,
     EnzoAudioConverter *converter,
     AVPacket *packet,
     AVFrame *frame,
@@ -327,8 +347,21 @@ static int sync_audio_seek(
     if (frame != NULL) {
         av_frame_unref(frame);
     }
-    if (seek_audio_decoder(input, codec, micros, stop_flag, err, err_len) < 0) {
+    int seek_status = seek_audio_decoder(
+        input,
+        codec,
+        stream,
+        micros,
+        seek_state->stream_relative,
+        stop_flag,
+        err,
+        err_len
+    );
+    if (seek_status < 0) {
         return -1;
+    }
+    if (seek_status > 0) {
+        return 2;
     }
     audio_converter_reset(converter);
     *flushing = 0;
@@ -437,6 +470,11 @@ static int write_converted_audio(
     char *err,
     size_t err_len
 ) {
+    if (seek_state->active && seek_state->stream_relative &&
+        frame->best_effort_timestamp == AV_NOPTS_VALUE) {
+        return 0;
+    }
+
     if (audio_converter_configure(converter, codec, frame, err, err_len) < 0) {
         return -1;
     }
@@ -699,6 +737,8 @@ int enzo_play_audio(
     int seen_seek_generation = 0;
     EnzoAudioSeekState seek_state = {
         .active = 0,
+        .stream_relative = format->iformat != NULL &&
+            av_match_name("hls", format->iformat->name),
         .target_micros = 0,
     };
     EnzoAudioClock clock;
@@ -715,6 +755,7 @@ decode_audio:
             &pulse,
             input,
             codec,
+            stream,
             &converter,
             packet,
             frame,
@@ -778,6 +819,7 @@ decode_audio:
                 &pulse,
                 input,
                 codec,
+                stream,
                 &converter,
                 packet,
                 frame,
