@@ -153,6 +153,7 @@ unsafe extern "C" {
         decoder: *mut EnzoVideoDecoderOpaque,
         seconds: c_double,
         exact: c_int,
+        stop_flag: *const c_int,
         err: *mut c_char,
         err_len: usize,
     ) -> c_int;

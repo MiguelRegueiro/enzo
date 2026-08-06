@@ -1,5 +1,7 @@
+// Native modules are listed explicitly so Cargo rebuilds on every C source change.
 const MEDIA_SOURCES: &[&str] = &[
     "csrc/common.c",
+    "csrc/input.c",
     "csrc/fingerprint.c",
     "csrc/probe.c",
     "csrc/subtitle_decoder.c",
@@ -12,6 +14,7 @@ const MEDIA_SOURCES: &[&str] = &[
 const MEDIA_HEADERS: &[&str] = &[
     "csrc/media.h",
     "csrc/internal.h",
+    "csrc/input.h",
     "csrc/audio_output.h",
     "csrc/text_layout.h",
 ];

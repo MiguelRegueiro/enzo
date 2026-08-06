@@ -31,23 +31,25 @@ typedef struct EnzoAudioSeekState {
 static int open_audio_decoder(
     const char *path,
     int requested_stream_index,
-    AVFormatContext **format_out,
+    const int *stop_flag,
+    EnzoInput **input_out,
     AVCodecContext **codec_out,
     int *stream_index_out,
     char *err,
     size_t err_len
 ) {
-    AVFormatContext *format = NULL;
-    int ret = enzo_open_input(path, &format);
+    EnzoInput *input = NULL;
+    int ret = enzo_input_open(path, stop_flag, &input);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open audio input", ret);
         return -1;
     }
+    AVFormatContext *format = enzo_input_format(input);
 
-    ret = avformat_find_stream_info(format, NULL);
+    ret = enzo_input_find_stream_info(input, stop_flag);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to read audio stream info", ret);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -56,14 +58,14 @@ static int open_audio_decoder(
         if ((unsigned int)stream_index >= format->nb_streams ||
             format->streams[stream_index]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
             enzo_set_error(err, err_len, "selected audio stream is not available");
-            avformat_close_input(&format);
+            enzo_input_close(&input);
             return -1;
         }
     } else {
         stream_index = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
     }
     if (stream_index < 0) {
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return 0;
     }
 
@@ -71,14 +73,14 @@ static int open_audio_decoder(
     const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec == NULL) {
         enzo_set_error(err, err_len, "failed to find audio decoder");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
     if (codec_context == NULL) {
         enzo_set_error(err, err_len, "failed to allocate audio codec context");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -86,7 +88,7 @@ static int open_audio_decoder(
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to copy audio codec parameters", ret);
         avcodec_free_context(&codec_context);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -94,11 +96,11 @@ static int open_audio_decoder(
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open audio decoder", ret);
         avcodec_free_context(&codec_context);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
-    *format_out = format;
+    *input_out = input;
     *codec_out = codec_context;
     *stream_index_out = stream_index;
     return 1;
@@ -243,12 +245,14 @@ static int audio_converter_configure(
 }
 
 static int seek_audio_decoder(
-    AVFormatContext *format,
+    EnzoInput *input,
     AVCodecContext *codec,
     int64_t micros,
+    const int *stop_flag,
     char *err,
     size_t err_len
 ) {
+    AVFormatContext *format = enzo_input_format(input);
     int64_t timestamp = micros;
     if (format->start_time != AV_NOPTS_VALUE) {
         timestamp += format->start_time;
@@ -259,7 +263,16 @@ static int seek_audio_decoder(
      * byte position when the file has no audio cues, forcing a huge scan.
      * Decoded audio is still trimmed against the exact target below.
      */
-    int ret = av_seek_frame(format, -1, timestamp, AVSEEK_FLAG_BACKWARD);
+    int ret = enzo_input_seek_frame(
+        input,
+        -1,
+        timestamp,
+        AVSEEK_FLAG_BACKWARD,
+        stop_flag
+    );
+    if (ret == AVERROR_EXIT && enzo_stop_requested(stop_flag)) {
+        return 1;
+    }
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to seek audio", ret);
         return -1;
@@ -271,7 +284,7 @@ static int seek_audio_decoder(
 
 static int sync_audio_seek(
     EnzoPulseOutput *pulse,
-    AVFormatContext *format,
+    EnzoInput *input,
     AVCodecContext *codec,
     EnzoAudioConverter *converter,
     AVPacket *packet,
@@ -314,7 +327,7 @@ static int sync_audio_seek(
     if (frame != NULL) {
         av_frame_unref(frame);
     }
-    if (seek_audio_decoder(format, codec, micros, err, err_len) < 0) {
+    if (seek_audio_decoder(input, codec, micros, stop_flag, err, err_len) < 0) {
         return -1;
     }
     audio_converter_reset(converter);
@@ -641,13 +654,23 @@ int enzo_play_audio(
         return -1;
     }
 
-    AVFormatContext *format = NULL;
+    EnzoInput *input = NULL;
     AVCodecContext *codec = NULL;
     int stream_index = -1;
-    int opened = open_audio_decoder(path, audio_stream_index, &format, &codec, &stream_index, err, err_len);
+    int opened = open_audio_decoder(
+        path,
+        audio_stream_index,
+        stop_flag,
+        &input,
+        &codec,
+        &stream_index,
+        err,
+        err_len
+    );
     if (opened <= 0) {
-        return opened;
+        return enzo_stop_requested(stop_flag) ? 0 : opened;
     }
+    AVFormatContext *format = enzo_input_format(input);
     AVStream *stream = format->streams[stream_index];
     int64_t timestamp_origin = enzo_stream_timestamp_origin(format, stream);
 
@@ -663,7 +686,7 @@ int enzo_play_audio(
     );
     if (pulse_status != 0) {
         avcodec_free_context(&codec);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return pulse_status > 0 ? 0 : -1;
     }
 
@@ -690,7 +713,7 @@ decode_audio:
     while (!failed && !enzo_stop_requested(stop_flag)) {
         int seek_status = sync_audio_seek(
             &pulse,
-            format,
+            input,
             codec,
             &converter,
             packet,
@@ -753,7 +776,7 @@ decode_audio:
         if (ret == 0) {
             seek_status = sync_audio_seek(
                 &pulse,
-                format,
+                input,
                 codec,
                 &converter,
                 packet,
@@ -852,7 +875,7 @@ decode_audio:
             break;
         }
 
-        ret = av_read_frame(format, packet);
+        ret = enzo_input_read_frame(input, packet, stop_flag);
         if (ret == AVERROR_EOF) {
             flushing = 1;
             ret = avcodec_send_packet(codec, NULL);
@@ -861,6 +884,9 @@ decode_audio:
                 failed = 1;
             }
             continue;
+        }
+        if (ret == AVERROR_EXIT && enzo_stop_requested(stop_flag)) {
+            break;
         }
         if (ret < 0) {
             enzo_set_ffmpeg_error(err, err_len, "failed to read audio packet", ret);
@@ -936,7 +962,7 @@ decode_audio:
     }
     enzo_pulse_output_close(&pulse);
     avcodec_free_context(&codec);
-    avformat_close_input(&format);
+    enzo_input_close(&input);
     enzo_atomic_store_micros(playback_micros, -1);
 
     return failed ? -1 : 0;

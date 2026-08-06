@@ -1,6 +1,5 @@
 #include "internal.h"
 
-#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/log.h>
 #include <libavutil/mathematics.h>
@@ -100,46 +99,4 @@ void enzo_set_ffmpeg_error(char *err, size_t err_len, const char *prefix, int co
 
 void enzo_suppress_ffmpeg_logs(void) {
     av_log_set_level(AV_LOG_QUIET);
-}
-
-int enzo_open_input(
-    const char *path,
-    AVFormatContext **format_out
-) {
-    AVDictionary *options = NULL;
-    // Some HLS providers disguise media segments with non-media extensions.
-    // Match mpv's compatibility behavior and let FFmpeg inspect their content.
-    int ret = av_dict_set(&options, "extension_picky", "0", 0);
-    if (ret >= 0) {
-        ret = avformat_open_input(format_out, path, NULL, &options);
-    }
-    av_dict_free(&options);
-    return ret;
-}
-
-int enzo_open_stream_probe(
-    const char *path,
-    AVFormatContext **format_out,
-    char *err,
-    size_t err_len
-) {
-    AVFormatContext *format = NULL;
-    int ret = enzo_open_input(path, &format);
-    if (ret < 0) {
-        enzo_set_ffmpeg_error(
-            err,
-            err_len,
-            "failed to open stream metadata input",
-            ret
-        );
-        return -1;
-    }
-    ret = avformat_find_stream_info(format, NULL);
-    if (ret < 0) {
-        enzo_set_ffmpeg_error(err, err_len, "failed to read stream metadata", ret);
-        avformat_close_input(&format);
-        return -1;
-    }
-    *format_out = format;
-    return 0;
 }

@@ -18,7 +18,7 @@
 #include <unistd.h>
 
 struct EnzoVideoDecoder {
-    AVFormatContext *format;
+    EnzoInput *input;
     AVCodecContext *codec;
     AVPacket *packet;
     AVFrame *frame;
@@ -314,14 +314,15 @@ int enzo_video_decoder_open(
     decoder->fallback_interval =
         1.0 / (isfinite(fps) && fps > 0.0 ? fps : 30.0);
 
-    int ret = enzo_open_input(path, &decoder->format);
+    int ret = enzo_input_open(path, NULL, &decoder->input);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open input", ret);
         enzo_video_decoder_close(decoder);
         return -1;
     }
+    AVFormatContext *format = enzo_input_format(decoder->input);
 
-    ret = avformat_find_stream_info(decoder->format, NULL);
+    ret = enzo_input_find_stream_info(decoder->input, NULL);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to read stream info", ret);
         enzo_video_decoder_close(decoder);
@@ -329,17 +330,17 @@ int enzo_video_decoder_open(
     }
 
     decoder->stream_index =
-        av_find_best_stream(decoder->format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+        av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (decoder->stream_index < 0) {
         enzo_set_error(err, err_len, "input has no video stream");
         enzo_video_decoder_close(decoder);
         return -1;
     }
 
-    AVStream *stream = decoder->format->streams[decoder->stream_index];
+    AVStream *stream = format->streams[decoder->stream_index];
     decoder->time_base = stream->time_base;
     decoder->timestamp_origin =
-        enzo_stream_timestamp_origin(decoder->format, stream);
+        enzo_stream_timestamp_origin(format, stream);
     const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec == NULL) {
         enzo_set_error(err, err_len, "failed to find video decoder");
@@ -893,7 +894,11 @@ int enzo_video_decoder_next(
             return 0;
         }
 
-        int ret = av_read_frame(decoder->format, decoder->packet);
+        int ret = enzo_input_read_frame(
+            decoder->input,
+            decoder->packet,
+            stop_flag
+        );
         if (ret == AVERROR_EOF) {
             decoder->flushing = 1;
             ret = avcodec_send_packet(decoder->codec, NULL);
@@ -902,6 +907,9 @@ int enzo_video_decoder_next(
                 return -1;
             }
             continue;
+        }
+        if (ret == AVERROR_EXIT && enzo_stop_requested(stop_flag)) {
+            return 0;
         }
         if (ret < 0) {
             enzo_set_ffmpeg_error(err, err_len, "failed to read video packet", ret);
@@ -927,6 +935,7 @@ int enzo_video_decoder_seek(
     EnzoVideoDecoder *decoder,
     double seconds,
     int exact,
+    const int *stop_flag,
     char *err,
     size_t err_len
 ) {
@@ -939,18 +948,23 @@ int enzo_video_decoder_seek(
         seconds = 0.0;
     }
 
-    AVStream *stream = decoder->format->streams[decoder->stream_index];
+    AVFormatContext *format = enzo_input_format(decoder->input);
+    AVStream *stream = format->streams[decoder->stream_index];
     int64_t timestamp = av_rescale_q(
         (int64_t)(seconds * (double)AV_TIME_BASE),
         AV_TIME_BASE_Q,
         stream->time_base
     ) + decoder->timestamp_origin;
-    int ret = av_seek_frame(
-        decoder->format,
+    int ret = enzo_input_seek_frame(
+        decoder->input,
         decoder->stream_index,
         timestamp,
-        AVSEEK_FLAG_BACKWARD
+        AVSEEK_FLAG_BACKWARD,
+        stop_flag
     );
+    if (ret == AVERROR_EXIT && enzo_stop_requested(stop_flag)) {
+        return 1;
+    }
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to seek video", ret);
         return -1;
@@ -988,8 +1002,6 @@ void enzo_video_decoder_close(EnzoVideoDecoder *decoder) {
     if (decoder->codec != NULL) {
         avcodec_free_context(&decoder->codec);
     }
-    if (decoder->format != NULL) {
-        avformat_close_input(&decoder->format);
-    }
+    enzo_input_close(&decoder->input);
     free(decoder);
 }

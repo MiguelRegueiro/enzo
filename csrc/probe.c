@@ -37,24 +37,25 @@ int enzo_probe_video(const char *path, EnzoVideoInfo *out, char *err, size_t err
         return -1;
     }
 
-    AVFormatContext *format = NULL;
-    int ret = enzo_open_input(path, &format);
+    EnzoInput *input = NULL;
+    int ret = enzo_input_open(path, NULL, &input);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open input", ret);
         return -1;
     }
+    AVFormatContext *format = enzo_input_format(input);
 
-    ret = avformat_find_stream_info(format, NULL);
+    ret = enzo_input_find_stream_info(input, NULL);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to read stream info", ret);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
     int video_index = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (video_index < 0) {
         enzo_set_error(err, err_len, "input has no video stream");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -83,7 +84,7 @@ int enzo_probe_video(const char *path, EnzoVideoInfo *out, char *err, size_t err
         out->hdr = ENZO_HDR_NONE;
     }
 
-    avformat_close_input(&format);
+    enzo_input_close(&input);
     return 0;
 }
 
@@ -117,10 +118,11 @@ int enzo_probe_audio_tracks(
     *tracks_out = NULL;
     *count_out = 0;
 
-    AVFormatContext *format = NULL;
-    if (enzo_open_stream_probe(path, &format, err, err_len) < 0) {
+    EnzoInput *input = NULL;
+    if (enzo_input_open_probe(path, NULL, &input, err, err_len) < 0) {
         return -1;
     }
+    AVFormatContext *format = enzo_input_format(input);
 
     size_t count = 0;
     for (unsigned int index = 0; index < format->nb_streams; index++) {
@@ -129,14 +131,14 @@ int enzo_probe_audio_tracks(
         }
     }
     if (count == 0) {
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return 0;
     }
 
     EnzoAudioTrackInfo *tracks = av_calloc(count, sizeof(*tracks));
     if (tracks == NULL) {
         enzo_set_error(err, err_len, "failed to allocate audio track metadata");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -165,7 +167,7 @@ int enzo_probe_audio_tracks(
         copy_track_text(track->title, stream_metadata(stream, "title"));
     }
 
-    avformat_close_input(&format);
+    enzo_input_close(&input);
     *tracks_out = tracks;
     *count_out = count;
     return 0;
@@ -190,10 +192,11 @@ int enzo_probe_subtitle_streams(
     *streams_out = NULL;
     *count_out = 0;
 
-    AVFormatContext *format = NULL;
-    if (enzo_open_stream_probe(path, &format, err, err_len) < 0) {
+    EnzoInput *input = NULL;
+    if (enzo_input_open_probe(path, NULL, &input, err, err_len) < 0) {
         return -1;
     }
+    AVFormatContext *format = enzo_input_format(input);
 
     size_t count = 0;
     for (unsigned int index = 0; index < format->nb_streams; index++) {
@@ -202,14 +205,14 @@ int enzo_probe_subtitle_streams(
         }
     }
     if (count == 0) {
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return 0;
     }
 
     EnzoSubtitleStreamInfo *streams = av_calloc(count, sizeof(*streams));
     if (streams == NULL) {
         enzo_set_error(err, err_len, "failed to allocate subtitle stream metadata");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -231,7 +234,7 @@ int enzo_probe_subtitle_streams(
         subtitle_index++;
     }
 
-    avformat_close_input(&format);
+    enzo_input_close(&input);
     *streams_out = streams;
     *count_out = count;
     return 0;

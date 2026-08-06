@@ -22,10 +22,7 @@ pub(crate) fn media_candidates_from_text(text: &str) -> Vec<PathBuf> {
 }
 
 pub(crate) fn is_remote_url_text(text: &str) -> bool {
-    let Some((scheme, _)) = text.split_once("://") else {
-        return false;
-    };
-    !scheme.eq_ignore_ascii_case("file") && is_url_scheme(scheme)
+    text.starts_with("http://") || text.starts_with("https://")
 }
 
 pub(crate) fn media_path_from_argument(path: PathBuf) -> Result<PathBuf> {
@@ -73,16 +70,21 @@ fn validate_media_path(path: &Path) -> Result<()> {
     if is_remote_url_text(&text) {
         return Ok(());
     }
-    if !path.exists() {
+    if path.exists() {
+        if !path.is_file() {
+            bail!("video path is not a file: {}", path.display());
+        }
+        return Ok(());
+    }
+    if let Some(scheme) = url_scheme(&text) {
         bail!(
-            "video does not exist: {}. If the path contains spaces, quote it.",
-            path.display()
+            "unsupported media URL scheme `{scheme}`; only http:// and https:// URLs are supported"
         );
     }
-    if !path.is_file() {
-        bail!("video path is not a file: {}", path.display());
-    }
-    Ok(())
+    bail!(
+        "video does not exist: {}. If the path contains spaces, quote it.",
+        path.display()
+    )
 }
 
 fn push_candidate(candidates: &mut Vec<PathBuf>, text: &str) {
@@ -203,10 +205,13 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn is_url_scheme(scheme: &str) -> bool {
+fn url_scheme(text: &str) -> Option<&str> {
+    let (scheme, _) = text.split_once(':')?;
     let mut chars = scheme.chars();
-    chars.next().is_some_and(|ch| ch.is_ascii_alphabetic())
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+    chars.next()?.is_ascii_alphabetic().then_some(())?;
+    chars
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+        .then_some(scheme)
 }
 
 fn dedupe_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -282,5 +287,47 @@ mod tests {
             media_candidates_from_text("https://example.com/video.mp4").first(),
             Some(&PathBuf::from("https://example.com/video.mp4"))
         );
+    }
+
+    #[test]
+    fn only_http_and_https_are_remote_media_urls() {
+        assert!(is_remote_url_text("http://example.com/video.mp4"));
+        assert!(is_remote_url_text("https://example.com/video.mp4"));
+        assert!(!is_remote_url_text("ftp://example.com/video.mp4"));
+        assert!(!is_remote_url_text("concat:/tmp/one.ts|/tmp/two.ts"));
+        assert!(!is_remote_url_text("file:///tmp/video.mp4"));
+    }
+
+    #[test]
+    fn rejects_unsupported_media_protocols() {
+        for input in [
+            "ftp://example.com/video.mp4",
+            "concat:/tmp/one.ts|/tmp/two.ts",
+            "subfile:/tmp/video.mp4",
+            "lavfi:testsrc",
+        ] {
+            let error = media_path_from_argument(PathBuf::from(input))
+                .expect_err("unsafe protocol should be rejected");
+            assert!(
+                error.to_string().contains("unsupported media URL scheme"),
+                "unexpected error for {input}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn existing_local_filename_with_colon_remains_valid() {
+        let path = std::env::temp_dir().join(format!(
+            "enzo-media-input-colon-test-{}:video.mkv",
+            std::process::id()
+        ));
+        std::fs::write(&path, "video").expect("test file should be written");
+
+        assert_eq!(
+            media_path_from_argument(path.clone()).expect("existing file should be accepted"),
+            path
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -149,13 +149,14 @@ impl NativeVideoDecoder {
         }
     }
 
-    fn seek(&mut self, position: Duration, exact: bool) -> Result<()> {
+    fn seek(&mut self, position: Duration, exact: bool, stop: &AtomicI32) -> Result<()> {
         let mut error = ErrorBuffer::new();
         let status = unsafe {
             enzo_video_decoder_seek(
                 self.0,
                 position.as_secs_f64(),
                 c_int::from(exact),
+                stop.as_ptr(),
                 error.as_mut_ptr(),
                 error.len(),
             )
@@ -434,6 +435,7 @@ fn run_video_decode_thread(
                 &latest_frame,
                 request.position,
                 request.exact,
+                &stop,
                 &mut started_at,
                 &mut fallback_pts,
             ) {
@@ -472,6 +474,7 @@ fn run_video_decode_thread(
                         &latest_frame,
                         request.position,
                         request.exact,
+                        &stop,
                         &mut started_at,
                         &mut fallback_pts,
                     ) {
@@ -565,6 +568,7 @@ fn run_video_decode_thread(
                             &latest_frame,
                             request.position,
                             request.exact,
+                            &stop,
                             &mut started_at,
                             &mut fallback_pts,
                         ) {
@@ -620,6 +624,7 @@ fn run_video_decode_thread(
                 &latest_frame,
                 request.position,
                 request.exact,
+                &stop,
                 &mut started_at,
                 &mut fallback_pts,
             ) {
@@ -730,10 +735,11 @@ fn seek_video_thread(
     latest_frame: &Arc<Mutex<LatestFrame>>,
     position: Duration,
     exact: bool,
+    stop: &AtomicI32,
     started_at: &mut Instant,
     fallback_pts: &mut f64,
 ) -> Result<()> {
-    native.seek(position, exact)?;
+    native.seek(position, exact, stop)?;
     reset_frame_state(latest_frame);
     *started_at = Instant::now() - position;
     *fallback_pts = position.as_secs_f64();

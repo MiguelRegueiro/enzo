@@ -7,6 +7,8 @@ mod audio;
 mod ffi;
 mod fingerprint;
 mod native;
+#[cfg(test)]
+mod network_tests;
 mod probe;
 mod subtitle;
 mod video;

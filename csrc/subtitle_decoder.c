@@ -363,10 +363,11 @@ int enzo_decode_subtitle_stream(
     track_out->canvas_width = 0;
     track_out->canvas_height = 0;
 
-    AVFormatContext *format = NULL;
-    if (enzo_open_stream_probe(path, &format, err, err_len) < 0) {
+    EnzoInput *input = NULL;
+    if (enzo_input_open_probe(path, NULL, &input, err, err_len) < 0) {
         return -1;
     }
+    AVFormatContext *format = enzo_input_format(input);
 
     int stream_index = -1;
     int subtitle_index = 0;
@@ -382,7 +383,7 @@ int enzo_decode_subtitle_stream(
     }
     if (stream_index < 0) {
         enzo_set_error(err, err_len, "selected subtitle stream is not available");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -392,7 +393,7 @@ int enzo_decode_subtitle_stream(
     if (descriptor == NULL ||
         (descriptor->props & (AV_CODEC_PROP_TEXT_SUB | AV_CODEC_PROP_BITMAP_SUB)) == 0) {
         enzo_set_error(err, err_len, "selected subtitle stream is not supported");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
     for (unsigned int index = 0; index < format->nb_streams; index++) {
@@ -408,13 +409,13 @@ int enzo_decode_subtitle_stream(
     const AVCodec *codec = avcodec_find_decoder(stream->codecpar->codec_id);
     if (codec == NULL) {
         enzo_set_error(err, err_len, "failed to find subtitle decoder");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
     AVCodecContext *codec_context = avcodec_alloc_context3(codec);
     if (codec_context == NULL) {
         enzo_set_error(err, err_len, "failed to allocate subtitle decoder");
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -422,7 +423,7 @@ int enzo_decode_subtitle_stream(
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to copy subtitle codec parameters", ret);
         avcodec_free_context(&codec_context);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
     codec_context->pkt_timebase = stream->time_base;
@@ -430,7 +431,7 @@ int enzo_decode_subtitle_stream(
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open subtitle decoder", ret);
         avcodec_free_context(&codec_context);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
@@ -438,14 +439,14 @@ int enzo_decode_subtitle_stream(
     if (packet == NULL) {
         enzo_set_error(err, err_len, "failed to allocate subtitle packet");
         avcodec_free_context(&codec_context);
-        avformat_close_input(&format);
+        enzo_input_close(&input);
         return -1;
     }
 
     int status = 0;
     size_t open_bitmap_start = SIZE_MAX;
     int64_t timestamp_origin = enzo_stream_timestamp_origin(format, stream);
-    while ((ret = av_read_frame(format, packet)) >= 0) {
+    while ((ret = enzo_input_read_frame(input, packet, NULL)) >= 0) {
         if (packet->stream_index == stream_index &&
             decode_subtitle_packet(
                 codec_context,
@@ -495,7 +496,7 @@ int enzo_decode_subtitle_stream(
 
     av_packet_free(&packet);
     avcodec_free_context(&codec_context);
-    avformat_close_input(&format);
+    enzo_input_close(&input);
     if (status < 0) {
         enzo_decoded_subtitle_track_free(track_out);
     }

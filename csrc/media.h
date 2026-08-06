@@ -152,6 +152,7 @@ int enzo_video_decoder_seek(
     EnzoVideoDecoder *decoder,
     double seconds,
     int exact,
+    const int *stop_flag,
     char *err,
     size_t err_len
 );
