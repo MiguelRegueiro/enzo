@@ -67,6 +67,48 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release --all-features
 
+      - name: Verify crate package
+        run: cargo package --locked
+
+  ubuntu-arm64:
+    name: Ubuntu ARM64 / test and release
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      CFLAGS: -Werror
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential \
+            ffmpeg \
+            libavcodec-dev \
+            libavfilter-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libfreetype6-dev \
+            libfribidi-dev \
+            libharfbuzz-dev \
+            libpulse-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config
+
+      - name: Run tests
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Build release binary
+        run: cargo build --locked --release --all-features
+
   freebsd:
     name: FreeBSD / test and release
     runs-on: ubuntu-24.04
