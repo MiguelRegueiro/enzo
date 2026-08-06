@@ -10,7 +10,7 @@ Terminal video player with a graphical interface.
 - **Interface** — timeline, playback controls, track menus, media information, and help
 - **Audio** — synchronized playback with volume, mute, and track selection
 - **Subtitles** — external and embedded text or bitmap tracks with automatic sidecar detection
-- **Resume** — restores position and selected tracks for local seekable files
+- **Resume** — restores position and selected tracks for seekable media
 - **Input** — mouse and keyboard controls, plus a drop-target launcher
 
 ## Requirements

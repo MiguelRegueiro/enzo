@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{AudioPlayer, probe_video};
+use super::{AudioPlayer, VideoDecoder, probe_video};
 
 type Routes = HashMap<String, (String, Vec<u8>)>;
 
@@ -146,14 +146,14 @@ fn request_path(target: &str) -> Option<&str> {
     )
 }
 
-fn generated_mpeg_ts(label: &str) -> Option<(PathBuf, Vec<u8>)> {
+fn generated_mpeg_ts(label: &str, duration_secs: u64) -> Option<(PathBuf, Vec<u8>)> {
     if Command::new("ffmpeg").arg("-version").output().is_err() {
         return None;
     }
     let path = temp_path(label).with_extension("ts");
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
-        .arg("color=size=16x16:duration=1:rate=25")
+        .arg(format!("color=size=16x16:duration={duration_secs}:rate=25"))
         .args(["-c:v", "mpeg2video", "-f", "mpegts"])
         .arg(&path)
         .status()
@@ -217,7 +217,7 @@ fn temp_path(label: &str) -> PathBuf {
 
 #[test]
 fn remote_hls_allows_cross_origin_nonstandard_segments() {
-    let Some((segment_path, segment)) = generated_mpeg_ts("remote-hls-segment") else {
+    let Some((segment_path, segment)) = generated_mpeg_ts("remote-hls-segment", 8) else {
         return;
     };
     let segment_server = TestHttpServer::spawn(HashMap::from([(
@@ -226,7 +226,7 @@ fn remote_hls_allows_cross_origin_nonstandard_segments() {
     )]));
     let segment_url = segment_server.url("/segment.xls");
     let playlist = format!(
-        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1,\n{segment_url}\n#EXT-X-ENDLIST\n"
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:8\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:8,\n{segment_url}\n#EXT-X-ENDLIST\n"
     );
     let playlist_server = TestHttpServer::spawn(HashMap::from([(
         "/index.m3u8".to_string(),
@@ -239,13 +239,65 @@ fn remote_hls_allows_cross_origin_nonstandard_segments() {
     let info = probe_video(Path::new(&playlist_server.url("/index.m3u8")))
         .expect("cross-origin HLS segment should be allowed");
     assert_eq!((info.width, info.height), (16, 16));
+    assert!(info.seekable, "finite HLS media should be seekable");
+
+    let mut decoder = VideoDecoder::spawn_at(
+        Path::new(&playlist_server.url("/index.m3u8")),
+        16,
+        16,
+        info.fps,
+        Duration::from_secs(6),
+        true,
+    )
+    .expect("finite HLS media should start at a saved position");
+    let generation = decoder.seek_generation();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let pts = loop {
+        if let Some(pts) = decoder.seek_frame(generation) {
+            break pts;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "finite HLS seek frame should become ready"
+        );
+        thread::sleep(Duration::from_millis(2));
+    };
+    assert!(pts >= Duration::from_millis(5_950));
+    decoder.stop().expect("video decoder should stop");
+
+    let _ = std::fs::remove_file(segment_path);
+}
+
+#[test]
+fn remote_live_hls_is_not_seekable() {
+    let Some((segment_path, segment)) = generated_mpeg_ts("remote-live-hls-segment", 1) else {
+        return;
+    };
+    let playlist = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1,\nsegment.ts\n";
+    let server = TestHttpServer::spawn(HashMap::from([
+        (
+            "/index.m3u8".to_string(),
+            (
+                "application/vnd.apple.mpegurl".to_string(),
+                playlist.to_vec(),
+            ),
+        ),
+        (
+            "/segment.ts".to_string(),
+            ("video/mp2t".to_string(), segment),
+        ),
+    ]));
+
+    let info =
+        probe_video(Path::new(&server.url("/index.m3u8"))).expect("live HLS media should open");
+    assert!(!info.seekable, "live HLS media should not be seekable");
 
     let _ = std::fs::remove_file(segment_path);
 }
 
 #[test]
 fn remote_hls_cannot_open_local_file_segments() {
-    let Some((segment_path, _)) = generated_mpeg_ts("blocked-local-hls-segment") else {
+    let Some((segment_path, _)) = generated_mpeg_ts("blocked-local-hls-segment", 1) else {
         return;
     };
     let local_segment_url = format!("file://{}", segment_path.display());
@@ -268,7 +320,7 @@ fn remote_hls_cannot_open_local_file_segments() {
 
 #[test]
 fn native_input_rejects_unsafe_top_level_protocols() {
-    let Some((segment_path, _)) = generated_mpeg_ts("blocked-top-level-protocol") else {
+    let Some((segment_path, _)) = generated_mpeg_ts("blocked-top-level-protocol", 1) else {
         return;
     };
     for input in [

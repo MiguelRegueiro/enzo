@@ -68,8 +68,7 @@ int enzo_probe_video(const char *path, EnzoVideoInfo *out, char *err, size_t err
         av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0) >= 0;
     out->seekable =
         format->duration > 0 &&
-        format->pb != NULL &&
-        (format->pb->seekable & AVIO_SEEKABLE_NORMAL) != 0;
+        (format->ctx_flags & AVFMTCTX_UNSEEKABLE) == 0;
     copy_info_text(out->codec, avcodec_get_name(video->codecpar->codec_id));
     copy_info_text(
         out->profile,
