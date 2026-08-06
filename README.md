@@ -6,7 +6,7 @@ Terminal video player with a graphical interface.
 
 ## Features
 
-- **Playback** — local files and URLs rendered through Kitty graphics
+- **Playback** — local files and HTTP(S) URLs rendered through Kitty graphics
 - **Interface** — timeline, playback controls, track menus, media information, and help
 - **Audio** — synchronized playback with volume, mute, and track selection
 - **Subtitles** — external and embedded text or bitmap tracks with automatic sidecar detection
@@ -46,7 +46,7 @@ Install Rust 1.96+ and the native development headers for the libraries above, t
 cargo run --release
 ```
 
-Pass a file path or URL to start playback directly:
+Pass a file path or HTTP(S) URL to start playback directly:
 
 ```sh
 cargo run --release -- /path/to/video.mp4

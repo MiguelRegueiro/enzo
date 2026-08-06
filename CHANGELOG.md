@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - HLS playback with nonstandard segment extensions.
 
+### Security
+
+- Restricted remote media and nested playlist I/O to read-only HTTP(S), with local-file isolation and bounded FFmpeg operations.
+
 ## [1.0.0] - 2026-08-03
 
 ### Added

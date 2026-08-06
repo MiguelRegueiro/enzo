@@ -20,8 +20,8 @@ sanitizer command below.
 
 ## Modules
 
-- `common.c` — error reporting, cross-thread control values, timestamps, and
-  shared FFmpeg input setup.
+- `common.c` — error reporting, cross-thread control values, and timestamps.
+- `input.c` — owned FFmpeg inputs, nested protocol policy, and I/O deadlines.
 - `fingerprint.c` — sampled SHA-256 fingerprints used by resume records.
 - `probe.c` — video, audio-track, and subtitle-stream metadata.
 - `subtitle_decoder.c` — embedded text/bitmap subtitle decoding and cue ownership.

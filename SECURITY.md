@@ -54,6 +54,13 @@ Issues that exist entirely in an upstream dependency, terminal emulator, or
 operating system should normally be reported upstream. If you are unsure
 whether Enzo contributes to the issue, report it privately here first.
 
+## Remote Media Policy
+
+Enzo accepts HTTP and HTTPS media URLs. Remote playlists may follow HTTP(S)
+references across hosts and use FFmpeg's `data` and HTTP(S) `crypto` wrappers,
+but they cannot open local files or arbitrary FFmpeg protocols. All media I/O
+is read-only and each blocking FFmpeg operation has a 60-second deadline.
+
 ## Dependency Advisories
 
 Rust and native dependency advisories are reviewed during maintenance and
