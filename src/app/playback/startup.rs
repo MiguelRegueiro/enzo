@@ -16,6 +16,7 @@ use crate::{
 
 use super::super::playlist::{Playlist, PlaylistControls};
 use super::{
+    PlaybackOptions,
     carryover::PlaybackCarryover,
     engine::PlaybackEngine,
     layout::terminal_target_and_canvas,
@@ -34,7 +35,7 @@ use super::{
 pub(crate) fn play(
     path: PathBuf,
     sub_file: Option<&Path>,
-    resume_enabled: bool,
+    options: PlaybackOptions,
     font_system: &FontSystem,
 ) -> Result<()> {
     let mut playlist = Playlist::from_opened_path(path);
@@ -50,11 +51,11 @@ pub(crate) fn play(
             controls,
             carryover,
             entry_sub_file,
-            resume_enabled,
+            options.resume_enabled,
             font_system,
         )?;
         carryover = result.carryover;
-        let super::session::PlaybackOutcome::Switch(step) = result.outcome else {
+        let Some(step) = next_playlist_step(result.outcome, controls, options.autoplay_next) else {
             return Ok(());
         };
         if playlist.step(step).is_none() {
@@ -166,4 +167,62 @@ fn play_current(
         seeking,
     })
     .run()
+}
+
+fn next_playlist_step(
+    outcome: super::session::PlaybackOutcome,
+    controls: PlaylistControls,
+    autoplay_next: bool,
+) -> Option<super::super::playlist::PlaylistStep> {
+    match outcome {
+        super::session::PlaybackOutcome::Switch(step) => Some(step),
+        super::session::PlaybackOutcome::Completed if autoplay_next && controls.next_available => {
+            Some(super::super::playlist::PlaylistStep::Next)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::playback::session::PlaybackOutcome;
+    use crate::app::playlist::PlaylistStep;
+
+    #[test]
+    fn completion_autoplays_next_only_when_enabled_and_available() {
+        let middle = PlaylistControls {
+            previous_available: true,
+            next_available: true,
+        };
+        let last = PlaylistControls {
+            previous_available: true,
+            next_available: false,
+        };
+
+        assert_eq!(
+            next_playlist_step(PlaybackOutcome::Completed, middle, true),
+            Some(PlaylistStep::Next)
+        );
+        assert_eq!(
+            next_playlist_step(PlaybackOutcome::Completed, middle, false),
+            None
+        );
+        assert_eq!(
+            next_playlist_step(PlaybackOutcome::Completed, last, true),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_playlist_switch_ignores_autoplay_policy() {
+        assert_eq!(
+            next_playlist_step(
+                PlaybackOutcome::Switch(PlaylistStep::Previous),
+                PlaylistControls::default(),
+                false,
+            ),
+            Some(PlaylistStep::Previous)
+        );
+    }
 }

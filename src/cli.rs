@@ -11,12 +11,13 @@ Usage:
   enzo [OPTIONS] [VIDEO-OR-URL]
 
 Options:
-  -h, --help          Print help
-  -V, --version       Print version
-      --force         Bypass Kitty terminal detection
-      --sub-file PATH Load an external subtitle file
-      --no-resume     Disable reading and writing resume data
-      --clear-resume  Remove saved playback state and exit
+  -h, --help              Print help
+  -V, --version           Print version
+      --force             Bypass Kitty terminal detection
+      --sub-file PATH     Load an external subtitle file
+      --no-resume         Disable reading and writing resume data
+      --no-autoplay-next  Do not play next video when playback ends
+      --clear-resume      Remove saved playback state and exit
 ";
 
 pub(crate) const VERSION: &str = concat!("enzo ", env!("CARGO_PKG_VERSION"));
@@ -32,6 +33,7 @@ pub(crate) struct Options {
     pub(crate) force: bool,
     pub(crate) sub_file: Option<PathBuf>,
     pub(crate) resume_enabled: bool,
+    pub(crate) autoplay_next: bool,
     pub(crate) clear_resume: bool,
 }
 
@@ -46,6 +48,7 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     let mut force = false;
     let mut sub_file = None::<PathBuf>;
     let mut resume_enabled = true;
+    let mut autoplay_next = true;
     let mut clear_resume = false;
     let mut positionals = Vec::<OsString>::new();
     let mut args = args.into_iter();
@@ -56,6 +59,10 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
         }
         if arg == "--no-resume" {
             resume_enabled = false;
+            continue;
+        }
+        if arg == "--no-autoplay-next" {
+            autoplay_next = false;
             continue;
         }
         if arg == "--clear-resume" {
@@ -98,6 +105,7 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
         force,
         sub_file,
         resume_enabled,
+        autoplay_next,
         clear_resume,
     }))
 }
@@ -144,6 +152,7 @@ mod tests {
         assert!(!config.force);
         assert_eq!(config.sub_file, None);
         assert!(config.resume_enabled);
+        assert!(config.autoplay_next);
         assert!(!config.clear_resume);
     }
 
@@ -156,6 +165,14 @@ mod tests {
         let clear = run_options(vec![OsString::from("--clear-resume")]);
         assert!(clear.clear_resume);
         assert!(clear.path.is_none());
+    }
+
+    #[test]
+    fn parse_args_supports_autoplay_controls() {
+        let config = run_options(vec![OsString::from("--no-autoplay-next")]);
+
+        assert!(!config.autoplay_next);
+        assert!(config.resume_enabled);
     }
 
     #[test]

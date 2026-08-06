@@ -65,6 +65,7 @@ Flags:
 - `--force` — bypass Kitty terminal detection
 - `--sub-file <path>` — load an external SRT, WebVTT, SSA, or ASS subtitle file
 - `--no-resume` — play without reading or writing resume data
+- `--no-autoplay-next` — stop instead of playing the next video when playback ends
 - `--clear-resume` — remove saved resume data and exit
 
 <details>

@@ -18,13 +18,13 @@ use crate::{
 };
 
 use super::{
-    playback,
+    playback::{self, PlaybackOptions},
     terminal_input::{DropCommand, read_drop_events},
 };
 
 pub(super) fn run(
     sub_file: Option<&Path>,
-    resume_enabled: bool,
+    playback_options: PlaybackOptions,
     font_system: &FontSystem,
 ) -> Result<()> {
     let _terminal = TerminalGuard::enter()?;
@@ -53,7 +53,7 @@ pub(super) fn run(
                 clear_screen_and_images(&mut out)?;
                 out.flush()?;
                 drop(out);
-                return playback::play(path, sub_file, resume_enabled, font_system);
+                return playback::play(path, sub_file, playback_options, font_system);
             }
             Err(error) => {
                 status = Some(error.to_string());

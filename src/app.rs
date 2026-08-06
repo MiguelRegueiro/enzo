@@ -29,19 +29,20 @@ pub(crate) fn run(options: Options) -> Result<()> {
         enable_tmux_passthrough();
     }
 
+    let playback_options = playback::PlaybackOptions {
+        resume_enabled: options.resume_enabled,
+        autoplay_next: options.autoplay_next,
+    };
+
     if let Some(path) = options.path {
         let _terminal = TerminalGuard::enter()?;
         playback::play(
             path,
             options.sub_file.as_deref(),
-            options.resume_enabled,
+            playback_options,
             &font_system,
         )
     } else {
-        launcher::run(
-            options.sub_file.as_deref(),
-            options.resume_enabled,
-            &font_system,
-        )
+        launcher::run(options.sub_file.as_deref(), playback_options, &font_system)
     }
 }
