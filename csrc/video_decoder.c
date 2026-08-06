@@ -4,6 +4,7 @@
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
+#include <libavutil/avstring.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/mem.h>
@@ -16,6 +17,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#define ENZO_VIDEO_SEEK_TOLERANCE_SECONDS 0.050
+#define ENZO_HLS_SEEK_MIN_PREROLL_SECONDS 1.0
+#define ENZO_HLS_SEEK_MAX_RETRIES 8
+#define ENZO_RECEIVE_RETRY_SEEK 4
 
 struct EnzoVideoDecoder {
     EnzoInput *input;
@@ -39,12 +45,31 @@ struct EnzoVideoDecoder {
     int64_t frame_index;
     double fallback_interval;
     int has_seek_target;
+    int recover_hls_seek;
+    int hls_seek_retries;
+    double hls_seek_preroll;
     double seek_target;
     int filter_src_width;
     int filter_src_height;
     enum AVPixelFormat filter_src_format;
     int hw_filter_disabled;
 };
+
+static int seek_video_decoder_at(
+    EnzoVideoDecoder *decoder,
+    double seconds,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+);
+
+static int retry_hls_video_seek(
+    EnzoVideoDecoder *decoder,
+    double decoded_pts,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+);
 
 static int hwaccel_disabled(void) {
     const char *disabled = getenv("ENZO_DISABLE_HWACCEL");
@@ -808,7 +833,22 @@ static int receive_video_frame(
         }
         decoder->frame_index++;
 
-        if (decoder->has_seek_target && *pts_out + 0.050 < decoder->seek_target) {
+        if (decoder->recover_hls_seek) {
+            double recovery_tolerance = fmax(
+                ENZO_VIDEO_SEEK_TOLERANCE_SECONDS,
+                decoder->fallback_interval
+            );
+            if (*pts_out > decoder->seek_target + recovery_tolerance &&
+                decoder->hls_seek_retries < ENZO_HLS_SEEK_MAX_RETRIES &&
+                decoder->hls_seek_preroll < decoder->seek_target) {
+                av_frame_unref(decoder->frame);
+                return ENZO_RECEIVE_RETRY_SEEK;
+            }
+            decoder->recover_hls_seek = 0;
+        }
+
+        if (decoder->has_seek_target &&
+            *pts_out + ENZO_VIDEO_SEEK_TOLERANCE_SECONDS < decoder->seek_target) {
             av_frame_unref(decoder->frame);
             return 2;
         }
@@ -883,6 +923,25 @@ int enzo_video_decoder_next(
         }
         int status =
             receive_video_frame(decoder, rgb_out, pts_out, drop_before_pts, err, err_len);
+        if (status == ENZO_RECEIVE_RETRY_SEEK) {
+            if (enzo_seek_generation_value(seek_generation) != expected_seek_generation) {
+                return 2;
+            }
+            int retry_status = retry_hls_video_seek(
+                decoder,
+                *pts_out,
+                stop_flag,
+                err,
+                err_len
+            );
+            if (retry_status < 0) {
+                return -1;
+            }
+            if (retry_status > 0) {
+                return 0;
+            }
+            continue;
+        }
         if (status == 1 || status == 0 || status == -1 || status == 3) {
             return status;
         }
@@ -931,23 +990,13 @@ int enzo_video_decoder_next(
     return 0;
 }
 
-int enzo_video_decoder_seek(
+static int seek_video_decoder_at(
     EnzoVideoDecoder *decoder,
     double seconds,
-    int exact,
     const int *stop_flag,
     char *err,
     size_t err_len
 ) {
-    if (decoder == NULL) {
-        enzo_set_error(err, err_len, "invalid video seek arguments");
-        return -1;
-    }
-
-    if (!isfinite(seconds) || seconds < 0.0) {
-        seconds = 0.0;
-    }
-
     AVFormatContext *format = enzo_input_format(decoder->input);
     AVStream *stream = format->streams[decoder->stream_index];
     int64_t timestamp = av_rescale_q(
@@ -974,8 +1023,75 @@ int enzo_video_decoder_seek(
     close_hw_filter(decoder);
     decoder->flushing = 0;
     decoder->frame_index = (int64_t)(seconds / decoder->fallback_interval);
+    return 0;
+}
+
+static int retry_hls_video_seek(
+    EnzoVideoDecoder *decoder,
+    double decoded_pts,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+) {
+    double overshoot = decoded_pts - decoder->seek_target;
+    /*
+     * Segment duration is not exposed by the public demuxer API. Grow the
+     * preroll until the requested segment's keyframe survives demuxing.
+     */
+    double preroll = decoder->hls_seek_preroll > 0.0
+        ? decoder->hls_seek_preroll * 2.0
+        : fmax(ENZO_HLS_SEEK_MIN_PREROLL_SECONDS, overshoot * 2.0);
+    decoder->hls_seek_preroll = fmin(preroll, decoder->seek_target);
+    decoder->hls_seek_retries++;
+
+    int ret = seek_video_decoder_at(
+        decoder,
+        decoder->seek_target - decoder->hls_seek_preroll,
+        stop_flag,
+        err,
+        err_len
+    );
+    if (ret == 0) {
+        decoder->recover_hls_seek = 1;
+    }
+    return ret;
+}
+
+int enzo_video_decoder_seek(
+    EnzoVideoDecoder *decoder,
+    double seconds,
+    int exact,
+    const int *stop_flag,
+    char *err,
+    size_t err_len
+) {
+    if (decoder == NULL) {
+        enzo_set_error(err, err_len, "invalid video seek arguments");
+        return -1;
+    }
+
+    if (!isfinite(seconds) || seconds < 0.0) {
+        seconds = 0.0;
+    }
+
+    int ret = seek_video_decoder_at(
+        decoder,
+        seconds,
+        stop_flag,
+        err,
+        err_len
+    );
+    if (ret != 0) {
+        return ret;
+    }
+
+    AVFormatContext *format = enzo_input_format(decoder->input);
     decoder->seek_target = seconds;
     decoder->has_seek_target = exact != 0;
+    decoder->recover_hls_seek = seconds > 0.0 && format->iformat != NULL &&
+        av_match_name("hls", format->iformat->name);
+    decoder->hls_seek_retries = 0;
+    decoder->hls_seek_preroll = 0.0;
     return 0;
 }
 
