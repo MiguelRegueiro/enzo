@@ -21,8 +21,9 @@ mod view;
 
 pub(super) use startup::play;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PlaybackOptions {
     pub(super) resume_enabled: bool,
     pub(super) autoplay_next: bool,
+    pub(super) force_media_title: Option<std::sync::Arc<str>>,
 }

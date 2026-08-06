@@ -28,7 +28,7 @@ use super::{
     session::{PlaybackSession, PlaybackSessionInit},
     subtitles::{SubtitleCatalog, initial_external_subtitle_paths, load_initial_subtitle_tracks},
     tracks::AudioCatalog,
-    ui::{PlaybackUi, media_title},
+    ui::{PlaybackUi, resolve_media_title},
     view::PlaybackView,
 };
 
@@ -46,11 +46,17 @@ pub(crate) fn play(
         let entry_sub_file = (playlist.current() == initial_path)
             .then_some(sub_file)
             .flatten();
+        let entry_media_title = force_media_title_for_entry(
+            playlist.current(),
+            &initial_path,
+            options.force_media_title.as_deref(),
+        );
         let result = play_current(
             playlist.current().to_path_buf(),
             controls,
             carryover,
             entry_sub_file,
+            entry_media_title,
             options.resume_enabled,
             font_system,
         )?;
@@ -69,6 +75,7 @@ fn play_current(
     playlist_controls: PlaylistControls,
     carryover: PlaybackCarryover,
     sub_file: Option<&Path>,
+    force_media_title: Option<&str>,
     resume_enabled: bool,
     font_system: &FontSystem,
 ) -> Result<super::session::PlaybackSessionResult> {
@@ -138,7 +145,7 @@ fn play_current(
             .map(|_| PlaybackUi::status("RESUME STATE UNAVAILABLE", engine.started_at))
     };
     let ui = PlaybackUi::new(
-        media_title(&path),
+        resolve_media_title(&path, force_media_title),
         media_info,
         status_message,
         carryover.media_info_pinned,
@@ -183,6 +190,14 @@ fn next_playlist_step(
     }
 }
 
+fn force_media_title_for_entry<'a>(
+    current: &Path,
+    initial: &Path,
+    forced: Option<&'a str>,
+) -> Option<&'a str> {
+    (current == initial).then_some(forced).flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,6 +238,21 @@ mod tests {
                 false,
             ),
             Some(PlaylistStep::Previous)
+        );
+    }
+
+    #[test]
+    fn forced_media_title_only_applies_to_the_initial_playlist_entry() {
+        let initial = Path::new("/videos/Episode 1.mkv");
+        let sibling = Path::new("/videos/Episode 2.mkv");
+
+        assert_eq!(
+            force_media_title_for_entry(initial, initial, Some("Custom title")),
+            Some("Custom title")
+        );
+        assert_eq!(
+            force_media_title_for_entry(sibling, initial, Some("Custom title")),
+            None
         );
     }
 }

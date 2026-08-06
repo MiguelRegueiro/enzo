@@ -11,13 +11,14 @@ Usage:
   enzo [OPTIONS] [VIDEO-OR-URL]
 
 Options:
-  -h, --help              Print help
-  -V, --version           Print version
-      --force             Bypass Kitty terminal detection
-      --sub-file PATH     Load an external subtitle file
-      --no-resume         Disable reading and writing resume data
-      --no-autoplay-next  Do not play next video when playback ends
-      --clear-resume      Remove saved playback state and exit
+  -h, --help                     Print help
+  -V, --version                  Print version
+      --force                    Bypass Kitty terminal detection
+      --force-media-title TITLE  Override the displayed title
+      --sub-file PATH            Load an external subtitle file
+      --no-resume                Disable reading and writing resume data
+      --no-autoplay-next         Do not play next video when playback ends
+      --clear-resume             Remove saved playback state and exit
 ";
 
 pub(crate) const VERSION: &str = concat!("enzo ", env!("CARGO_PKG_VERSION"));
@@ -31,6 +32,7 @@ pub(crate) enum Action {
 pub(crate) struct Options {
     pub(crate) path: Option<PathBuf>,
     pub(crate) force: bool,
+    pub(crate) force_media_title: Option<String>,
     pub(crate) sub_file: Option<PathBuf>,
     pub(crate) resume_enabled: bool,
     pub(crate) autoplay_next: bool,
@@ -46,6 +48,7 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
         return Ok(Action::Version);
     }
     let mut force = false;
+    let mut force_media_title = None::<String>;
     let mut sub_file = None::<PathBuf>;
     let mut resume_enabled = true;
     let mut autoplay_next = true;
@@ -55,6 +58,13 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     while let Some(arg) = args.next() {
         if arg == "--force" {
             force = true;
+            continue;
+        }
+        if arg == "--force-media-title" {
+            let value = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--force-media-title requires a title"))?;
+            force_media_title = Some(value.to_string_lossy().into_owned());
             continue;
         }
         if arg == "--no-resume" {
@@ -79,6 +89,10 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
             continue;
         }
         let arg_text = arg.to_string_lossy();
+        if let Some(value) = arg_text.strip_prefix("--force-media-title=") {
+            force_media_title = Some(value.to_owned());
+            continue;
+        }
         if let Some(value) = arg_text.strip_prefix("--sub-file=") {
             let path = PathBuf::from(value);
             validate_subtitle_path(&path)?;
@@ -103,6 +117,7 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     Ok(Action::Run(Options {
         path,
         force,
+        force_media_title,
         sub_file,
         resume_enabled,
         autoplay_next,
@@ -150,6 +165,7 @@ mod tests {
 
         assert_eq!(config.path, None);
         assert!(!config.force);
+        assert_eq!(config.force_media_title, None);
         assert_eq!(config.sub_file, None);
         assert!(config.resume_enabled);
         assert!(config.autoplay_next);
@@ -196,6 +212,37 @@ mod tests {
             Some(PathBuf::from("https://example.com/video.mp4"))
         );
         assert_eq!(config.sub_file, None);
+    }
+
+    #[test]
+    fn parse_args_accepts_media_title_forms() {
+        let separate = run_options(vec![
+            OsString::from("--force-media-title"),
+            OsString::from("Frieren Episode 1"),
+            OsString::from("https://example.com/index.m3u8"),
+        ]);
+        assert_eq!(
+            separate.force_media_title.as_deref(),
+            Some("Frieren Episode 1")
+        );
+
+        let joined = run_options(vec![
+            OsString::from("--force-media-title=葬送のフリーレン Episode 1"),
+            OsString::from("https://example.com/index.m3u8"),
+        ]);
+        assert_eq!(
+            joined.force_media_title.as_deref(),
+            Some("葬送のフリーレン Episode 1")
+        );
+    }
+
+    #[test]
+    fn parse_args_rejects_media_title_without_a_value() {
+        let error = parse_args(vec![OsString::from("--force-media-title")].into_iter())
+            .err()
+            .expect("missing title should fail");
+
+        assert!(error.to_string().contains("requires a title"));
     }
 
     #[test]

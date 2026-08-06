@@ -63,6 +63,7 @@ Flags:
 - `-h`, `--help` — show command-line help and exit
 - `-V`, `--version` — show the Enzo version and exit
 - `--force` — bypass Kitty terminal detection
+- `--force-media-title <title>` — override the displayed title
 - `--sub-file <path>` — load an external SRT, WebVTT, SSA, or ASS subtitle file
 - `--no-resume` — play without reading or writing resume data
 - `--no-autoplay-next` — stop instead of playing the next video when playback ends

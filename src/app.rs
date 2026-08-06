@@ -3,6 +3,8 @@ mod playback;
 mod playlist;
 mod terminal_input;
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail};
 
 use crate::{
@@ -32,6 +34,10 @@ pub(crate) fn run(options: Options) -> Result<()> {
     let playback_options = playback::PlaybackOptions {
         resume_enabled: options.resume_enabled,
         autoplay_next: options.autoplay_next,
+        force_media_title: options
+            .force_media_title
+            .filter(|title| !title.is_empty())
+            .map(Arc::from),
     };
 
     if let Some(path) = options.path {
