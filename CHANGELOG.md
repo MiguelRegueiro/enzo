@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Folder playlists with natural ordering, previous/next controls, and autoplay.
+
+### Changed
+
+- The subtitle control now remains visible when no subtitles are available.
+
 ## [1.0.0] - 2026-08-03
 
 ### Added
