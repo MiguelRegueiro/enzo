@@ -30,6 +30,8 @@ fn paused_overlay_draws_play_button() {
             duration: Some(Duration::from_secs(120)),
             paused: true,
             visible: true,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -56,7 +58,7 @@ fn paused_overlay_draws_play_button() {
     let metrics = test_metrics(width, height);
     let offset = rgb_offset(
         width,
-        metrics.inner_x + metrics.control_size / 2,
+        metrics.playback_x + metrics.control_size / 2,
         metrics.control_y + metrics.control_size / 2,
     );
     assert!(frame[offset] > 180);
@@ -83,6 +85,8 @@ fn playing_overlay_draws_pause_button() {
             duration: Some(Duration::from_secs(120)),
             paused: false,
             visible: true,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -109,7 +113,7 @@ fn playing_overlay_draws_pause_button() {
     let metrics = test_metrics(width, height);
     let offset = rgb_offset(
         width,
-        metrics.inner_x + metrics.control_size / 3,
+        metrics.playback_x + metrics.control_size / 3,
         metrics.control_y + metrics.control_size / 2,
     );
     assert!(frame[offset] > 180);
@@ -137,6 +141,8 @@ fn rendered_overlay_changes_bottom_pixels_only() {
             duration: Some(Duration::from_secs(120)),
             paused: true,
             visible: true,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -201,6 +207,8 @@ fn hidden_overlay_leaves_frame_unchanged() {
             duration: Some(Duration::from_secs(120)),
             paused: false,
             visible: false,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -248,6 +256,8 @@ fn status_message_can_render_without_playback_controls() {
             duration: Some(Duration::from_secs(120)),
             paused: false,
             visible: false,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -298,6 +308,8 @@ fn media_info_stacks_below_title_without_playback_controls() {
             duration: Some(Duration::from_secs(120)),
             paused: false,
             visible: false,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -362,6 +374,8 @@ fn media_title_renders_with_playback_controls() {
             duration: Some(Duration::from_secs(120)),
             paused: false,
             visible: true,
+            playlist_previous_available: false,
+            playlist_next_available: false,
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -400,6 +414,8 @@ fn help_overlay_renders_without_title_or_bottom_controls() {
         duration: Some(Duration::from_secs(120)),
         paused: false,
         visible: false,
+        playlist_previous_available: false,
+        playlist_next_available: false,
         audio_available: true,
         selected_audio: Some(0),
         audio_picker_open: false,
@@ -498,6 +514,8 @@ fn test_metrics_with_scale_controls_and_terminal_rows(
         text_height,
         terminal_rows,
         time_width,
+        false,
+        false,
         audio_available,
         subtitles_available,
     )

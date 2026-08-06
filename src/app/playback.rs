@@ -4,6 +4,7 @@
 //! and `interaction` translates terminal intent into state changes. The
 //! remaining modules own one policy or resource family each.
 
+mod carryover;
 mod engine;
 mod interaction;
 mod layout;

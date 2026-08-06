@@ -1,5 +1,6 @@
 mod launcher;
 mod playback;
+mod playlist;
 mod terminal_input;
 
 use anyhow::{Context, Result, bail};

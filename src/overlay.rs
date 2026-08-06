@@ -25,8 +25,8 @@ use std::sync::Arc;
 use acrylic::AcrylicScratch;
 use help::help_scroll_limit;
 use interaction::{
-    audio_picker_action, playback_button_hit, progress_hit_ratio, progress_ratio_for_x,
-    subtitle_picker_action, track_picker_hover_index,
+    audio_picker_action, progress_hit_ratio, progress_ratio_for_x, subtitle_picker_action,
+    track_picker_hover_index, transport_control_action,
 };
 use layout::{
     OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
@@ -40,7 +40,7 @@ use crate::{
 
 pub(crate) use state::{
     AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext, OverlayHitPoint,
-    OverlayState, SubtitlePickerAction,
+    OverlayState, SubtitlePickerAction, TransportControlAction,
 };
 
 pub(crate) struct PlaybackOverlay {
@@ -106,13 +106,13 @@ impl PlaybackOverlay {
         progress_ratio_for_x(metrics, x)
     }
 
-    pub(crate) fn playback_button_hit_test(
+    pub(crate) fn transport_control_action(
         &mut self,
         context: OverlayHitContext,
         point: OverlayHitPoint,
-    ) -> bool {
+    ) -> Option<TransportControlAction> {
         let metrics = self.metrics(context);
-        playback_button_hit(metrics, point)
+        transport_control_action(metrics, point)
     }
 
     pub(crate) fn audio_picker_action(
@@ -238,6 +238,8 @@ impl PlaybackOverlay {
             context.terminal_rows,
             context.scale_percent,
             context.duration,
+            context.playlist_previous_available,
+            context.playlist_next_available,
             context.audio_available,
             context.subtitles_available,
             self.font.as_mut(),

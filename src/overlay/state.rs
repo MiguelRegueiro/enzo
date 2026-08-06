@@ -8,6 +8,8 @@ pub(crate) struct OverlayState {
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,
     pub(crate) visible: bool,
+    pub(crate) playlist_previous_available: bool,
+    pub(crate) playlist_next_available: bool,
     pub(crate) audio_available: bool,
     pub(crate) selected_audio: Option<usize>,
     pub(crate) audio_picker_open: bool,
@@ -66,6 +68,8 @@ pub(crate) struct OverlayHitContext {
     pub(crate) scale_percent: u32,
     pub(crate) position: Duration,
     pub(crate) duration: Option<Duration>,
+    pub(crate) playlist_previous_available: bool,
+    pub(crate) playlist_next_available: bool,
     pub(crate) audio_available: bool,
     pub(crate) subtitles_available: bool,
 }
@@ -81,6 +85,13 @@ pub(crate) enum SubtitlePickerAction {
     TogglePicker,
     SelectOff,
     SelectTrack(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransportControlAction {
+    Previous,
+    Playback,
+    Next,
 }
 
 #[derive(Clone, Copy)]

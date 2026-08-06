@@ -14,7 +14,6 @@ pub(super) struct OverlayMetrics {
     pub(super) panel_y: u32,
     pub(super) panel_height: u32,
     pub(super) inset_x: u32,
-    pub(super) inner_x: u32,
     pub(super) text_y: u32,
     pub(super) bar_x: u32,
     pub(super) bar_y: u32,
@@ -22,6 +21,9 @@ pub(super) struct OverlayMetrics {
     pub(super) bar_height: u32,
     pub(super) control_size: u32,
     pub(super) control_y: u32,
+    pub(super) previous_x: u32,
+    pub(super) playback_x: u32,
+    pub(super) next_x: u32,
     pub(super) audio_x: u32,
     pub(super) subtitle_x: u32,
     pub(super) time_x: u32,
@@ -44,6 +46,8 @@ impl OverlayMetrics {
         text_height: u32,
         terminal_rows: u16,
         time_width: u32,
+        playlist_previous_available: bool,
+        playlist_next_available: bool,
         audio_available: bool,
         subtitles_available: bool,
     ) -> Self {
@@ -84,8 +88,28 @@ impl OverlayMetrics {
         let row_y = panel_y.saturating_add(vertical_pad);
         let control_y = row_y.saturating_add((row_height.saturating_sub(control_size)) / 2);
         let text_y = row_y.saturating_add((row_height.saturating_sub(text_height)) / 2);
+        let playlist_available = playlist_previous_available || playlist_next_available;
+        let transport_count = if playlist_available { 3_u32 } else { 1_u32 };
+        let previous_x = inner_x;
+        let playback_x = if playlist_available {
+            inner_x
+                .saturating_add(control_size)
+                .saturating_add(control_gap)
+        } else {
+            inner_x
+        };
+        let next_x = if playlist_available {
+            playback_x
+                .saturating_add(control_size)
+                .saturating_add(control_gap)
+        } else {
+            inner_x
+        };
+        let transport_width = control_size
+            .saturating_mul(transport_count)
+            .saturating_add(control_gap.saturating_mul(transport_count.saturating_sub(1)));
         let time_x = inner_x
-            .saturating_add(control_size)
+            .saturating_add(transport_width)
             .saturating_add(control_gap)
             .min(width.saturating_sub(1));
         let content_right = width.saturating_sub(inner_x).max(inner_x.saturating_add(1));
@@ -126,7 +150,6 @@ impl OverlayMetrics {
             panel_y,
             panel_height,
             inset_x,
-            inner_x,
             text_y,
             bar_x,
             bar_y,
@@ -134,6 +157,9 @@ impl OverlayMetrics {
             bar_height,
             control_size,
             control_y,
+            previous_x,
+            playback_x,
+            next_x,
             audio_x,
             subtitle_x,
             time_x,
@@ -176,6 +202,8 @@ pub(super) fn overlay_metrics(
     terminal_rows: u16,
     scale_percent: u32,
     duration: Option<Duration>,
+    playlist_previous_available: bool,
+    playlist_next_available: bool,
     audio_available: bool,
     subtitles_available: bool,
     font: Option<&mut FontRenderer>,
@@ -196,6 +224,8 @@ pub(super) fn overlay_metrics(
         text_height,
         terminal_rows,
         time_width,
+        playlist_previous_available,
+        playlist_next_available,
         audio_available,
         subtitles_available,
     )
@@ -207,6 +237,27 @@ pub(super) fn audio_button_rect(metrics: OverlayMetrics) -> HitboxRect {
 
 pub(super) fn subtitle_button_rect(metrics: OverlayMetrics) -> HitboxRect {
     icon_button_rect(metrics.subtitle_x, metrics)
+}
+
+pub(super) fn previous_button_rect(metrics: OverlayMetrics) -> HitboxRect {
+    transport_button_rect(metrics.previous_x, metrics)
+}
+
+pub(super) fn playback_button_rect(metrics: OverlayMetrics) -> HitboxRect {
+    transport_button_rect(metrics.playback_x, metrics)
+}
+
+pub(super) fn next_button_rect(metrics: OverlayMetrics) -> HitboxRect {
+    transport_button_rect(metrics.next_x, metrics)
+}
+
+fn transport_button_rect(x: u32, metrics: OverlayMetrics) -> HitboxRect {
+    HitboxRect {
+        left: x,
+        top: metrics.control_y,
+        right: x.saturating_add(metrics.control_size),
+        bottom: metrics.control_y.saturating_add(metrics.control_size),
+    }
 }
 
 pub(super) fn track_icon_dimensions(metrics: OverlayMetrics) -> (u32, u32) {
@@ -577,7 +628,7 @@ mod tests {
             .bar_x
             .saturating_sub(metrics.time_x.saturating_add(time_width));
         let right_gap = width
-            .saturating_sub(metrics.inner_x)
+            .saturating_sub(metrics.playback_x)
             .saturating_sub(metrics.bar_x.saturating_add(metrics.bar_width));
 
         assert_eq!(right_gap, left_gap);
@@ -759,6 +810,8 @@ mod tests {
             text_height,
             terminal_rows,
             time_width,
+            false,
+            false,
             audio_available,
             subtitles_available,
         )

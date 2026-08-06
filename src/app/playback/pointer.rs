@@ -32,15 +32,17 @@ pub(super) fn canvas_position(
     let rel_row = row - canvas.area.y;
     let x = cell_to_pixel(rel_col, canvas.area.cols, canvas.width);
     let y = cell_to_pixel(rel_row, canvas.area.rows, canvas.height);
+    let (left, right) = cell_pixel_bounds(rel_col, canvas.area.cols, canvas.width);
+    let (top, bottom) = cell_pixel_bounds(rel_row, canvas.area.rows, canvas.height);
 
     Some(OverlayHitPoint {
         x,
         y,
         cell: HitboxRect {
-            left: x,
-            top: y,
-            right: x,
-            bottom: y,
+            left,
+            top,
+            right,
+            bottom,
         },
     })
 }
@@ -70,6 +72,19 @@ fn cell_to_pixel(cell: u16, cells: u16, pixels: u32) -> u32 {
     (((f64::from(cell) + 0.5) * f64::from(pixels)) / cells)
         .floor()
         .min(f64::from(pixels - 1)) as u32
+}
+
+fn cell_pixel_bounds(cell: u16, cells: u16, pixels: u32) -> (u32, u32) {
+    let cells = u64::from(cells.max(1));
+    let pixels = u64::from(pixels.max(1));
+    let cell = u64::from(cell).min(cells.saturating_sub(1));
+    let left = cell.saturating_mul(pixels) / cells;
+    let right = (cell.saturating_add(1))
+        .saturating_mul(pixels)
+        .div_ceil(cells)
+        .saturating_sub(1)
+        .min(pixels.saturating_sub(1));
+    (left as u32, right as u32)
 }
 
 fn pixel_to_canvas(pixel: u32, terminal_pixels: u32, canvas_pixels: u32) -> u32 {

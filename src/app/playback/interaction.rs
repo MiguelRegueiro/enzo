@@ -9,12 +9,13 @@ use anyhow::Result;
 use crate::{
     font_system::FontSystem,
     media::VideoInfo,
-    overlay::{AudioPickerAction, OverlayHitContext, SubtitlePickerAction},
+    overlay::{AudioPickerAction, OverlayHitContext, SubtitlePickerAction, TransportControlAction},
     resume::ResumeTracker,
     subtitle::{SubtitleRenderer, SubtitleTrack},
 };
 
 use super::{
+    super::playlist::{PlaylistControls, PlaylistStep},
     super::terminal_input::{PlaybackCommand, PlaybackMouse},
     engine::PlaybackEngine,
     pointer::{canvas_position as mouse_canvas_position, canvas_x as mouse_canvas_x},
@@ -59,6 +60,7 @@ pub(super) struct InteractionContext<'a, W: Write> {
     font_system: &'a FontSystem,
     path: &'a Path,
     source: &'a VideoInfo,
+    playlist_controls: PlaylistControls,
     resume: &'a mut ResumeTracker,
     audio: &'a mut AudioCatalog,
     subtitles: &'a mut SubtitleCatalog,
@@ -74,6 +76,7 @@ impl<W: Write> InteractionContext<'_, W> {
         font_system: &'a FontSystem,
         path: &'a Path,
         source: &'a VideoInfo,
+        playlist_controls: PlaylistControls,
         resume: &'a mut ResumeTracker,
         audio: &'a mut AudioCatalog,
         subtitles: &'a mut SubtitleCatalog,
@@ -86,6 +89,7 @@ impl<W: Write> InteractionContext<'_, W> {
             font_system,
             path,
             source,
+            playlist_controls,
             resume,
             audio,
             subtitles,
@@ -145,6 +149,20 @@ impl<W: Write> InteractionContext<'_, W> {
                     input_at,
                 ));
                 self.view.dirty = self.view.have_frame;
+            }
+            PlaybackCommand::PlaylistPrevious => {
+                self.release_keyboard_seek_preview()?;
+                if self.playlist_controls.previous_available {
+                    return Ok(Some(PlaybackOutcome::Switch(PlaylistStep::Previous)));
+                }
+                self.show_playlist_status("FIRST VIDEO", input_at);
+            }
+            PlaybackCommand::PlaylistNext => {
+                self.release_keyboard_seek_preview()?;
+                if self.playlist_controls.next_available {
+                    return Ok(Some(PlaybackOutcome::Switch(PlaylistStep::Next)));
+                }
+                self.show_playlist_status("LAST VIDEO", input_at);
             }
             PlaybackCommand::AdjustVolume { steps } => {
                 self.adjust_volume(steps, input_at);
@@ -381,10 +399,10 @@ impl<W: Write> InteractionContext<'_, W> {
                             SubtitlePickerAction::SelectOff => self.select_subtitle_off(),
                         }
                         self.view.dirty = self.view.have_frame;
-                    } else if point.is_some_and(|point| {
+                    } else if let Some(action) = point.and_then(|point| {
                         self.view
                             .overlay
-                            .playback_button_hit_test(hit_context, point)
+                            .transport_control_action(hit_context, point)
                     }) {
                         self.seeking.scrub_position = None;
                         self.ui.subtitle_picker_open = false;
@@ -392,7 +410,28 @@ impl<W: Write> InteractionContext<'_, W> {
                         self.ui.audio_picker_open = false;
                         self.ui.audio_picker_focus = None;
                         self.ui.show_overlay(input_at);
-                        self.engine.toggle_pause(self.seeking.pending.is_some());
+                        self.release_keyboard_seek_preview()?;
+                        match action {
+                            TransportControlAction::Previous
+                                if self.playlist_controls.previous_available =>
+                            {
+                                return Ok(Some(PlaybackOutcome::Switch(PlaylistStep::Previous)));
+                            }
+                            TransportControlAction::Next
+                                if self.playlist_controls.next_available =>
+                            {
+                                return Ok(Some(PlaybackOutcome::Switch(PlaylistStep::Next)));
+                            }
+                            TransportControlAction::Previous => {
+                                self.show_playlist_status("FIRST VIDEO", input_at)
+                            }
+                            TransportControlAction::Next => {
+                                self.show_playlist_status("LAST VIDEO", input_at)
+                            }
+                            TransportControlAction::Playback => {
+                                self.engine.toggle_pause(self.seeking.pending.is_some());
+                            }
+                        }
                         self.view.dirty = self.view.have_frame;
                     } else {
                         let picker_was_open =
@@ -864,6 +903,8 @@ impl<W: Write> InteractionContext<'_, W> {
             duration: self.source.duration,
             audio_available: self.audio.is_available(),
             subtitles_available: self.subtitles.is_available(),
+            playlist_previous_available: self.playlist_controls.previous_available,
+            playlist_next_available: self.playlist_controls.next_available,
         }
     }
 
@@ -884,6 +925,12 @@ impl<W: Write> InteractionContext<'_, W> {
     }
 
     fn show_subtitle_status(&mut self, text: &'static str, input_at: Instant) {
+        self.ui.status_message = Some(PlaybackUi::status(text, input_at));
+        self.ui.show_overlay(input_at);
+        self.view.dirty = self.view.have_frame;
+    }
+
+    fn show_playlist_status(&mut self, text: &'static str, input_at: Instant) {
         self.ui.status_message = Some(PlaybackUi::status(text, input_at));
         self.ui.show_overlay(input_at);
         self.view.dirty = self.view.have_frame;

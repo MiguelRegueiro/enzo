@@ -7,7 +7,7 @@ use anyhow::Result;
 
 use crate::media::{AudioPlayer, FrameStatus, VideoDecoder};
 
-use super::layout::TargetFrame;
+use super::{carryover::PlaybackCarryover, layout::TargetFrame};
 
 pub(super) const VOLUME_STEP_PERCENT: u8 = 2;
 
@@ -50,13 +50,21 @@ impl PlaybackEngine {
         position: Duration,
         has_audio: bool,
         audio_choice: AudioChoice,
+        carryover: PlaybackCarryover,
     ) -> Result<Self> {
         let video = VideoDecoder::spawn_at(path, target.width, target.height, fps, position, true)?;
         let audio = if has_audio {
             audio_choice
                 .stream_index()
                 .map(|stream_index| {
-                    AudioPlayer::spawn_held_at(path, stream_index, position, false, false, 100)
+                    AudioPlayer::spawn_held_at(
+                        path,
+                        stream_index,
+                        position,
+                        carryover.paused,
+                        carryover.muted,
+                        carryover.volume_percent,
+                    )
                 })
                 .transpose()?
         } else {
@@ -69,9 +77,9 @@ impl PlaybackEngine {
             audio,
             audio_done: !has_audio || audio_choice == AudioChoice::Off,
             video_ended: false,
-            paused: false,
-            muted: false,
-            volume_percent: 100,
+            paused: carryover.paused,
+            muted: carryover.muted,
+            volume_percent: carryover.volume_percent,
             position,
             frame_interval: frame_interval(fps),
             next_frame_at: started_at,

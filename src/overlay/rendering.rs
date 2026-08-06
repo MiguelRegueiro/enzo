@@ -5,8 +5,8 @@ use crate::font::FontRenderer;
 use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
     controls::{
-        draw_audio_control, draw_playback_control, draw_progress_handle, draw_subtitle_control,
-        draw_track_picker,
+        draw_audio_control, draw_next_control, draw_playback_control, draw_previous_control,
+        draw_progress_handle, draw_subtitle_control, draw_track_picker,
     },
     help::draw_help_panel,
     layout::{OverlayMetrics, fallback_text_scale, rounded_radius, text_size},
@@ -124,6 +124,8 @@ pub(super) fn render_overlay_rgb(
         text_height,
         terminal_rows,
         time_width,
+        state.playlist_previous_available,
+        state.playlist_next_available,
         state.audio_available,
         state.subtitles_available,
     );
@@ -190,7 +192,20 @@ pub(super) fn render_overlay_rgb(
         scratch.push_str("--:--");
     }
 
+    let playlist_available = state.playlist_previous_available || state.playlist_next_available;
+    if playlist_available {
+        draw_previous_control(
+            frame,
+            width,
+            height,
+            metrics,
+            state.playlist_previous_available,
+        );
+    }
     draw_playback_control(frame, width, height, metrics, state.paused);
+    if playlist_available {
+        draw_next_control(frame, width, height, metrics, state.playlist_next_available);
+    }
     if state.audio_available {
         draw_audio_control(
             frame,

@@ -16,6 +16,7 @@ use crate::{
     terminal::clear_screen_and_images,
 };
 
+use super::super::playlist::{PlaylistControls, PlaylistStep};
 use super::super::terminal_input::read_input_events;
 #[cfg(test)]
 use super::metadata::{container_display_name, format_file_size};
@@ -24,6 +25,7 @@ use super::ui::MEDIA_INFO_VISIBLE_FOR;
 #[cfg(test)]
 use super::ui::{MediaInfoOverlay, media_info_fps_visible, overlay_state, overlay_visible};
 use super::{
+    carryover::PlaybackCarryover,
     engine::PlaybackEngine,
     interaction::InteractionContext,
     layout::{ResizeTracker, terminal_target_and_canvas},
@@ -53,6 +55,7 @@ pub(super) struct PlaybackSession<'fonts, W: Write> {
     font_system: &'fonts FontSystem,
     path: PathBuf,
     source: VideoInfo,
+    playlist_controls: PlaylistControls,
     resume: ResumeTracker,
     audio: AudioCatalog,
     subtitles: SubtitleCatalog,
@@ -69,6 +72,12 @@ pub(super) enum PlaybackOutcome {
     QuitWithoutSaving,
     Completed,
     Interrupted,
+    Switch(PlaylistStep),
+}
+
+pub(super) struct PlaybackSessionResult {
+    pub(super) outcome: PlaybackOutcome,
+    pub(super) carryover: PlaybackCarryover,
 }
 
 impl PlaybackOutcome {
@@ -85,6 +94,7 @@ pub(super) struct PlaybackSessionInit<'fonts, W: Write> {
     pub(super) font_system: &'fonts FontSystem,
     pub(super) path: PathBuf,
     pub(super) source: VideoInfo,
+    pub(super) playlist_controls: PlaylistControls,
     pub(super) resume: ResumeTracker,
     pub(super) audio: AudioCatalog,
     pub(super) subtitles: SubtitleCatalog,
@@ -100,6 +110,7 @@ impl<'fonts, W: Write> PlaybackSession<'fonts, W> {
             font_system: init.font_system,
             path: init.path,
             source: init.source,
+            playlist_controls: init.playlist_controls,
             resume: init.resume,
             audio: init.audio,
             subtitles: init.subtitles,
@@ -113,7 +124,7 @@ impl<'fonts, W: Write> PlaybackSession<'fonts, W> {
 }
 
 impl<W: Write> PlaybackSession<'_, W> {
-    pub(super) fn run(self) -> Result<()> {
+    pub(super) fn run(self) -> Result<PlaybackSessionResult> {
         let mut session = self;
         let playback_outcome = loop {
             if shutdown::requested() {
@@ -159,7 +170,11 @@ impl<W: Write> PlaybackSession<'_, W> {
                 break PlaybackOutcome::Completed;
             }
         };
-        session.finish(playback_outcome)
+        let carryover = session.finish(playback_outcome)?;
+        Ok(PlaybackSessionResult {
+            outcome: playback_outcome,
+            carryover,
+        })
     }
 
     fn poll_backends(&mut self) -> Result<()> {
@@ -218,6 +233,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             self.font_system,
             &self.path,
             &self.source,
+            self.playlist_controls,
             &mut self.resume,
             &mut self.audio,
             &mut self.subtitles,
@@ -449,6 +465,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             self.seeking.scrub_position,
             self.source.duration,
             self.engine.paused,
+            self.playlist_controls,
             &self.audio,
             &self.subtitles,
             self.view.canvas,
@@ -463,7 +480,13 @@ impl<W: Write> PlaybackSession<'_, W> {
         Ok(())
     }
 
-    fn finish(mut self, outcome: PlaybackOutcome) -> Result<()> {
+    fn finish(mut self, outcome: PlaybackOutcome) -> Result<PlaybackCarryover> {
+        let carryover = PlaybackCarryover {
+            paused: self.engine.paused,
+            muted: self.engine.muted,
+            volume_percent: self.engine.volume_percent,
+            media_info_pinned: self.ui.media_info.pinned(),
+        };
         let resume_result = if outcome.clears_resume() {
             self.resume.clear()
         } else if outcome.skips_resume_save() {
@@ -474,7 +497,7 @@ impl<W: Write> PlaybackSession<'_, W> {
         };
         resume_result.context("failed to persist playback state")?;
         self.engine.stop()?;
-        Ok(())
+        Ok(carryover)
     }
 }
 

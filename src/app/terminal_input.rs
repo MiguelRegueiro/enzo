@@ -20,6 +20,8 @@ pub(crate) enum PlaybackCommand {
     ToggleHelp,
     CloseTransientUi,
     ConfirmPicker,
+    PlaylistPrevious,
+    PlaylistNext,
     AdjustVolume { steps: i32 },
     SeekBySeconds { seconds: i32, picker_direction: i32 },
 }
@@ -103,6 +105,8 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Char('?') => PlaybackCommand::ToggleHelp,
         KeyCode::Esc => PlaybackCommand::CloseTransientUi,
         KeyCode::Enter => PlaybackCommand::ConfirmPicker,
+        KeyCode::Char('[') => PlaybackCommand::PlaylistPrevious,
+        KeyCode::Char(']') => PlaybackCommand::PlaylistNext,
         _ => PlaybackCommand::None,
     }
 }
@@ -303,6 +307,14 @@ mod tests {
         assert_eq!(
             playback_command_for_key(&KeyCode::Enter),
             PlaybackCommand::ConfirmPicker
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('[')),
+            PlaybackCommand::PlaylistPrevious
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char(']')),
+            PlaybackCommand::PlaylistNext
         );
         assert_eq!(
             playback_command_for_key(&KeyCode::Char('Q')),

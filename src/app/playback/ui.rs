@@ -9,7 +9,10 @@ use crate::{
     overlay::{MediaInfo, MediaInfoState, OverlayState},
 };
 
-use super::{layout::CanvasFrame, subtitles::SubtitleCatalog, tracks::AudioCatalog};
+use super::{
+    super::playlist::PlaylistControls, layout::CanvasFrame, subtitles::SubtitleCatalog,
+    tracks::AudioCatalog,
+};
 
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
@@ -28,11 +31,11 @@ pub(super) struct MediaInfoOverlay {
 }
 
 impl MediaInfoOverlay {
-    pub(super) fn new(content: MediaInfo) -> Self {
+    pub(super) fn new(content: MediaInfo, pinned: bool) -> Self {
         Self {
             content,
             visible_until: None,
-            pinned: false,
+            pinned,
         }
     }
 
@@ -43,6 +46,10 @@ impl MediaInfoOverlay {
     pub(super) fn toggle(&mut self) {
         self.pinned = !self.pinned;
         self.visible_until = None;
+    }
+
+    pub(super) fn pinned(&self) -> bool {
+        self.pinned
     }
 
     pub(super) fn visible(&self, now: Instant) -> bool {
@@ -91,6 +98,7 @@ impl PlaybackUi {
         media_title: Arc<str>,
         media_info: MediaInfo,
         status_message: Option<StatusMessage>,
+        media_info_pinned: bool,
     ) -> Self {
         Self {
             audio_picker_open: false,
@@ -103,7 +111,7 @@ impl PlaybackUi {
             help_scroll_offset: 0,
             overlay_visible_until: None,
             status_message,
-            media_info: MediaInfoOverlay::new(media_info),
+            media_info: MediaInfoOverlay::new(media_info, media_info_pinned),
             media_title,
         }
     }
@@ -130,6 +138,7 @@ impl PlaybackUi {
         scrub_position: Option<Duration>,
         duration: Option<Duration>,
         paused: bool,
+        playlist_controls: PlaylistControls,
         audio: &AudioCatalog,
         subtitles: &SubtitleCatalog,
         canvas: CanvasFrame,
@@ -142,6 +151,7 @@ impl PlaybackUi {
             paused,
             self.overlay_visible_until,
             self.status_message.as_ref(),
+            playlist_controls,
             audio.is_available(),
             audio.selected(),
             self.audio_picker_open,
@@ -171,6 +181,7 @@ pub(super) fn overlay_state(
     paused: bool,
     visible_until: Option<Instant>,
     status_message: Option<&StatusMessage>,
+    playlist_controls: PlaylistControls,
     audio_available: bool,
     selected_audio: Option<usize>,
     audio_picker_open: bool,
@@ -196,6 +207,8 @@ pub(super) fn overlay_state(
         visible: overlay_visible(paused, scrub_position.is_some(), visible_until, now)
             || audio_picker_open
             || subtitle_picker_open,
+        playlist_previous_available: playlist_controls.previous_available,
+        playlist_next_available: playlist_controls.next_available,
         audio_available,
         selected_audio,
         audio_picker_open,

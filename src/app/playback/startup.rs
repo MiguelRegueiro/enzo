@@ -14,7 +14,9 @@ use crate::{
     subtitle::SubtitleTrack,
 };
 
+use super::super::playlist::{Playlist, PlaylistControls};
 use super::{
+    carryover::PlaybackCarryover,
     engine::PlaybackEngine,
     layout::terminal_target_and_canvas,
     metadata::file_info_summary,
@@ -35,6 +37,40 @@ pub(crate) fn play(
     resume_enabled: bool,
     font_system: &FontSystem,
 ) -> Result<()> {
+    let mut playlist = Playlist::from_opened_path(path);
+    let mut carryover = PlaybackCarryover::default();
+    let initial_path = playlist.current().to_path_buf();
+    loop {
+        let controls = playlist.controls();
+        let entry_sub_file = (playlist.current() == initial_path)
+            .then_some(sub_file)
+            .flatten();
+        let result = play_current(
+            playlist.current().to_path_buf(),
+            controls,
+            carryover,
+            entry_sub_file,
+            resume_enabled,
+            font_system,
+        )?;
+        carryover = result.carryover;
+        let super::session::PlaybackOutcome::Switch(step) = result.outcome else {
+            return Ok(());
+        };
+        if playlist.step(step).is_none() {
+            return Ok(());
+        }
+    }
+}
+
+fn play_current(
+    path: PathBuf,
+    playlist_controls: PlaylistControls,
+    carryover: PlaybackCarryover,
+    sub_file: Option<&Path>,
+    resume_enabled: bool,
+    font_system: &FontSystem,
+) -> Result<super::session::PlaybackSessionResult> {
     let source = probe_video(&path)
         .with_context(|| format!("could not open media\n  file: {}", path.display()))?;
     let mut resume = ResumeTracker::open(
@@ -73,6 +109,7 @@ pub(crate) fn play(
         start_position,
         source.has_audio,
         audio.choice(),
+        carryover,
     )?;
 
     resume.set_position(start_position);
@@ -99,7 +136,12 @@ pub(crate) fn play(
             .take_error()
             .map(|_| PlaybackUi::status("RESUME STATE UNAVAILABLE", engine.started_at))
     };
-    let ui = PlaybackUi::new(media_title(&path), media_info, status_message);
+    let ui = PlaybackUi::new(
+        media_title(&path),
+        media_info,
+        status_message,
+        carryover.media_info_pinned,
+    );
     let seeking = SeekCoordinator::new(PendingSeek {
         video_generation: engine.video.seek_generation(),
         video_target: start_position,
@@ -114,6 +156,7 @@ pub(crate) fn play(
         font_system,
         path,
         source,
+        playlist_controls,
         resume,
         audio,
         subtitles,

@@ -78,6 +78,7 @@ Flags:
 - `s` opens the subtitle-track menu
 - `v` toggles subtitles
 - `i` shows media information; `I` pins or unpins it
+- `[` / `]` plays the previous/next video in the same folder
 - `?` toggles help; Esc closes open panels
 - Left/right arrows seek by 5 seconds
 - Down/up arrows seek by 60 seconds, or navigate an open track menu

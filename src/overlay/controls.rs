@@ -32,13 +32,122 @@ pub(super) fn draw_playback_control(
         return;
     }
 
-    let x = metrics.inner_x;
+    let x = metrics.playback_x;
     let y = metrics.control_y;
     if paused {
         draw_play_icon(frame, width, height, x, y, size);
     } else {
         draw_pause_icon(frame, width, height, x, y, size);
     }
+}
+
+pub(super) fn draw_previous_control(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    active: bool,
+) {
+    draw_skip_icon(
+        frame,
+        width,
+        height,
+        metrics.previous_x,
+        metrics.control_y,
+        metrics.control_size,
+        false,
+        if active { 245 } else { 92 },
+    );
+}
+
+pub(super) fn draw_next_control(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    metrics: OverlayMetrics,
+    active: bool,
+) {
+    draw_skip_icon(
+        frame,
+        width,
+        height,
+        metrics.next_x,
+        metrics.control_y,
+        metrics.control_size,
+        true,
+        if active { 245 } else { 92 },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_skip_icon(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+    size: u32,
+    forward: bool,
+    alpha: u8,
+) {
+    let stem_width = (size / 8).max(2);
+    let stem_height = (size * 3 / 5).max(5);
+    let stem_y = y.saturating_add(size.saturating_sub(stem_height) / 2);
+    let stem_x = if forward {
+        x.saturating_add(size * 68 / 100)
+    } else {
+        x.saturating_add(size * 24 / 100)
+    };
+    fill_rounded_rect(
+        frame,
+        width,
+        height,
+        RoundedRect {
+            x: f64::from(stem_x),
+            y: f64::from(stem_y),
+            width: f64::from(stem_width),
+            height: f64::from(stem_height),
+            radius: f64::from(rounded_radius(stem_width, stem_height, stem_width / 2)),
+        },
+        TEXT_COLOR,
+        alpha,
+    );
+
+    let x = f64::from(x);
+    let y = f64::from(y);
+    let size = f64::from(size);
+    let triangle = if forward {
+        Triangle {
+            a: Point {
+                x: x + size * 0.29,
+                y: y + size * 0.22,
+            },
+            b: Point {
+                x: x + size * 0.29,
+                y: y + size * 0.78,
+            },
+            c: Point {
+                x: x + size * 0.66,
+                y: y + size * 0.50,
+            },
+        }
+    } else {
+        Triangle {
+            a: Point {
+                x: x + size * 0.71,
+                y: y + size * 0.22,
+            },
+            b: Point {
+                x: x + size * 0.71,
+                y: y + size * 0.78,
+            },
+            c: Point {
+                x: x + size * 0.34,
+                y: y + size * 0.50,
+            },
+        }
+    };
+    fill_triangle(frame, width, height, triangle, TEXT_COLOR, alpha);
 }
 
 fn draw_play_icon(frame: &mut [u8], width: u32, height: u32, x: u32, y: u32, size: u32) {

@@ -9,6 +9,7 @@ fn only_completed_playback_clears_resume_state() {
     assert!(!PlaybackOutcome::Quit.clears_resume());
     assert!(!PlaybackOutcome::QuitWithoutSaving.clears_resume());
     assert!(!PlaybackOutcome::Interrupted.clears_resume());
+    assert!(!PlaybackOutcome::Switch(PlaylistStep::Next).clears_resume());
 }
 
 #[test]
@@ -17,6 +18,7 @@ fn only_explicit_no_save_quit_skips_resume_save() {
     assert!(!PlaybackOutcome::Quit.skips_resume_save());
     assert!(PlaybackOutcome::QuitWithoutSaving.skips_resume_save());
     assert!(!PlaybackOutcome::Interrupted.skips_resume_save());
+    assert!(!PlaybackOutcome::Switch(PlaylistStep::Next).skips_resume_save());
 }
 
 #[test]
@@ -215,13 +217,18 @@ fn exact_duration_seek_is_end_seek() {
 #[test]
 fn media_info_visibility_supports_temporary_and_pinned_modes() {
     let now = Instant::now();
-    let mut info = MediaInfoOverlay::new(MediaInfo::new(String::new(), String::new(), Vec::new()));
+    let mut info = MediaInfoOverlay::new(
+        MediaInfo::new(String::new(), String::new(), Vec::new()),
+        false,
+    );
 
     assert!(!info.visible(now));
+    assert!(!info.pinned());
     info.show(now);
     assert!(info.visible(now));
     assert!(!info.visible(now + MEDIA_INFO_VISIBLE_FOR));
     info.toggle();
+    assert!(info.pinned());
     assert!(info.visible(now + MEDIA_INFO_VISIBLE_FOR));
 }
 
@@ -242,6 +249,7 @@ fn media_info_display_rate_visibility_matches_rendered_state() {
         false,
         None,
         None,
+        PlaylistControls::default(),
         false,
         None,
         false,
@@ -326,6 +334,7 @@ fn overlay_state_uses_scrub_position() {
         false,
         None,
         None,
+        PlaylistControls::default(),
         false,
         None,
         false,
@@ -359,6 +368,7 @@ fn help_visibility_is_separate_from_playback_controls() {
         false,
         None,
         None,
+        PlaylistControls::default(),
         false,
         None,
         false,
@@ -405,10 +415,10 @@ fn mouse_position_maps_terminal_cell_to_canvas_pixel() {
     let point = mouse_canvas_position(40, 20, canvas).expect("point should be inside");
 
     assert_eq!(point.x, 972);
-    assert_eq!(point.cell.left, point.x);
-    assert_eq!(point.cell.right, point.x);
-    assert_eq!(point.cell.top, 922);
-    assert_eq!(point.cell.bottom, 922);
+    assert_eq!(point.cell.left, 960);
+    assert_eq!(point.cell.right, 983);
+    assert_eq!(point.cell.top, 900);
+    assert_eq!(point.cell.bottom, 944);
 }
 
 #[test]

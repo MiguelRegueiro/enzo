@@ -4,23 +4,49 @@ use std::time::Duration;
 
 use super::{
     layout::{
-        OverlayMetrics, audio_button_rect, midpoint_toward_lower_line, picker_text_y,
-        progress_handle_radius, subtitle_button_rect, track_picker_track_rect,
+        OverlayMetrics, audio_button_rect, midpoint_toward_lower_line, next_button_rect,
+        picker_text_y, playback_button_rect, previous_button_rect, progress_handle_radius,
+        subtitle_button_rect, track_picker_track_rect,
     },
-    state::{AudioPickerAction, HitboxRect, OverlayHitPoint, SubtitlePickerAction},
+    state::{
+        AudioPickerAction, HitboxRect, OverlayHitPoint, SubtitlePickerAction,
+        TransportControlAction,
+    },
     timeline::progress_pixels,
 };
 
-pub(super) fn playback_button_hit(metrics: OverlayMetrics, point: OverlayHitPoint) -> bool {
-    hitbox_intersects(
-        point.cell,
-        HitboxRect {
-            left: metrics.inner_x,
-            top: metrics.control_y,
-            right: metrics.inner_x.saturating_add(metrics.control_size),
-            bottom: metrics.control_y.saturating_add(metrics.control_size),
-        },
-    )
+pub(super) fn transport_control_action(
+    metrics: OverlayMetrics,
+    point: OverlayHitPoint,
+) -> Option<TransportControlAction> {
+    let playlist_controls_visible = metrics.previous_x != metrics.playback_x;
+    let mut best = transport_button_point_hit(
+        metrics,
+        point,
+        playback_button_rect(metrics),
+        TransportControlAction::Playback,
+    );
+    if playlist_controls_visible {
+        best = nearest_transport_hit(
+            best,
+            transport_button_point_hit(
+                metrics,
+                point,
+                previous_button_rect(metrics),
+                TransportControlAction::Previous,
+            ),
+        );
+        best = nearest_transport_hit(
+            best,
+            transport_button_point_hit(
+                metrics,
+                point,
+                next_button_rect(metrics),
+                TransportControlAction::Next,
+            ),
+        );
+    }
+    best.map(|hit| hit.action)
 }
 
 pub(super) fn audio_picker_action(
@@ -183,6 +209,78 @@ fn hitbox_intersects(a: HitboxRect, b: HitboxRect) -> bool {
     a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
 
+#[derive(Clone, Copy)]
+struct TransportHit {
+    action: TransportControlAction,
+    distance_squared: u64,
+}
+
+fn transport_button_point_hit(
+    metrics: OverlayMetrics,
+    point: OverlayHitPoint,
+    rect: HitboxRect,
+    action: TransportControlAction,
+) -> Option<TransportHit> {
+    let horizontal_slop = (metrics.control_size / 8)
+        .min(transport_gap(metrics) / 3)
+        .clamp(1, 4);
+    let vertical_slop = 8.min(metrics.control_size / 2).max(3);
+    let hitbox = HitboxRect {
+        left: rect.left.saturating_sub(horizontal_slop),
+        top: rect.top.saturating_sub(vertical_slop),
+        right: rect.right.saturating_add(horizontal_slop),
+        bottom: rect.bottom.saturating_add(vertical_slop),
+    };
+    if point.x < hitbox.left
+        || point.x > hitbox.right
+        || point.y < hitbox.top
+        || point.y > hitbox.bottom
+    {
+        return None;
+    }
+    let center_x = rect
+        .left
+        .saturating_add(rect.right.saturating_sub(rect.left) / 2);
+    let center_y = rect
+        .top
+        .saturating_add(rect.bottom.saturating_sub(rect.top) / 2);
+    Some(TransportHit {
+        action,
+        distance_squared: squared_distance(point.x, point.y, center_x, center_y),
+    })
+}
+
+fn transport_gap(metrics: OverlayMetrics) -> u32 {
+    if metrics.previous_x != metrics.playback_x {
+        metrics
+            .playback_x
+            .saturating_sub(metrics.previous_x.saturating_add(metrics.control_size))
+    } else {
+        metrics.control_size / 2
+    }
+}
+
+fn nearest_transport_hit(
+    current: Option<TransportHit>,
+    candidate: Option<TransportHit>,
+) -> Option<TransportHit> {
+    match (current, candidate) {
+        (Some(current), Some(candidate))
+            if candidate.distance_squared < current.distance_squared =>
+        {
+            Some(candidate)
+        }
+        (Some(current), _) => Some(current),
+        (None, candidate) => candidate,
+    }
+}
+
+fn squared_distance(x: u32, y: u32, center_x: u32, center_y: u32) -> u64 {
+    let dx = i64::from(x) - i64::from(center_x);
+    let dy = i64::from(y) - i64::from(center_y);
+    dx.unsigned_abs().pow(2) + dy.unsigned_abs().pow(2)
+}
+
 pub(super) fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
     let end_x = metrics.bar_x.saturating_add(metrics.bar_width);
     let x = x.clamp(metrics.bar_x, end_x);
@@ -323,17 +421,61 @@ mod tests {
     fn playback_button_hit_test_uses_control_bounds() {
         let metrics = test_metrics(320, 180);
 
-        assert!(playback_button_hit(
-            metrics,
-            hit_point(
-                metrics.inner_x + metrics.control_size / 2,
-                metrics.control_y + metrics.control_size / 2
-            )
-        ));
-        assert!(!playback_button_hit(
-            metrics,
-            hit_point(metrics.time_x, metrics.control_y + metrics.control_size / 2)
-        ));
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.playback_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size / 2
+                )
+            ),
+            Some(TransportControlAction::Playback)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(metrics.time_x, metrics.control_y + metrics.control_size / 2)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn playlist_control_hit_test_uses_transport_button_bounds() {
+        let metrics = test_metrics_with_playlist(640, 360);
+        let previous = previous_button_rect(metrics);
+        let next = next_button_rect(metrics);
+
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    previous.left + (previous.right - previous.left) / 2,
+                    previous.top + (previous.bottom - previous.top) / 2,
+                )
+            ),
+            Some(TransportControlAction::Previous)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    next.left + (next.right - next.left) / 2,
+                    next.top + (next.bottom - next.top) / 2,
+                )
+            ),
+            Some(TransportControlAction::Next)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.playback_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size / 2
+                )
+            ),
+            Some(TransportControlAction::Playback)
+        );
     }
 
     #[test]
@@ -603,25 +745,132 @@ mod tests {
     }
 
     #[test]
-    fn playback_button_hit_test_uses_clicked_cell_overlap() {
+    fn playback_button_hit_test_accepts_a_bounded_edge_slop() {
         let metrics = test_metrics_with_scale(1920, 1200, 120);
 
-        assert!(playback_button_hit(
-            metrics,
-            hit_point_with_cell(
-                metrics.inner_x + metrics.control_size / 2,
-                HitboxRect {
-                    left: metrics.inner_x,
-                    top: metrics.control_y + metrics.control_size - 1,
-                    right: metrics.inner_x + metrics.control_size,
-                    bottom: metrics.control_y + metrics.control_size + 20,
-                },
-            )
-        ));
-        assert!(!playback_button_hit(
-            metrics,
-            hit_point(metrics.time_x, metrics.control_y + metrics.control_size / 2)
-        ));
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.playback_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size,
+                )
+            ),
+            Some(TransportControlAction::Playback)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.playback_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size + 8,
+                )
+            ),
+            Some(TransportControlAction::Playback)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(metrics.time_x, metrics.control_y + metrics.control_size / 2)
+            ),
+            None
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.playback_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size + 9
+                )
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn playlist_buttons_hit_test_bounded_edges_without_claiming_gaps() {
+        let metrics = test_metrics_with_playlist(1920, 1200);
+
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.previous_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size + 8,
+                )
+            ),
+            Some(TransportControlAction::Previous)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.next_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size + 8,
+                )
+            ),
+            Some(TransportControlAction::Next)
+        );
+        let gap_x = metrics.playback_x
+            + metrics.control_size
+            + (metrics.next_x - metrics.playback_x - metrics.control_size) / 2;
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(gap_x, metrics.control_y + metrics.control_size / 2)
+            ),
+            None
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(
+                    metrics.next_x + metrics.control_size / 2,
+                    metrics.control_y + metrics.control_size + 9,
+                )
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn transport_action_resolves_cluster_without_claiming_dead_gap() {
+        let metrics = test_metrics_with_playlist(1920, 1200);
+        let y = metrics.control_y + metrics.control_size / 2;
+        let gap_x = metrics.playback_x
+            + metrics.control_size
+            + (metrics.next_x - metrics.playback_x - metrics.control_size) / 2;
+
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(metrics.playback_x + metrics.control_size / 2, y)
+            ),
+            Some(TransportControlAction::Playback)
+        );
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point(metrics.next_x + metrics.control_size / 2, y)
+            ),
+            Some(TransportControlAction::Next)
+        );
+        assert_eq!(transport_control_action(metrics, hit_point(gap_x, y)), None);
+        assert_eq!(
+            transport_control_action(
+                metrics,
+                hit_point_with_cell(
+                    gap_x,
+                    HitboxRect {
+                        left: metrics.playback_x + metrics.control_size + 1,
+                        top: y,
+                        right: metrics.next_x.saturating_sub(1),
+                        bottom: y,
+                    },
+                )
+            ),
+            None
+        );
     }
 
     fn audio_picker_action(
@@ -657,6 +906,27 @@ mod tests {
 
     fn test_metrics_with_audio_and_subtitles(width: u32, height: u32) -> OverlayMetrics {
         test_metrics_with_scale_and_controls(width, height, 100, true, true)
+    }
+
+    fn test_metrics_with_playlist(width: u32, height: u32) -> OverlayMetrics {
+        let text_size = text_size(width, height, 100);
+        let fallback_text_scale = fallback_text_scale(width, height, 100);
+        let text_height = 7 * fallback_text_scale;
+        let time_width =
+            time_column_width(None, Some(Duration::from_secs(120)), fallback_text_scale);
+        OverlayMetrics::new(
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            height as u16,
+            time_width,
+            true,
+            true,
+            false,
+            false,
+        )
     }
 
     fn test_metrics_with_subtitles(width: u32, height: u32) -> OverlayMetrics {
@@ -736,6 +1006,8 @@ mod tests {
             text_height,
             terminal_rows,
             time_width,
+            false,
+            false,
             audio_available,
             subtitles_available,
         )
