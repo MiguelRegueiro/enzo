@@ -99,6 +99,142 @@ fn record_writes_compact_resume_state() {
 }
 
 #[test]
+fn local_media_identity_ignores_custom_titles() {
+    let temp = test_dir("local-title-identity");
+    let media = temp.join("movie.mkv");
+    fs::write(&media, b"video").expect("media should be written");
+    let duration = Some(Duration::from_secs(100));
+
+    let without_title = MediaIdentity::for_path(&media, duration, false);
+    let with_title = MediaIdentity::for_media(&media, duration, false, Some("Display title"));
+
+    assert_eq!(without_title.path_key, with_title.path_key);
+}
+
+#[test]
+fn titled_remote_identity_survives_url_rotation() {
+    let temp = test_dir("remote-title-rotation");
+    let store = ResumeStore::new(temp.join("state"));
+    let duration = Some(Duration::from_secs(100));
+    let title = "Series - 01";
+    let first = MediaIdentity::for_media(
+        Path::new("https://media.example/stream/first.m3u8?token=one"),
+        duration,
+        false,
+        Some(title),
+    );
+    let record_name = record_name_for_path_key(&first.path_key);
+    let record = ResumeRecord::from_state(&first, playback_state(12));
+    store
+        .write_record(&record_name, &record, Durability::Checkpoint)
+        .expect("record should write");
+    let (second, loaded) = store
+        .load_with_remote_title(
+            Path::new("https://media.example/stream/second.m3u8?token=two"),
+            duration,
+            Some(title),
+        )
+        .expect("rotated URL should load");
+
+    assert_eq!(first.path_key, second.path_key);
+    assert_eq!(
+        loaded
+            .expect("stable record should restore")
+            .record
+            .position,
+        Duration::from_secs(12)
+    );
+    let record_text = fs::read_to_string(store.record_path(&record_name))
+        .expect("record text should be readable");
+    assert!(!record_text.contains("token=one"));
+    assert!(!record_text.contains(title));
+}
+
+#[test]
+fn titled_remote_identity_is_scoped_by_origin_and_title() {
+    let duration = Some(Duration::from_secs(100));
+    let identity = |url: &str, title: &str| {
+        MediaIdentity::for_media(Path::new(url), duration, false, Some(title)).path_key
+    };
+
+    assert_eq!(
+        identity("HTTPS://MEDIA.EXAMPLE:443/first", "Episode 1"),
+        identity("https://media.example/second", "Episode 1")
+    );
+    assert_ne!(
+        identity("https://media.example/first", "Episode 1"),
+        identity("https://cdn.example/first", "Episode 1")
+    );
+    assert_ne!(
+        identity("https://media.example/first", "Episode 1"),
+        identity("https://media.example/first", "Episode 2")
+    );
+}
+
+#[test]
+fn untitled_remote_identity_keeps_the_exact_url() {
+    let url = Path::new("https://media.example/stream.m3u8?token=secret");
+    let identity = MediaIdentity::for_media(url, Some(Duration::from_secs(100)), false, None);
+
+    assert_eq!(identity.path_key, path_key_for_media(url));
+}
+
+#[test]
+fn titled_remote_restore_falls_back_to_the_exact_url_and_migrates() {
+    let temp = test_dir("remote-title-migration");
+    let store = ResumeStore::new(temp.join("state"));
+    let url = Path::new("https://media.example/stream.m3u8?token=secret");
+    let duration = Some(Duration::from_secs(100));
+    let old_identity = MediaIdentity::for_path(url, duration, false);
+    let old_record_name = record_name_for_path_key(&old_identity.path_key);
+    let old_record = ResumeRecord::from_state(&old_identity, playback_state(12));
+    store
+        .write_record(&old_record_name, &old_record, Durability::Checkpoint)
+        .expect("old record should write");
+
+    let (identity, loaded) = store
+        .load_with_remote_title(url, duration, Some("Series - 01"))
+        .expect("titled remote media should load");
+    let loaded = loaded.expect("exact URL record should be used as a fallback");
+    let new_record_name = record_name_for_path_key(&identity.path_key);
+    assert_eq!(loaded.record_name, old_record_name);
+    assert_eq!(loaded.record.position, Duration::from_secs(12));
+    assert_ne!(new_record_name, old_record_name);
+
+    let mut tracker = ResumeTracker {
+        store: Some(store.clone()),
+        identity,
+        record_name: new_record_name.clone(),
+        loaded_record_name: Some(loaded.record_name),
+        restored: None,
+        state: playback_state(30),
+        last_saved_state: None,
+        last_checkpoint_at: Instant::now(),
+        last_error: None,
+        finished: false,
+    };
+    tracker
+        .save_current(SaveMode::CleanupBelowThreshold, Durability::Checkpoint)
+        .expect("stable record should save");
+    tracker.finished = true;
+
+    assert!(
+        store
+            .read_record(&old_record_name)
+            .expect("old record read should not fail")
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .read_record(&new_record_name)
+            .expect("new record read should not fail")
+            .expect("stable record should exist")
+            .position,
+        Duration::from_secs(30)
+    );
+}
+
+#[test]
 fn restore_scans_records_after_rename() {
     let temp = test_dir("rename");
     let first = temp.join("first.mkv");
@@ -707,6 +843,7 @@ fn disabled_tracker_never_opens_a_store() {
         Path::new("/tmp/disabled-resume.mkv"),
         Some(Duration::from_secs(10)),
         false,
+        None,
     );
 
     assert!(tracker.store.is_none());

@@ -14,7 +14,7 @@ use std::{
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use super::{
-    identity::{MediaIdentity, record_name_for_path_key},
+    identity::{MediaIdentity, legacy_record_name_for_remote_title, record_name_for_path_key},
     record::ResumeRecord,
 };
 
@@ -49,25 +49,39 @@ impl ResumeStore {
         Self { dir }
     }
 
+    #[cfg(test)]
     pub(super) fn load(
         &self,
         media_path: &Path,
         duration: Option<Duration>,
     ) -> io::Result<(MediaIdentity, Option<LoadedRecord>)> {
-        let mut identity = MediaIdentity::for_path(media_path, duration, false);
+        self.load_with_remote_title(media_path, duration, None)
+    }
+
+    pub(super) fn load_with_remote_title(
+        &self,
+        media_path: &Path,
+        duration: Option<Duration>,
+        remote_title: Option<&str>,
+    ) -> io::Result<(MediaIdentity, Option<LoadedRecord>)> {
+        let mut identity = MediaIdentity::for_media(media_path, duration, false, remote_title);
         let exact_name = record_name_for_path_key(&identity.path_key);
-        if let Some(record) = self.read_record(&exact_name)? {
-            if record.media_fingerprint.is_some() {
-                identity.ensure_fingerprint();
-            }
-            if record.matches(&identity, true) {
-                return Ok((
-                    identity,
-                    Some(LoadedRecord {
-                        record_name: exact_name.clone(),
-                        record,
-                    }),
-                ));
+        let legacy_name = legacy_record_name_for_remote_title(media_path, remote_title)
+            .filter(|name| name != &exact_name);
+        for record_name in std::iter::once(&exact_name).chain(legacy_name.as_ref()) {
+            if let Some(record) = self.read_record(record_name)? {
+                if record.media_fingerprint.is_some() {
+                    identity.ensure_fingerprint();
+                }
+                if record.matches(&identity, true) {
+                    return Ok((
+                        identity,
+                        Some(LoadedRecord {
+                            record_name: record_name.clone(),
+                            record,
+                        }),
+                    ));
+                }
             }
         }
 

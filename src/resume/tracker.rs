@@ -38,23 +38,28 @@ impl ResumeTracker {
         media_path: &Path,
         duration: Option<Duration>,
         resume_enabled: bool,
+        remote_title: Option<&str>,
     ) -> Self {
         if !resume_enabled {
-            return Self::disabled(media_path, duration);
+            return Self::disabled(media_path, duration, remote_title);
         }
         let Some(store) = ResumeStore::default() else {
-            return Self::disabled(media_path, duration);
+            return Self::disabled(media_path, duration, remote_title);
         };
         let mut last_error = store.housekeep().err();
-        let (identity, loaded) = match store.load(media_path, duration) {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                if last_error.is_none() {
-                    last_error = Some(error);
+        let (identity, loaded) =
+            match store.load_with_remote_title(media_path, duration, remote_title) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    if last_error.is_none() {
+                        last_error = Some(error);
+                    }
+                    (
+                        MediaIdentity::for_media(media_path, duration, false, remote_title),
+                        None,
+                    )
                 }
-                (MediaIdentity::for_path(media_path, duration, false), None)
-            }
-        };
+            };
         let record_name = record_name_for_path_key(&identity.path_key);
         let (loaded_record_name, restored) = loaded
             .map(|loaded| {
@@ -196,8 +201,8 @@ impl ResumeTracker {
         Ok(())
     }
 
-    fn disabled(media_path: &Path, duration: Option<Duration>) -> Self {
-        let identity = MediaIdentity::for_path(media_path, duration, false);
+    fn disabled(media_path: &Path, duration: Option<Duration>, remote_title: Option<&str>) -> Self {
+        let identity = MediaIdentity::for_media(media_path, duration, false, remote_title);
         let record_name = record_name_for_path_key(&identity.path_key);
         Self {
             store: None,

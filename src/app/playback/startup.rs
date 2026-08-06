@@ -85,6 +85,7 @@ fn play_current(
         &path,
         source.duration,
         resume_available(resume_enabled, source.seekable),
+        force_media_title,
     );
     let restored = resume.restored().cloned();
     let (initial_subtitle_paths, mut restored_external_subtitle_missing) =

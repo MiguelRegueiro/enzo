@@ -15,6 +15,7 @@ const RESUME_END_MARGIN: Duration = Duration::from_secs(1);
 
 pub(super) const FINGERPRINT_ALGORITHM: &str = "sampled-sha256-v1";
 pub(super) const FINGERPRINT_HEX_LEN: usize = 64;
+const REMOTE_TITLE_KEY_PREFIX: &[u8] = b"remote-title-v1\0";
 
 #[derive(Clone, Debug)]
 pub(super) struct MediaIdentity {
@@ -26,15 +27,26 @@ pub(super) struct MediaIdentity {
 }
 
 impl MediaIdentity {
+    #[cfg(test)]
     pub(super) fn for_path(
         path: &Path,
         duration: Option<Duration>,
         include_fingerprint: bool,
     ) -> Self {
+        Self::for_media(path, duration, include_fingerprint, None)
+    }
+
+    pub(super) fn for_media(
+        path: &Path,
+        duration: Option<Duration>,
+        include_fingerprint: bool,
+        remote_title: Option<&str>,
+    ) -> Self {
         let normalized_path = normalized_media_path(path);
         let metadata = metadata_for_path(&normalized_path);
         let mut identity = Self {
-            path_key: path_key_for_media(&normalized_path),
+            path_key: remote_title_path_key(&normalized_path, remote_title)
+                .unwrap_or_else(|| path_key_for_media(&normalized_path)),
             metadata,
             duration,
             fingerprint_path: normalized_path.is_file().then_some(normalized_path),
@@ -150,4 +162,73 @@ fn normalized_media_path(path: &Path) -> PathBuf {
 
 pub(super) fn path_key_for_media(path: &Path) -> Vec<u8> {
     path_to_bytes(path)
+}
+
+pub(super) fn legacy_record_name_for_remote_title(
+    path: &Path,
+    remote_title: Option<&str>,
+) -> Option<String> {
+    let normalized_path = normalized_media_path(path);
+    remote_title_path_key(&normalized_path, remote_title)?;
+    Some(record_name_for_path_key(&path_key_for_media(
+        &normalized_path,
+    )))
+}
+
+fn remote_title_path_key(path: &Path, remote_title: Option<&str>) -> Option<Vec<u8>> {
+    let title = remote_title.filter(|title| !title.is_empty())?;
+    let origin = normalized_http_origin(path.to_str()?)?;
+    let mut key =
+        Vec::with_capacity(REMOTE_TITLE_KEY_PREFIX.len() + origin.len() + title.len() + 1);
+    key.extend_from_slice(REMOTE_TITLE_KEY_PREFIX);
+    key.extend_from_slice(origin.as_bytes());
+    key.push(0);
+    key.extend_from_slice(title.as_bytes());
+    Some(key)
+}
+
+fn normalized_http_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let (scheme, default_port) = if scheme.eq_ignore_ascii_case("http") {
+        ("http", 80)
+    } else if scheme.eq_ignore_ascii_case("https") {
+        ("https", 443)
+    } else {
+        return None;
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = rest[..authority_end].rsplit('@').next()?;
+    if authority.is_empty() || authority.chars().any(char::is_whitespace) {
+        return None;
+    }
+
+    let (host, port) = split_host_port(authority)?;
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+    match port.filter(|port| *port != default_port) {
+        Some(port) => Some(format!("{scheme}://{host}:{port}")),
+        None => Some(format!("{scheme}://{host}")),
+    }
+}
+
+fn split_host_port(authority: &str) -> Option<(&str, Option<u16>)> {
+    if authority.starts_with('[') {
+        let closing = authority.find(']')?;
+        let host = &authority[..=closing];
+        let suffix = &authority[closing + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.strip_prefix(':')?.parse().ok()?)
+        };
+        return Some((host, port));
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port.parse().ok()?)),
+        None => (authority, None),
+    };
+    (!host.contains([':', '[', ']'])).then_some((host, port))
 }
