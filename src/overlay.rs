@@ -40,7 +40,7 @@ use crate::{
 
 pub(crate) use state::{
     AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext, OverlayHitPoint,
-    OverlayState, SubtitlePickerAction, TransportControlAction,
+    OverlayRenderContext, OverlayState, SubtitlePickerAction, TransportControlAction,
 };
 
 pub(crate) struct PlaybackOverlay {
@@ -73,18 +73,16 @@ impl PlaybackOverlay {
     pub(crate) fn render(
         &mut self,
         frame: &mut [u8],
-        width: u32,
-        height: u32,
-        terminal_rows: u16,
-        scale_percent: u32,
+        context: OverlayRenderContext,
         state: OverlayState,
     ) {
         render_overlay_rgb(
             frame,
-            width,
-            height,
-            terminal_rows,
-            scale_percent,
+            context.width,
+            context.height,
+            context.terminal_cols,
+            context.terminal_rows,
+            context.scale_percent,
             state,
             &mut self.scratch,
             &mut self.acrylic,
@@ -235,6 +233,7 @@ impl PlaybackOverlay {
         overlay_metrics(
             context.width,
             context.height,
+            context.terminal_cols,
             context.terminal_rows,
             context.scale_percent,
             context.duration,

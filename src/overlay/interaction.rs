@@ -20,33 +20,38 @@ pub(super) fn transport_control_action(
     point: OverlayHitPoint,
 ) -> Option<TransportControlAction> {
     let playlist_controls_visible = metrics.previous_x != metrics.playback_x;
-    let mut best = transport_button_point_hit(
-        metrics,
-        point,
-        playback_button_rect(metrics),
-        TransportControlAction::Playback,
-    );
-    if playlist_controls_visible {
-        best = nearest_transport_hit(
-            best,
-            transport_button_point_hit(
-                metrics,
-                point,
-                previous_button_rect(metrics),
-                TransportControlAction::Previous,
-            ),
-        );
-        best = nearest_transport_hit(
-            best,
-            transport_button_point_hit(
-                metrics,
-                point,
-                next_button_rect(metrics),
-                TransportControlAction::Next,
-            ),
-        );
+    let playback = playback_button_rect(metrics);
+    if !playlist_controls_visible {
+        return transport_row_hit(metrics, point, playback)
+            .then_some(TransportControlAction::Playback);
     }
-    best.map(|hit| hit.action)
+
+    let previous = previous_button_rect(metrics);
+    let next = next_button_rect(metrics);
+    let cluster = HitboxRect {
+        left: previous.left,
+        top: playback.top,
+        right: next.right,
+        bottom: playback.bottom,
+    };
+    if !transport_row_hit(metrics, point, cluster) {
+        return None;
+    }
+
+    let previous_center = rect_center_x(previous);
+    let playback_center = rect_center_x(playback);
+    let next_center = rect_center_x(next);
+    let previous_boundary =
+        previous_center.saturating_add(playback_center.saturating_sub(previous_center) / 2);
+    let next_boundary =
+        playback_center.saturating_add(next_center.saturating_sub(playback_center) / 2);
+    if point.x < previous_boundary {
+        Some(TransportControlAction::Previous)
+    } else if point.x <= next_boundary {
+        Some(TransportControlAction::Playback)
+    } else {
+        Some(TransportControlAction::Next)
+    }
 }
 
 pub(super) fn audio_picker_action(
@@ -209,76 +214,20 @@ fn hitbox_intersects(a: HitboxRect, b: HitboxRect) -> bool {
     a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
 
-#[derive(Clone, Copy)]
-struct TransportHit {
-    action: TransportControlAction,
-    distance_squared: u64,
-}
-
-fn transport_button_point_hit(
-    metrics: OverlayMetrics,
-    point: OverlayHitPoint,
-    rect: HitboxRect,
-    action: TransportControlAction,
-) -> Option<TransportHit> {
-    let horizontal_slop = (metrics.control_size / 8)
-        .min(transport_gap(metrics) / 3)
-        .clamp(1, 4);
+fn transport_row_hit(metrics: OverlayMetrics, point: OverlayHitPoint, rect: HitboxRect) -> bool {
     let vertical_slop = 8.min(metrics.control_size / 2).max(3);
     let hitbox = HitboxRect {
-        left: rect.left.saturating_sub(horizontal_slop),
+        left: rect.left,
         top: rect.top.saturating_sub(vertical_slop),
-        right: rect.right.saturating_add(horizontal_slop),
+        right: rect.right,
         bottom: rect.bottom.saturating_add(vertical_slop),
     };
-    if point.x < hitbox.left
-        || point.x > hitbox.right
-        || point.y < hitbox.top
-        || point.y > hitbox.bottom
-    {
-        return None;
-    }
-    let center_x = rect
-        .left
-        .saturating_add(rect.right.saturating_sub(rect.left) / 2);
-    let center_y = rect
-        .top
-        .saturating_add(rect.bottom.saturating_sub(rect.top) / 2);
-    Some(TransportHit {
-        action,
-        distance_squared: squared_distance(point.x, point.y, center_x, center_y),
-    })
+    point.x >= hitbox.left && point.x <= hitbox.right && hitbox_intersects(point.cell, hitbox)
 }
 
-fn transport_gap(metrics: OverlayMetrics) -> u32 {
-    if metrics.previous_x != metrics.playback_x {
-        metrics
-            .playback_x
-            .saturating_sub(metrics.previous_x.saturating_add(metrics.control_size))
-    } else {
-        metrics.control_size / 2
-    }
-}
-
-fn nearest_transport_hit(
-    current: Option<TransportHit>,
-    candidate: Option<TransportHit>,
-) -> Option<TransportHit> {
-    match (current, candidate) {
-        (Some(current), Some(candidate))
-            if candidate.distance_squared < current.distance_squared =>
-        {
-            Some(candidate)
-        }
-        (Some(current), _) => Some(current),
-        (None, candidate) => candidate,
-    }
-}
-
-fn squared_distance(x: u32, y: u32, center_x: u32, center_y: u32) -> u64 {
-    let dx = i64::from(x) - i64::from(center_x);
-    let dy = i64::from(y) - i64::from(center_y);
-    dx.unsigned_abs().pow(2) + dy.unsigned_abs().pow(2)
+fn rect_center_x(rect: HitboxRect) -> u32 {
+    rect.left
+        .saturating_add(rect.right.saturating_sub(rect.left) / 2)
 }
 
 pub(super) fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
@@ -788,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn playlist_buttons_hit_test_bounded_edges_without_claiming_gaps() {
+    fn playlist_buttons_partition_inner_gaps_and_keep_bounded_outer_edges() {
         let metrics = test_metrics_with_playlist(1920, 1200);
 
         assert_eq!(
@@ -819,7 +768,7 @@ mod tests {
                 metrics,
                 hit_point(gap_x, metrics.control_y + metrics.control_size / 2)
             ),
-            None
+            Some(TransportControlAction::Playback)
         );
         assert_eq!(
             transport_control_action(
@@ -834,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_action_resolves_cluster_without_claiming_dead_gap() {
+    fn transport_action_resolves_cluster_at_nearest_control_boundary() {
         let metrics = test_metrics_with_playlist(1920, 1200);
         let y = metrics.control_y + metrics.control_size / 2;
         let gap_x = metrics.playback_x
@@ -855,7 +804,14 @@ mod tests {
             ),
             Some(TransportControlAction::Next)
         );
-        assert_eq!(transport_control_action(metrics, hit_point(gap_x, y)), None);
+        assert_eq!(
+            transport_control_action(metrics, hit_point(gap_x, y)),
+            Some(TransportControlAction::Playback)
+        );
+        assert_eq!(
+            transport_control_action(metrics, hit_point(gap_x + 1, y)),
+            Some(TransportControlAction::Next)
+        );
         assert_eq!(
             transport_control_action(
                 metrics,
@@ -869,8 +825,48 @@ mod tests {
                     },
                 )
             ),
-            None
+            Some(TransportControlAction::Playback)
         );
+    }
+
+    #[test]
+    fn cell_aligned_transport_maps_near_pause_and_next_icon_clicks_correctly() {
+        let width = 1920;
+        let height = 1200;
+
+        for terminal_cols in [80, 120, 240] {
+            let metrics = test_metrics_with_playlist_columns(width, height, terminal_cols);
+            let y = metrics.control_y + metrics.control_size / 2;
+            let bar_width = (metrics.control_size / 5).max(2);
+            let pause_gap = (metrics.control_size / 7).max(2);
+            let pause_width = bar_width.saturating_mul(2).saturating_add(pause_gap);
+            let pause_right = metrics
+                .playback_x
+                .saturating_add(metrics.control_size.saturating_sub(pause_width) / 2)
+                .saturating_add(pause_width);
+            let next_left = metrics
+                .next_x
+                .saturating_add(metrics.control_size.saturating_mul(29) / 100);
+            let near_pause_x =
+                pause_right.saturating_add(next_left.saturating_sub(pause_right) / 3);
+
+            assert_eq!(
+                transport_control_action(
+                    metrics,
+                    terminal_cell_point_for_x(width, terminal_cols, near_pause_x, y),
+                ),
+                Some(TransportControlAction::Playback),
+                "terminal width {terminal_cols}",
+            );
+            assert_eq!(
+                transport_control_action(
+                    metrics,
+                    terminal_cell_point_for_x(width, terminal_cols, next_left + 1, y),
+                ),
+                Some(TransportControlAction::Next),
+                "terminal width {terminal_cols}",
+            );
+        }
     }
 
     fn audio_picker_action(
@@ -909,6 +905,14 @@ mod tests {
     }
 
     fn test_metrics_with_playlist(width: u32, height: u32) -> OverlayMetrics {
+        test_metrics_with_playlist_columns(width, height, width as u16)
+    }
+
+    fn test_metrics_with_playlist_columns(
+        width: u32,
+        height: u32,
+        terminal_cols: u16,
+    ) -> OverlayMetrics {
         let text_size = text_size(width, height, 100);
         let fallback_text_scale = fallback_text_scale(width, height, 100);
         let text_height = 7 * fallback_text_scale;
@@ -920,6 +924,7 @@ mod tests {
             text_size,
             fallback_text_scale,
             text_height,
+            terminal_cols,
             height as u16,
             time_width,
             true,
@@ -950,6 +955,37 @@ mod tests {
             .top
             .saturating_add(cell.bottom.saturating_sub(cell.top) / 2);
         OverlayHitPoint { x, y, cell }
+    }
+
+    fn terminal_cell_point_for_x(
+        width: u32,
+        terminal_cols: u16,
+        clicked_x: u32,
+        y: u32,
+    ) -> OverlayHitPoint {
+        let columns = u32::from(terminal_cols.max(1));
+        let column = (u64::from(clicked_x.min(width.saturating_sub(1)))
+            .saturating_mul(u64::from(columns))
+            / u64::from(width.max(1)))
+        .min(u64::from(columns.saturating_sub(1))) as u32;
+        let left = (u64::from(column).saturating_mul(u64::from(width)) / u64::from(columns)) as u32;
+        let right = (u64::from(column.saturating_add(1))
+            .saturating_mul(u64::from(width))
+            .div_ceil(u64::from(columns))
+            .saturating_sub(1)
+            .min(u64::from(width.saturating_sub(1)))) as u32;
+        let center = (u64::from(column.saturating_mul(2).saturating_add(1))
+            .saturating_mul(u64::from(width))
+            / u64::from(columns.saturating_mul(2))) as u32;
+        hit_point_with_cell(
+            center,
+            HitboxRect {
+                left,
+                top: y,
+                right,
+                bottom: y,
+            },
+        )
     }
 
     fn progress_hit_ratio_at_middle(
@@ -1004,6 +1040,7 @@ mod tests {
             text_size,
             fallback_text_scale,
             text_height,
+            width as u16,
             terminal_rows,
             time_width,
             false,

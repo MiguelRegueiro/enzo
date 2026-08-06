@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     font_system::FontSystem,
-    overlay::{OverlayState, PlaybackOverlay},
+    overlay::{OverlayRenderContext, OverlayState, PlaybackOverlay},
     subtitle::{SubtitleLayout, SubtitleRenderer, SubtitleTrack},
     terminal::{
         KITTY_IMAGE_IDS, KITTY_PLACEMENT_ID, KittyFramePlacement, clear_screen_and_images,
@@ -130,10 +130,13 @@ impl<W: Write> PlaybackView<W> {
         }
         self.overlay.render(
             &mut self.composited_frame,
-            self.canvas.width,
-            self.canvas.height,
-            self.canvas.area.rows,
-            self.canvas.overlay_scale_percent,
+            OverlayRenderContext {
+                width: self.canvas.width,
+                height: self.canvas.height,
+                terminal_cols: self.canvas.area.cols,
+                terminal_rows: self.canvas.area.rows,
+                scale_percent: self.canvas.overlay_scale_percent,
+            },
             overlay_state.clone(),
         );
 

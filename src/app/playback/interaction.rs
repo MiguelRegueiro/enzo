@@ -170,7 +170,8 @@ impl<W: Write> InteractionContext<'_, W> {
             PlaybackCommand::ToggleSubtitles => {
                 self.ui.subtitle_picker_open = false;
                 if !self.subtitles.is_available() {
-                    self.ui.status_message = Some(PlaybackUi::status("NO SUBTITLES", input_at));
+                    self.ui.status_message =
+                        Some(PlaybackUi::status("NO SUBTITLES AVAILABLE", input_at));
                 } else if self.subtitles.selected().is_some() {
                     self.subtitles.select(None);
                     sync_resume_subtitle(
@@ -631,7 +632,7 @@ impl<W: Write> InteractionContext<'_, W> {
             self.ui.audio_picker_focus = None;
             self.ui.subtitle_picker_open = false;
             self.ui.subtitle_picker_focus = None;
-            self.ui.status_message = Some(PlaybackUi::status("NO SUBTITLES", input_at));
+            self.ui.status_message = Some(PlaybackUi::status("NO SUBTITLES AVAILABLE", input_at));
         } else {
             self.ui.subtitle_picker_open = !self.ui.subtitle_picker_open;
             if self.ui.subtitle_picker_open {
@@ -897,6 +898,7 @@ impl<W: Write> InteractionContext<'_, W> {
         OverlayHitContext {
             width: self.view.canvas.width,
             height: self.view.canvas.height,
+            terminal_cols: self.view.canvas.area.cols,
             terminal_rows: self.view.canvas.area.rows,
             scale_percent: self.view.canvas.overlay_scale_percent,
             position: self.seeking.scrub_position.unwrap_or(self.engine.position),

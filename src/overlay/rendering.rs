@@ -23,6 +23,7 @@ pub(super) fn render_overlay_rgb(
     frame: &mut [u8],
     width: u32,
     height: u32,
+    terminal_cols: u16,
     terminal_rows: u16,
     scale_percent: u32,
     state: OverlayState,
@@ -122,6 +123,7 @@ pub(super) fn render_overlay_rgb(
         text_size,
         fallback_text_scale,
         text_height,
+        terminal_cols,
         terminal_rows,
         time_width,
         state.playlist_previous_available,
@@ -230,29 +232,27 @@ pub(super) fn render_overlay_rgb(
             );
         }
     }
-    if state.subtitles_available {
-        draw_subtitle_control(
+    draw_subtitle_control(
+        frame,
+        width,
+        height,
+        metrics,
+        state.selected_subtitle.is_some(),
+    );
+    if state.subtitles_available && state.subtitle_picker_open {
+        draw_track_picker(
+            font.as_deref_mut(),
             frame,
             width,
             height,
             metrics,
-            state.selected_subtitle.is_some(),
+            &state.subtitle_labels,
+            state.selected_subtitle,
+            state.subtitle_picker_offset,
+            state.subtitle_picker_focus,
+            true,
+            acrylic,
         );
-        if state.subtitle_picker_open {
-            draw_track_picker(
-                font.as_deref_mut(),
-                frame,
-                width,
-                height,
-                metrics,
-                &state.subtitle_labels,
-                state.selected_subtitle,
-                state.subtitle_picker_offset,
-                state.subtitle_picker_focus,
-                true,
-                acrylic,
-            );
-        }
     }
     draw_overlay_text(
         font,

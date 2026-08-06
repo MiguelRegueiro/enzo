@@ -64,6 +64,7 @@ pub(crate) struct MediaInfoState {
 pub(crate) struct OverlayHitContext {
     pub(crate) width: u32,
     pub(crate) height: u32,
+    pub(crate) terminal_cols: u16,
     pub(crate) terminal_rows: u16,
     pub(crate) scale_percent: u32,
     pub(crate) position: Duration,
@@ -72,6 +73,15 @@ pub(crate) struct OverlayHitContext {
     pub(crate) playlist_next_available: bool,
     pub(crate) audio_available: bool,
     pub(crate) subtitles_available: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct OverlayRenderContext {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) terminal_cols: u16,
+    pub(crate) terminal_rows: u16,
+    pub(crate) scale_percent: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

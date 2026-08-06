@@ -44,12 +44,13 @@ impl OverlayMetrics {
         text_size: u32,
         fallback_text_scale: u32,
         text_height: u32,
+        terminal_cols: u16,
         terminal_rows: u16,
         time_width: u32,
         playlist_previous_available: bool,
         playlist_next_available: bool,
         audio_available: bool,
-        subtitles_available: bool,
+        _subtitles_available: bool,
     ) -> Self {
         let bar_height = bar_height_for_text(text_size).min(video_height.max(1));
         let vertical_pad = vertical_padding_for_text(text_size);
@@ -89,31 +90,29 @@ impl OverlayMetrics {
         let control_y = row_y.saturating_add((row_height.saturating_sub(control_size)) / 2);
         let text_y = row_y.saturating_add((row_height.saturating_sub(text_height)) / 2);
         let playlist_available = playlist_previous_available || playlist_next_available;
-        let transport_count = if playlist_available { 3_u32 } else { 1_u32 };
-        let previous_x = inner_x;
-        let playback_x = if playlist_available {
-            inner_x
-                .saturating_add(control_size)
-                .saturating_add(control_gap)
+        let (previous_x, playback_x, next_x) = if playlist_available {
+            cell_aligned_transport_positions(
+                width,
+                terminal_cols,
+                inner_x,
+                control_size,
+                control_gap,
+            )
         } else {
-            inner_x
+            let playback_x = cell_aligned_control_x(width, terminal_cols, inner_x, control_size);
+            (playback_x, playback_x, playback_x)
         };
-        let next_x = if playlist_available {
-            playback_x
-                .saturating_add(control_size)
-                .saturating_add(control_gap)
+        let transport_right = if playlist_available {
+            next_x.saturating_add(control_size)
         } else {
-            inner_x
+            playback_x.saturating_add(control_size)
         };
-        let transport_width = control_size
-            .saturating_mul(transport_count)
-            .saturating_add(control_gap.saturating_mul(transport_count.saturating_sub(1)));
-        let time_x = inner_x
-            .saturating_add(transport_width)
+        let time_x = transport_right
             .saturating_add(control_gap)
             .min(width.saturating_sub(1));
         let content_right = width.saturating_sub(inner_x).max(inner_x.saturating_add(1));
-        let controls = u32::from(audio_available).saturating_add(u32::from(subtitles_available));
+        // Keep the subtitle control visible even when no tracks are available.
+        let controls = u32::from(audio_available).saturating_add(1);
         let controls_width = controls
             .saturating_mul(control_size)
             .saturating_add(controls.saturating_sub(1).saturating_mul(control_gap));
@@ -128,11 +127,7 @@ impl OverlayMetrics {
         } else {
             content_right
         };
-        let subtitle_x = if subtitles_available {
-            next_control_x
-        } else {
-            content_right
-        };
+        let subtitle_x = next_control_x;
         let bar_gap = control_gap.saturating_mul(3);
         let bar_x = time_x
             .saturating_add(time_width)
@@ -174,6 +169,76 @@ impl OverlayMetrics {
     }
 }
 
+fn cell_aligned_transport_positions(
+    width: u32,
+    terminal_cols: u16,
+    inner_x: u32,
+    control_size: u32,
+    control_gap: u32,
+) -> (u32, u32, u32) {
+    let columns = u32::from(terminal_cols.max(1));
+    if columns < 3 {
+        let playback_x = inner_x
+            .saturating_add(control_size)
+            .saturating_add(control_gap);
+        let next_x = playback_x
+            .saturating_add(control_size)
+            .saturating_add(control_gap);
+        return (inner_x, playback_x, next_x);
+    }
+
+    let desired_center = inner_x.saturating_add(control_size / 2);
+    let mut first_column = terminal_column_for_x(width, columns, desired_center);
+    let desired_step = control_size.saturating_add(control_gap);
+    let mut column_step = ((u64::from(desired_step)
+        .saturating_mul(u64::from(columns))
+        .saturating_add(u64::from(width.max(1)) / 2)
+        / u64::from(width.max(1))) as u32)
+        .max(1);
+    column_step = column_step.min((columns.saturating_sub(1) / 2).max(1));
+    first_column = first_column.min(columns.saturating_sub(column_step.saturating_mul(2) + 1));
+
+    let previous_x = control_x_for_terminal_column(width, columns, first_column, control_size);
+    let playback_x = control_x_for_terminal_column(
+        width,
+        columns,
+        first_column.saturating_add(column_step),
+        control_size,
+    );
+    let next_x = control_x_for_terminal_column(
+        width,
+        columns,
+        first_column.saturating_add(column_step.saturating_mul(2)),
+        control_size,
+    );
+    (previous_x, playback_x, next_x)
+}
+
+fn cell_aligned_control_x(
+    width: u32,
+    terminal_cols: u16,
+    desired_x: u32,
+    control_size: u32,
+) -> u32 {
+    let columns = u32::from(terminal_cols.max(1));
+    let desired_center = desired_x.saturating_add(control_size / 2);
+    let column = terminal_column_for_x(width, columns, desired_center);
+    control_x_for_terminal_column(width, columns, column, control_size)
+}
+
+fn terminal_column_for_x(width: u32, columns: u32, x: u32) -> u32 {
+    (u64::from(x.min(width.saturating_sub(1))) * u64::from(columns) / u64::from(width.max(1)))
+        .min(u64::from(columns.saturating_sub(1))) as u32
+}
+
+fn control_x_for_terminal_column(width: u32, columns: u32, column: u32, control_size: u32) -> u32 {
+    let center = (u64::from(column.saturating_mul(2).saturating_add(1)) * u64::from(width)
+        / u64::from(columns.saturating_mul(2).max(1))) as u32;
+    center
+        .saturating_sub(control_size / 2)
+        .min(width.saturating_sub(control_size))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn top_message_y(height: u32, text_size: u32) -> u32 {
     outer_padding_for_text(text_size).min(height.saturating_sub(1))
@@ -199,6 +264,7 @@ pub(super) fn top_message_stack_y(
 pub(super) fn overlay_metrics(
     width: u32,
     height: u32,
+    terminal_cols: u16,
     terminal_rows: u16,
     scale_percent: u32,
     duration: Option<Duration>,
@@ -222,6 +288,7 @@ pub(super) fn overlay_metrics(
         text_size,
         fallback_text_scale,
         text_height,
+        terminal_cols,
         terminal_rows,
         time_width,
         playlist_previous_available,
@@ -616,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn progress_bar_end_gap_matches_start_gap_without_extra_controls() {
+    fn progress_bar_gap_matches_disabled_subtitle_control() {
         let width = 320;
         let metrics = test_metrics(width, 180);
         let time_width = time_column_width(
@@ -627,8 +694,8 @@ mod tests {
         let left_gap = metrics
             .bar_x
             .saturating_sub(metrics.time_x.saturating_add(time_width));
-        let right_gap = width
-            .saturating_sub(metrics.playback_x)
+        let right_gap = metrics
+            .subtitle_x
             .saturating_sub(metrics.bar_x.saturating_add(metrics.bar_width));
 
         assert_eq!(right_gap, left_gap);
@@ -808,6 +875,7 @@ mod tests {
             text_size,
             fallback_text_scale,
             text_height,
+            width as u16,
             terminal_rows,
             time_width,
             false,

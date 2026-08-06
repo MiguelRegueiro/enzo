@@ -23,6 +23,7 @@ fn paused_overlay_draws_play_button() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -78,6 +79,7 @@ fn playing_overlay_draws_pause_button() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -134,6 +136,7 @@ fn rendered_overlay_changes_bottom_pixels_only() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -200,6 +203,7 @@ fn hidden_overlay_leaves_frame_unchanged() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -249,6 +253,7 @@ fn status_message_can_render_without_playback_controls() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -301,6 +306,7 @@ fn media_info_stacks_below_title_without_playback_controls() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -367,6 +373,7 @@ fn media_title_renders_with_playback_controls() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         OverlayState {
@@ -439,6 +446,7 @@ fn help_overlay_renders_without_title_or_bottom_controls() {
         &mut frame,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         help_state.clone(),
@@ -462,6 +470,7 @@ fn help_overlay_renders_without_title_or_bottom_controls() {
         &mut controls_requested,
         width,
         height,
+        width as u16,
         height as u16,
         100,
         state,
@@ -512,6 +521,7 @@ fn test_metrics_with_scale_controls_and_terminal_rows(
         text_size,
         fallback_text_scale,
         text_height,
+        width as u16,
         terminal_rows,
         time_width,
         false,
