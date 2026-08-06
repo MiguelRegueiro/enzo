@@ -314,7 +314,7 @@ int enzo_video_decoder_open(
     decoder->fallback_interval =
         1.0 / (isfinite(fps) && fps > 0.0 ? fps : 30.0);
 
-    int ret = avformat_open_input(&decoder->format, path, NULL, NULL);
+    int ret = enzo_open_input(path, &decoder->format);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open input", ret);
         enzo_video_decoder_close(decoder);

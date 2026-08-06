@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/log.h>
 #include <libavutil/mathematics.h>
@@ -101,6 +102,21 @@ void enzo_suppress_ffmpeg_logs(void) {
     av_log_set_level(AV_LOG_QUIET);
 }
 
+int enzo_open_input(
+    const char *path,
+    AVFormatContext **format_out
+) {
+    AVDictionary *options = NULL;
+    // Some HLS providers disguise media segments with non-media extensions.
+    // Match mpv's compatibility behavior and let FFmpeg inspect their content.
+    int ret = av_dict_set(&options, "extension_picky", "0", 0);
+    if (ret >= 0) {
+        ret = avformat_open_input(format_out, path, NULL, &options);
+    }
+    av_dict_free(&options);
+    return ret;
+}
+
 int enzo_open_stream_probe(
     const char *path,
     AVFormatContext **format_out,
@@ -108,7 +124,7 @@ int enzo_open_stream_probe(
     size_t err_len
 ) {
     AVFormatContext *format = NULL;
-    int ret = avformat_open_input(&format, path, NULL, NULL);
+    int ret = enzo_open_input(path, &format);
     if (ret < 0) {
         enzo_set_ffmpeg_error(
             err,

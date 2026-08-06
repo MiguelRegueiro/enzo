@@ -38,7 +38,7 @@ int enzo_probe_video(const char *path, EnzoVideoInfo *out, char *err, size_t err
     }
 
     AVFormatContext *format = NULL;
-    int ret = avformat_open_input(&format, path, NULL, NULL);
+    int ret = enzo_open_input(path, &format);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open input", ret);
         return -1;

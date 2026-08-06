@@ -36,6 +36,11 @@ void enzo_set_ffmpeg_error(
 );
 void enzo_suppress_ffmpeg_logs(void);
 
+int enzo_open_input(
+    const char *path,
+    AVFormatContext **format_out
+);
+
 int enzo_open_stream_probe(
     const char *path,
     AVFormatContext **format_out,

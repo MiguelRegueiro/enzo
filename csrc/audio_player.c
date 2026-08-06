@@ -38,7 +38,7 @@ static int open_audio_decoder(
     size_t err_len
 ) {
     AVFormatContext *format = NULL;
-    int ret = avformat_open_input(&format, path, NULL, NULL);
+    int ret = enzo_open_input(path, &format);
     if (ret < 0) {
         enzo_set_ffmpeg_error(err, err_len, "failed to open audio input", ret);
         return -1;
