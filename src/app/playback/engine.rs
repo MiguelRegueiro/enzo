@@ -188,7 +188,7 @@ mod tests {
     use super::{VOLUME_STEP_PERCENT, adjusted_volume};
 
     #[test]
-    fn volume_step_matches_mpv_default() {
+    fn volume_step_is_two_percent() {
         assert_eq!(VOLUME_STEP_PERCENT, 2);
     }
 

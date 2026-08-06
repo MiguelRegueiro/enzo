@@ -251,7 +251,7 @@ int enzo_input_open(
     );
     AVDictionary *options = NULL;
     if (ret >= 0) {
-        // Match mpv for providers that disguise HLS media segment extensions.
+        // Allow HLS media segments served with nonstandard filename extensions.
         ret = av_dict_set(&options, "extension_picky", "0", 0);
     }
     if (ret >= 0) {

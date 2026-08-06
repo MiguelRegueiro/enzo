@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn mpv_volume_keys_map_to_two_percent_steps() {
+    fn volume_keys_map_to_two_percent_steps() {
         assert_eq!(volume_steps_for_key(&KeyCode::Char('9')), Some(-1));
         assert_eq!(volume_steps_for_key(&KeyCode::Char('0')), Some(1));
         assert_eq!(volume_steps_for_key(&KeyCode::Char('m')), None);
