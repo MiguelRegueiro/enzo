@@ -80,12 +80,14 @@ Flags:
 - `s` opens the subtitle-track menu
 - `v` toggles subtitles
 - `i` shows media information; `I` pins or unpins it
-- Page Up / Page Down plays the previous/next video in the same folder
+- `p` opens the playlist menu
+- Page Up / Page Down play the previous/next video in the same folder
 - `?` toggles help; Esc closes open panels
 - Left/right arrows seek by 5 seconds
-- Down/up arrows seek by 60 seconds, or navigate an open track menu
+- Down/up arrows seek by 60 seconds; in menus, they move the selection
+- In the playlist menu, Page Up/Page Down moves by a page and Home/End jumps to the first/last video
 - Click or drag the progress bar to seek
-- Mouse wheel scrolls open audio/subtitle menus
+- Mouse wheel adjusts volume; in menus, it scrolls the list
 - `q` quits
 - `Q` quits without saving resume state
 

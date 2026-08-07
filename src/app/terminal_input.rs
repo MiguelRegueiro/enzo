@@ -15,6 +15,7 @@ pub(crate) enum PlaybackCommand {
     ToggleSubtitles,
     ToggleAudioPicker,
     ToggleSubtitlePicker,
+    TogglePlaylistMenu,
     ShowMediaInfo,
     ToggleMediaInfo,
     ToggleHelp,
@@ -22,6 +23,8 @@ pub(crate) enum PlaybackCommand {
     ConfirmPicker,
     PlaylistPrevious,
     PlaylistNext,
+    PlaylistFirst,
+    PlaylistLast,
     AdjustVolume { steps: i32 },
     SeekBySeconds { seconds: i32, picker_direction: i32 },
 }
@@ -100,6 +103,7 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Char('v') => PlaybackCommand::ToggleSubtitles,
         KeyCode::Char('a') => PlaybackCommand::ToggleAudioPicker,
         KeyCode::Char('s') => PlaybackCommand::ToggleSubtitlePicker,
+        KeyCode::Char('p') => PlaybackCommand::TogglePlaylistMenu,
         KeyCode::Char('i') => PlaybackCommand::ShowMediaInfo,
         KeyCode::Char('I') => PlaybackCommand::ToggleMediaInfo,
         KeyCode::Char('?') => PlaybackCommand::ToggleHelp,
@@ -107,6 +111,8 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Enter => PlaybackCommand::ConfirmPicker,
         KeyCode::PageUp => PlaybackCommand::PlaylistPrevious,
         KeyCode::PageDown => PlaybackCommand::PlaylistNext,
+        KeyCode::Home => PlaybackCommand::PlaylistFirst,
+        KeyCode::End => PlaybackCommand::PlaylistLast,
         _ => PlaybackCommand::None,
     }
 }
@@ -301,6 +307,10 @@ mod tests {
             PlaybackCommand::ToggleSubtitlePicker
         );
         assert_eq!(
+            playback_command_for_key(&KeyCode::Char('p')),
+            PlaybackCommand::TogglePlaylistMenu
+        );
+        assert_eq!(
             playback_command_for_key(&KeyCode::Char('v')),
             PlaybackCommand::ToggleSubtitles
         );
@@ -315,6 +325,22 @@ mod tests {
         assert_eq!(
             playback_command_for_key(&KeyCode::PageDown),
             PlaybackCommand::PlaylistNext
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Home),
+            PlaybackCommand::PlaylistFirst
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::End),
+            PlaybackCommand::PlaylistLast
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char('[')),
+            PlaybackCommand::None
+        );
+        assert_eq!(
+            playback_command_for_key(&KeyCode::Char(']')),
+            PlaybackCommand::None
         );
         assert_eq!(
             playback_command_for_key(&KeyCode::Char('Q')),

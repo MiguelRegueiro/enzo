@@ -9,7 +9,10 @@ use anyhow::Result;
 use crate::{
     font_system::FontSystem,
     media::VideoInfo,
-    overlay::{AudioPickerAction, OverlayHitContext, SubtitlePickerAction, TransportControlAction},
+    overlay::{
+        AudioPickerAction, OverlayHitContext, PlaylistMenuAction, SubtitlePickerAction,
+        TransportControlAction,
+    },
     resume::ResumeTracker,
     subtitle::{SubtitleRenderer, SubtitleTrack},
 };
@@ -129,6 +132,27 @@ impl<W: Write> InteractionContext<'_, W> {
             }
             return Ok(None);
         }
+        if self.ui.playlist_menu_open {
+            match command {
+                PlaybackCommand::TogglePause => self.toggle_pause(input_at),
+                PlaybackCommand::TogglePlaylistMenu | PlaybackCommand::CloseTransientUi => {
+                    self.close_playlist_menu();
+                }
+                PlaybackCommand::SeekBySeconds {
+                    picker_direction, ..
+                } => self.navigate_playlist_menu(picker_direction),
+                PlaybackCommand::PlaylistPrevious => self.page_playlist_menu(-1),
+                PlaybackCommand::PlaylistNext => self.page_playlist_menu(1),
+                PlaybackCommand::PlaylistFirst => self.focus_playlist_boundary(false),
+                PlaybackCommand::PlaylistLast => self.focus_playlist_boundary(true),
+                PlaybackCommand::ConfirmPicker => {
+                    return Ok(self.confirm_playlist_selection());
+                }
+                PlaybackCommand::None => {}
+                _ => {}
+            }
+            return Ok(None);
+        }
 
         match command {
             PlaybackCommand::Quit => return Ok(Some(PlaybackOutcome::Quit)),
@@ -207,6 +231,10 @@ impl<W: Write> InteractionContext<'_, W> {
                 self.ui.help_visible = false;
                 self.toggle_subtitle_picker(input_at);
             }
+            PlaybackCommand::TogglePlaylistMenu => {
+                self.release_keyboard_seek_preview()?;
+                self.toggle_playlist_menu(input_at);
+            }
             PlaybackCommand::ShowMediaInfo => {
                 self.ui.help_visible = false;
                 self.ui.media_info.show(input_at);
@@ -272,6 +300,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 self.seeking.keyboard_commit_at = Some(input_at + KEYBOARD_SEEK_COMMIT_AFTER);
             }
             PlaybackCommand::ConfirmPicker => self.confirm_open_picker(input_at)?,
+            PlaybackCommand::PlaylistFirst | PlaybackCommand::PlaylistLast => {}
             PlaybackCommand::None => {}
         }
         Ok(None)
@@ -319,6 +348,9 @@ impl<W: Write> InteractionContext<'_, W> {
                 }
             }
             return Ok(None);
+        }
+        if self.ui.playlist_menu_open {
+            return Ok(self.handle_playlist_pointer(mouse_events));
         }
 
         let hit_context = self.overlay_hit_context();
@@ -581,6 +613,58 @@ impl<W: Write> InteractionContext<'_, W> {
         }
     }
 
+    fn handle_playlist_pointer(
+        &mut self,
+        mouse_events: Vec<PlaybackMouse>,
+    ) -> Option<PlaybackOutcome> {
+        let context = self.overlay_hit_context();
+        let labels = std::sync::Arc::clone(&self.ui.playlist_labels);
+        for mouse in mouse_events {
+            match mouse {
+                PlaybackMouse::ScrollUp => self.scroll_playlist_menu(-1),
+                PlaybackMouse::ScrollDown => self.scroll_playlist_menu(1),
+                PlaybackMouse::Move { column, row } => {
+                    let Some(point) = mouse_canvas_position(column, row, self.view.canvas) else {
+                        continue;
+                    };
+                    let Some(index) = self.view.overlay.playlist_menu_hover_index(
+                        context,
+                        point,
+                        self.ui.playlist_menu_offset,
+                        &labels,
+                    ) else {
+                        continue;
+                    };
+                    if self.ui.playlist_menu_focus != Some(index) {
+                        self.ui.playlist_menu_focus = Some(index);
+                        self.view.dirty = self.view.have_frame;
+                    }
+                }
+                PlaybackMouse::Down { column, row } => {
+                    let action =
+                        mouse_canvas_position(column, row, self.view.canvas).and_then(|point| {
+                            self.view.overlay.playlist_menu_action(
+                                context,
+                                point,
+                                self.ui.playlist_menu_offset,
+                                &labels,
+                            )
+                        });
+                    match action {
+                        Some(PlaylistMenuAction::Close) => self.close_playlist_menu(),
+                        Some(PlaylistMenuAction::Select(index)) => {
+                            self.ui.playlist_menu_focus = Some(index);
+                            return self.confirm_playlist_selection();
+                        }
+                        None => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn adjust_volume(&mut self, steps: i32, input_at: Instant) {
         let volume = self.engine.adjust_volume(steps);
         self.ui.status_message = Some(PlaybackUi::status(format!("VOLUME {volume}%"), input_at));
@@ -591,6 +675,7 @@ impl<W: Write> InteractionContext<'_, W> {
     fn toggle_audio_picker(&mut self, input_at: Instant) {
         self.seeking.scrub_position = None;
         self.ui.help_visible = false;
+        self.close_playlist_menu_state();
         self.ui.show_overlay(input_at);
         if !self.audio.is_available() {
             self.ui.audio_picker_open = false;
@@ -626,6 +711,7 @@ impl<W: Write> InteractionContext<'_, W> {
     fn toggle_subtitle_picker(&mut self, input_at: Instant) {
         self.seeking.scrub_position = None;
         self.ui.help_visible = false;
+        self.close_playlist_menu_state();
         self.ui.show_overlay(input_at);
         if !self.subtitles.is_available() {
             self.ui.audio_picker_open = false;
@@ -663,6 +749,42 @@ impl<W: Write> InteractionContext<'_, W> {
         self.view.dirty = self.view.have_frame;
     }
 
+    fn toggle_playlist_menu(&mut self, input_at: Instant) {
+        if self.ui.playlist_labels.len() <= 1 {
+            self.close_playlist_menu_state();
+            self.ui.audio_picker_open = false;
+            self.ui.audio_picker_focus = None;
+            self.ui.subtitle_picker_open = false;
+            self.ui.subtitle_picker_focus = None;
+            self.ui.status_message = Some(PlaybackUi::status("NO PLAYLIST AVAILABLE", input_at));
+            self.ui.show_overlay(input_at);
+            self.view.dirty = self.view.have_frame;
+            return;
+        }
+
+        if self.ui.playlist_menu_open {
+            self.close_playlist_menu();
+            return;
+        }
+
+        self.ui.help_visible = false;
+        self.ui.help_scroll_offset = 0;
+        self.ui.audio_picker_open = false;
+        self.ui.audio_picker_focus = None;
+        self.ui.subtitle_picker_open = false;
+        self.ui.subtitle_picker_focus = None;
+        self.seeking.scrub_position = None;
+        self.ui.playlist_menu_open = true;
+        self.ui.playlist_menu_focus = Some(self.ui.playlist_current);
+        let visible_count = self.visible_playlist_rows();
+        self.ui.playlist_menu_offset = centered_picker_offset_for_focus(
+            self.ui.playlist_current,
+            self.ui.playlist_labels.len(),
+            visible_count,
+        );
+        self.view.dirty = self.view.have_frame;
+    }
+
     fn toggle_help(&mut self) {
         self.ui.help_visible = !self.ui.help_visible;
         if self.ui.help_visible {
@@ -671,6 +793,7 @@ impl<W: Write> InteractionContext<'_, W> {
             self.ui.audio_picker_focus = None;
             self.ui.subtitle_picker_open = false;
             self.ui.subtitle_picker_focus = None;
+            self.close_playlist_menu_state();
             self.seeking.scrub_position = None;
         }
         self.view.dirty = self.view.have_frame;
@@ -679,6 +802,7 @@ impl<W: Write> InteractionContext<'_, W> {
     fn close_transient_ui(&mut self) {
         let changed = transient_ui_is_visible(
             self.ui.help_visible,
+            self.ui.playlist_menu_open,
             self.ui.audio_picker_open,
             self.ui.subtitle_picker_open,
             self.ui.audio_picker_focus,
@@ -691,6 +815,7 @@ impl<W: Write> InteractionContext<'_, W> {
         self.ui.audio_picker_focus = None;
         self.ui.subtitle_picker_open = false;
         self.ui.subtitle_picker_focus = None;
+        self.close_playlist_menu_state();
         self.seeking.scrub_position = None;
         if changed {
             self.view.dirty = self.view.have_frame;
@@ -783,6 +908,107 @@ impl<W: Write> InteractionContext<'_, W> {
         } else {
             false
         }
+    }
+
+    fn navigate_playlist_menu(&mut self, direction: i32) {
+        if direction == 0 {
+            return;
+        }
+        let row_count = self.ui.playlist_labels.len();
+        let Some(next) = moved_picker_focus(self.ui.playlist_menu_focus, direction, row_count)
+        else {
+            return;
+        };
+        self.focus_playlist_index(next);
+    }
+
+    fn page_playlist_menu(&mut self, direction: i32) {
+        if direction == 0 {
+            return;
+        }
+        let row_count = self.ui.playlist_labels.len();
+        if row_count == 0 {
+            return;
+        }
+        let page = self.visible_playlist_rows().saturating_sub(1).max(1);
+        let current = self
+            .ui
+            .playlist_menu_focus
+            .unwrap_or(self.ui.playlist_current)
+            .min(row_count - 1);
+        let next = if direction < 0 {
+            current.saturating_sub(page)
+        } else {
+            current.saturating_add(page).min(row_count - 1)
+        };
+        self.focus_playlist_index(next);
+    }
+
+    fn focus_playlist_boundary(&mut self, last: bool) {
+        let row_count = self.ui.playlist_labels.len();
+        if row_count == 0 {
+            return;
+        }
+        self.focus_playlist_index(if last { row_count - 1 } else { 0 });
+    }
+
+    fn focus_playlist_index(&mut self, index: usize) {
+        let row_count = self.ui.playlist_labels.len();
+        let visible_count = self.visible_playlist_rows();
+        self.ui.playlist_menu_focus = Some(index.min(row_count.saturating_sub(1)));
+        self.ui.playlist_menu_offset = picker_offset_for_focus(
+            self.ui.playlist_menu_offset,
+            index,
+            row_count,
+            visible_count,
+        );
+        self.view.dirty = self.view.have_frame;
+    }
+
+    fn scroll_playlist_menu(&mut self, direction: i32) {
+        let row_count = self.ui.playlist_labels.len();
+        let visible_count = self.visible_playlist_rows();
+        self.ui.playlist_menu_offset = scrolled_picker_offset(
+            self.ui.playlist_menu_offset,
+            direction,
+            row_count,
+            visible_count,
+        );
+        self.ui.playlist_menu_focus = keep_focus_visible(
+            self.ui.playlist_menu_focus,
+            self.ui.playlist_menu_offset,
+            row_count,
+            visible_count,
+        );
+        self.view.dirty = self.view.have_frame;
+    }
+
+    fn visible_playlist_rows(&mut self) -> usize {
+        let context = self.overlay_hit_context();
+        let labels = std::sync::Arc::clone(&self.ui.playlist_labels);
+        self.view
+            .overlay
+            .playlist_menu_visible_row_count(context, &labels)
+    }
+
+    fn confirm_playlist_selection(&mut self) -> Option<PlaybackOutcome> {
+        let index = self.ui.playlist_menu_focus?;
+        self.close_playlist_menu();
+        (index != self.ui.playlist_current).then_some(PlaybackOutcome::SelectPlaylistEntry(index))
+    }
+
+    fn close_playlist_menu(&mut self) {
+        let changed = self.ui.playlist_menu_open || self.ui.playlist_menu_focus.is_some();
+        self.close_playlist_menu_state();
+        if changed {
+            self.view.dirty = self.view.have_frame;
+        }
+    }
+
+    fn close_playlist_menu_state(&mut self) {
+        self.ui.playlist_menu_open = false;
+        self.ui.playlist_menu_offset = 0;
+        self.ui.playlist_menu_focus = None;
     }
 
     fn confirm_open_picker(&mut self, input_at: Instant) -> Result<()> {
@@ -1000,6 +1226,13 @@ fn picker_offset_for_focus(
     }
 }
 
+fn centered_picker_offset_for_focus(focus: usize, row_count: usize, visible_count: usize) -> usize {
+    let visible_count = visible_count.max(1).min(row_count.max(1));
+    focus
+        .saturating_sub(visible_count / 2)
+        .min(row_count.saturating_sub(visible_count))
+}
+
 fn picker_owns_scroll(audio_picker_open: bool, subtitle_picker_open: bool) -> bool {
     audio_picker_open || subtitle_picker_open
 }
@@ -1015,6 +1248,7 @@ fn close_help_on_outside_click(help_visible: &mut bool, help_scroll_offset: &mut
 
 fn transient_ui_is_visible(
     help_visible: bool,
+    playlist_menu_open: bool,
     audio_picker_open: bool,
     subtitle_picker_open: bool,
     audio_picker_focus: Option<usize>,
@@ -1022,6 +1256,7 @@ fn transient_ui_is_visible(
     scrub_preview_visible: bool,
 ) -> bool {
     help_visible
+        || playlist_menu_open
         || audio_picker_open
         || subtitle_picker_open
         || audio_picker_focus.is_some()
@@ -1031,7 +1266,10 @@ fn transient_ui_is_visible(
 
 #[cfg(test)]
 mod tests {
-    use super::{close_help_on_outside_click, picker_owns_scroll, transient_ui_is_visible};
+    use super::{
+        centered_picker_offset_for_focus, close_help_on_outside_click, picker_owns_scroll,
+        transient_ui_is_visible,
+    };
 
     #[test]
     fn an_open_track_picker_owns_mouse_wheel_input() {
@@ -1057,7 +1295,17 @@ mod tests {
     #[test]
     fn scrub_preview_counts_as_transient_ui_state() {
         assert!(transient_ui_is_visible(
-            false, false, false, None, None, true
+            false, false, false, false, None, None, true
         ));
+        assert!(transient_ui_is_visible(
+            false, true, false, false, None, None, false
+        ));
+    }
+
+    #[test]
+    fn playlist_focus_opens_centered_when_space_allows() {
+        assert_eq!(centered_picker_offset_for_focus(10, 30, 9), 6);
+        assert_eq!(centered_picker_offset_for_focus(1, 30, 9), 0);
+        assert_eq!(centered_picker_offset_for_focus(29, 30, 9), 21);
     }
 }

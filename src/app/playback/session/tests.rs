@@ -10,6 +10,7 @@ fn only_completed_playback_clears_resume_state() {
     assert!(!PlaybackOutcome::QuitWithoutSaving.clears_resume());
     assert!(!PlaybackOutcome::Interrupted.clears_resume());
     assert!(!PlaybackOutcome::Switch(PlaylistStep::Next).clears_resume());
+    assert!(!PlaybackOutcome::SelectPlaylistEntry(3).clears_resume());
 }
 
 #[test]
@@ -19,6 +20,7 @@ fn only_explicit_no_save_quit_skips_resume_save() {
     assert!(PlaybackOutcome::QuitWithoutSaving.skips_resume_save());
     assert!(!PlaybackOutcome::Interrupted.skips_resume_save());
     assert!(!PlaybackOutcome::Switch(PlaylistStep::Next).skips_resume_save());
+    assert!(!PlaybackOutcome::SelectPlaylistEntry(3).skips_resume_save());
 }
 
 #[test]
@@ -250,6 +252,7 @@ fn media_info_display_rate_visibility_matches_rendered_state() {
         None,
         None,
         PlaylistControls::default(),
+        crate::overlay::PlaylistMenuState::default(),
         false,
         None,
         false,
@@ -335,6 +338,7 @@ fn overlay_state_uses_scrub_position() {
         None,
         None,
         PlaylistControls::default(),
+        crate::overlay::PlaylistMenuState::default(),
         false,
         None,
         false,
@@ -369,6 +373,7 @@ fn help_visibility_is_separate_from_playback_controls() {
         None,
         None,
         PlaylistControls::default(),
+        crate::overlay::PlaylistMenuState::default(),
         false,
         None,
         false,

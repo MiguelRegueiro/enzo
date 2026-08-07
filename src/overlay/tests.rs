@@ -33,6 +33,7 @@ fn paused_overlay_draws_play_button() {
             visible: true,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -89,6 +90,7 @@ fn playing_overlay_draws_pause_button() {
             visible: true,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -146,6 +148,7 @@ fn rendered_overlay_changes_bottom_pixels_only() {
             visible: true,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -213,6 +216,7 @@ fn hidden_overlay_leaves_frame_unchanged() {
             visible: false,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -263,6 +267,7 @@ fn status_message_can_render_without_playback_controls() {
             visible: false,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -316,6 +321,7 @@ fn media_info_stacks_below_title_without_playback_controls() {
             visible: false,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -383,6 +389,7 @@ fn media_title_renders_with_playback_controls() {
             visible: true,
             playlist_previous_available: false,
             playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
             audio_available: false,
             selected_audio: None,
             audio_picker_open: false,
@@ -423,6 +430,7 @@ fn help_overlay_renders_without_title_or_bottom_controls() {
         visible: false,
         playlist_previous_available: false,
         playlist_next_available: false,
+        playlist: super::state::PlaylistMenuState::default(),
         audio_available: true,
         selected_audio: Some(0),
         audio_picker_open: false,
@@ -480,6 +488,82 @@ fn help_overlay_renders_without_title_or_bottom_controls() {
     );
 
     assert_eq!(controls_requested, help_only);
+}
+
+#[test]
+fn playlist_menu_renders_centered_without_bottom_controls() {
+    let width = 320;
+    let height = 180;
+    let mut frame = vec![20_u8; (width * height * 3) as usize];
+    let before = frame.clone();
+    let mut scratch = String::new();
+    let mut acrylic = AcrylicScratch::default();
+
+    render_overlay_rgb(
+        &mut frame,
+        width,
+        height,
+        width as u16,
+        height as u16,
+        100,
+        OverlayState {
+            position: Duration::from_secs(30),
+            duration: Some(Duration::from_secs(120)),
+            paused: false,
+            visible: true,
+            playlist_previous_available: true,
+            playlist_next_available: true,
+            playlist: super::state::PlaylistMenuState {
+                open: true,
+                current: 1,
+                scroll_offset: 0,
+                focus: Some(2),
+                labels: Arc::from([
+                    Arc::<str>::from("Episode 1.mkv"),
+                    Arc::<str>::from("Episode 2.mkv"),
+                    Arc::<str>::from("Episode 3.mkv"),
+                ]),
+            },
+            audio_available: true,
+            selected_audio: Some(0),
+            audio_picker_open: false,
+            audio_picker_offset: 0,
+            audio_picker_focus: None,
+            audio_labels: Arc::default(),
+            subtitles_available: true,
+            selected_subtitle: Some(0),
+            subtitle_picker_open: false,
+            subtitle_picker_offset: 0,
+            subtitle_picker_focus: None,
+            subtitle_labels: Arc::default(),
+            status_message: Some(Arc::from("HIDDEN STATUS")),
+            media_title: Some(Arc::from("movie.mkv")),
+            media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
+        },
+        &mut scratch,
+        &mut acrylic,
+        None,
+    );
+
+    assert_eq!(
+        &frame[..(width * 30 * 3) as usize],
+        &before[..(width * 30 * 3) as usize]
+    );
+    assert_eq!(
+        &frame[(width * 150 * 3) as usize..],
+        &before[(width * 150 * 3) as usize..]
+    );
+    assert_ne!(
+        &frame[(width * 60 * 3) as usize..(width * 120 * 3) as usize],
+        &before[(width * 60 * 3) as usize..(width * 120 * 3) as usize]
+    );
+    assert!(
+        frame
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] > 180 && pixel[1] < 100 && pixel[2] < 100)
+    );
 }
 
 fn test_metrics(width: u32, height: u32) -> OverlayMetrics {

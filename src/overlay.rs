@@ -10,6 +10,7 @@ mod help;
 mod interaction;
 mod layout;
 mod panels;
+mod playlist;
 mod raster;
 mod rendering;
 mod state;
@@ -31,6 +32,7 @@ use interaction::{
 use layout::{
     OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
 };
+use playlist::{playlist_menu_action, playlist_menu_hover_index, playlist_menu_visible_row_count};
 use rendering::render_overlay_rgb;
 
 use crate::{
@@ -40,7 +42,8 @@ use crate::{
 
 pub(crate) use state::{
     AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext, OverlayHitPoint,
-    OverlayRenderContext, OverlayState, SubtitlePickerAction, TransportControlAction,
+    OverlayRenderContext, OverlayState, PlaylistMenuAction, PlaylistMenuState,
+    SubtitlePickerAction, TransportControlAction,
 };
 
 pub(crate) struct PlaybackOverlay {
@@ -218,6 +221,56 @@ impl PlaybackOverlay {
     ) -> usize {
         let metrics = self.metrics(context);
         track_picker_visible_row_count(metrics, row_count)
+    }
+
+    pub(crate) fn playlist_menu_visible_row_count(
+        &mut self,
+        context: OverlayHitContext,
+        labels: &[Arc<str>],
+    ) -> usize {
+        playlist_menu_visible_row_count(
+            context.width,
+            context.height,
+            context.scale_percent,
+            labels,
+            self.font.as_mut(),
+        )
+    }
+
+    pub(crate) fn playlist_menu_action(
+        &mut self,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
+        scroll_offset: usize,
+        labels: &[Arc<str>],
+    ) -> Option<PlaylistMenuAction> {
+        playlist_menu_action(
+            context.width,
+            context.height,
+            context.scale_percent,
+            point,
+            scroll_offset,
+            labels,
+            self.font.as_mut(),
+        )
+    }
+
+    pub(crate) fn playlist_menu_hover_index(
+        &mut self,
+        context: OverlayHitContext,
+        point: OverlayHitPoint,
+        scroll_offset: usize,
+        labels: &[Arc<str>],
+    ) -> Option<usize> {
+        playlist_menu_hover_index(
+            context.width,
+            context.height,
+            context.scale_percent,
+            point,
+            scroll_offset,
+            labels,
+            self.font.as_mut(),
+        )
     }
 
     pub(crate) fn help_scroll_limit(&mut self, context: OverlayHitContext) -> usize {

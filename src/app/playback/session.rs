@@ -73,6 +73,7 @@ pub(super) enum PlaybackOutcome {
     Completed,
     Interrupted,
     Switch(PlaylistStep),
+    SelectPlaylistEntry(usize),
 }
 
 pub(super) struct PlaybackSessionResult {

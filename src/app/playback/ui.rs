@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     media::VideoDecoder,
-    overlay::{MediaInfo, MediaInfoState, OverlayState},
+    overlay::{MediaInfo, MediaInfoState, OverlayState, PlaylistMenuState},
 };
 
 use super::{
@@ -79,6 +79,11 @@ impl MediaInfoOverlay {
 }
 
 pub(super) struct PlaybackUi {
+    pub(super) playlist_menu_open: bool,
+    pub(super) playlist_menu_offset: usize,
+    pub(super) playlist_menu_focus: Option<usize>,
+    pub(super) playlist_current: usize,
+    pub(super) playlist_labels: Arc<[Arc<str>]>,
     pub(super) audio_picker_open: bool,
     pub(super) audio_picker_offset: usize,
     pub(super) audio_picker_focus: Option<usize>,
@@ -99,8 +104,15 @@ impl PlaybackUi {
         media_info: MediaInfo,
         status_message: Option<StatusMessage>,
         media_info_pinned: bool,
+        playlist_current: usize,
+        playlist_labels: Arc<[Arc<str>]>,
     ) -> Self {
         Self {
+            playlist_menu_open: false,
+            playlist_menu_offset: 0,
+            playlist_menu_focus: None,
+            playlist_current,
+            playlist_labels,
             audio_picker_open: false,
             audio_picker_offset: 0,
             audio_picker_focus: None,
@@ -152,6 +164,13 @@ impl PlaybackUi {
             self.overlay_visible_until,
             self.status_message.as_ref(),
             playlist_controls,
+            PlaylistMenuState {
+                open: self.playlist_menu_open,
+                current: self.playlist_current,
+                scroll_offset: self.playlist_menu_offset,
+                focus: self.playlist_menu_focus,
+                labels: Arc::clone(&self.playlist_labels),
+            },
             audio.is_available(),
             audio.selected(),
             self.audio_picker_open,
@@ -182,6 +201,7 @@ pub(super) fn overlay_state(
     visible_until: Option<Instant>,
     status_message: Option<&StatusMessage>,
     playlist_controls: PlaylistControls,
+    playlist: PlaylistMenuState,
     audio_available: bool,
     selected_audio: Option<usize>,
     audio_picker_open: bool,
@@ -209,6 +229,7 @@ pub(super) fn overlay_state(
             || subtitle_picker_open,
         playlist_previous_available: playlist_controls.previous_available,
         playlist_next_available: playlist_controls.next_available,
+        playlist,
         audio_available,
         selected_audio,
         audio_picker_open,

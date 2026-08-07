@@ -11,6 +11,7 @@ use super::{
     help::draw_help_panel,
     layout::{OverlayMetrics, fallback_text_scale, rounded_radius, text_size},
     panels::{draw_media_info_panel, draw_top_message},
+    playlist::draw_playlist_menu,
     raster::{RoundedRect, fill_rounded_rect},
     state::OverlayState,
     style::{ACCENT_COLOR, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
@@ -38,6 +39,7 @@ pub(super) fn render_overlay_rgb(
         && state.status_message.is_none()
         && state.media_info.is_none()
         && !state.help_visible
+        && !state.playlist.open
     {
         return;
     }
@@ -49,6 +51,21 @@ pub(super) fn render_overlay_rgb(
         .as_ref()
         .map(|font| font.line_height())
         .unwrap_or(7 * fallback_text_scale);
+
+    if state.playlist.open {
+        draw_playlist_menu(
+            font.as_deref_mut(),
+            frame,
+            width,
+            height,
+            text_size,
+            fallback_text_scale,
+            text_height,
+            &state.playlist,
+            acrylic,
+        );
+        return;
+    }
 
     let title_visible = !state.help_visible
         && (state.visible || state.media_info.is_some())

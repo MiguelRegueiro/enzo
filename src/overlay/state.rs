@@ -10,6 +10,7 @@ pub(crate) struct OverlayState {
     pub(crate) visible: bool,
     pub(crate) playlist_previous_available: bool,
     pub(crate) playlist_next_available: bool,
+    pub(crate) playlist: PlaylistMenuState,
     pub(crate) audio_available: bool,
     pub(crate) selected_audio: Option<usize>,
     pub(crate) audio_picker_open: bool,
@@ -27,6 +28,15 @@ pub(crate) struct OverlayState {
     pub(crate) media_info: Option<MediaInfoState>,
     pub(crate) help_visible: bool,
     pub(crate) help_scroll_offset: usize,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct PlaylistMenuState {
+    pub(crate) open: bool,
+    pub(crate) current: usize,
+    pub(crate) scroll_offset: usize,
+    pub(crate) focus: Option<usize>,
+    pub(crate) labels: Arc<[Arc<str>]>,
 }
 
 #[derive(Clone, Debug)]
@@ -102,6 +112,12 @@ pub(crate) enum TransportControlAction {
     Previous,
     Playback,
     Next,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PlaylistMenuAction {
+    Close,
+    Select(usize),
 }
 
 #[derive(Clone, Copy)]

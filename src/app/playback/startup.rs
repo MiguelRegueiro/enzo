@@ -14,7 +14,7 @@ use crate::{
     subtitle::SubtitleTrack,
 };
 
-use super::super::playlist::{Playlist, PlaylistControls};
+use super::super::playlist::{Playlist, PlaylistControls, PlaylistView};
 use super::{
     PlaybackOptions,
     carryover::PlaybackCarryover,
@@ -42,7 +42,8 @@ pub(crate) fn play(
     let mut carryover = PlaybackCarryover::default();
     let initial_path = playlist.current().to_path_buf();
     loop {
-        let controls = playlist.controls();
+        let playlist_view = playlist.view();
+        let playlist_controls = playlist_view.controls;
         let entry_sub_file = (playlist.current() == initial_path)
             .then_some(sub_file)
             .flatten();
@@ -53,7 +54,7 @@ pub(crate) fn play(
         );
         let result = play_current(
             playlist.current().to_path_buf(),
-            controls,
+            playlist_view,
             carryover,
             entry_sub_file,
             entry_media_title,
@@ -61,10 +62,16 @@ pub(crate) fn play(
             font_system,
         )?;
         carryover = result.carryover;
-        let Some(step) = next_playlist_step(result.outcome, controls, options.autoplay_next) else {
+        let Some(change) =
+            next_playlist_change(result.outcome, playlist_controls, options.autoplay_next)
+        else {
             return Ok(());
         };
-        if playlist.step(step).is_none() {
+        let changed = match change {
+            PlaylistChange::Step(step) => playlist.step(step),
+            PlaylistChange::Select(index) => playlist.select(index),
+        };
+        if changed.is_none() {
             return Ok(());
         }
     }
@@ -72,7 +79,7 @@ pub(crate) fn play(
 
 fn play_current(
     path: PathBuf,
-    playlist_controls: PlaylistControls,
+    playlist: PlaylistView,
     carryover: PlaybackCarryover,
     sub_file: Option<&Path>,
     force_media_title: Option<&str>,
@@ -150,6 +157,8 @@ fn play_current(
         media_info,
         status_message,
         carryover.media_info_pinned,
+        playlist.current,
+        playlist.labels,
     );
     let seeking = SeekCoordinator::new(PendingSeek {
         video_generation: engine.video.seek_generation(),
@@ -165,7 +174,7 @@ fn play_current(
         font_system,
         path,
         source,
-        playlist_controls,
+        playlist_controls: playlist.controls,
         resume,
         audio,
         subtitles,
@@ -177,15 +186,26 @@ fn play_current(
     .run()
 }
 
-fn next_playlist_step(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlaylistChange {
+    Step(super::super::playlist::PlaylistStep),
+    Select(usize),
+}
+
+fn next_playlist_change(
     outcome: super::session::PlaybackOutcome,
     controls: PlaylistControls,
     autoplay_next: bool,
-) -> Option<super::super::playlist::PlaylistStep> {
+) -> Option<PlaylistChange> {
     match outcome {
-        super::session::PlaybackOutcome::Switch(step) => Some(step),
+        super::session::PlaybackOutcome::Switch(step) => Some(PlaylistChange::Step(step)),
+        super::session::PlaybackOutcome::SelectPlaylistEntry(index) => {
+            Some(PlaylistChange::Select(index))
+        }
         super::session::PlaybackOutcome::Completed if autoplay_next && controls.next_available => {
-            Some(super::super::playlist::PlaylistStep::Next)
+            Some(PlaylistChange::Step(
+                super::super::playlist::PlaylistStep::Next,
+            ))
         }
         _ => None,
     }
@@ -217,15 +237,15 @@ mod tests {
         };
 
         assert_eq!(
-            next_playlist_step(PlaybackOutcome::Completed, middle, true),
-            Some(PlaylistStep::Next)
+            next_playlist_change(PlaybackOutcome::Completed, middle, true),
+            Some(PlaylistChange::Step(PlaylistStep::Next))
         );
         assert_eq!(
-            next_playlist_step(PlaybackOutcome::Completed, middle, false),
+            next_playlist_change(PlaybackOutcome::Completed, middle, false),
             None
         );
         assert_eq!(
-            next_playlist_step(PlaybackOutcome::Completed, last, true),
+            next_playlist_change(PlaybackOutcome::Completed, last, true),
             None
         );
     }
@@ -233,12 +253,20 @@ mod tests {
     #[test]
     fn manual_playlist_switch_ignores_autoplay_policy() {
         assert_eq!(
-            next_playlist_step(
+            next_playlist_change(
                 PlaybackOutcome::Switch(PlaylistStep::Previous),
                 PlaylistControls::default(),
                 false,
             ),
-            Some(PlaylistStep::Previous)
+            Some(PlaylistChange::Step(PlaylistStep::Previous))
+        );
+        assert_eq!(
+            next_playlist_change(
+                PlaybackOutcome::SelectPlaylistEntry(7),
+                PlaylistControls::default(),
+                false,
+            ),
+            Some(PlaylistChange::Select(7))
         );
     }
 

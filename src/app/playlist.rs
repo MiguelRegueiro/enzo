@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use crate::media_input::is_remote_url_text;
@@ -19,8 +20,16 @@ pub(super) struct PlaylistControls {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct PlaylistView {
+    pub(super) controls: PlaylistControls,
+    pub(super) labels: Arc<[Arc<str>]>,
+    pub(super) current: usize,
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct Playlist {
     entries: Vec<PathBuf>,
+    labels: Arc<[Arc<str>]>,
     current: usize,
 }
 
@@ -55,12 +64,19 @@ impl Playlist {
             .position(|candidate| same_path(candidate, &path))
             .unwrap_or(0);
 
-        Self { entries, current }
+        let labels = playlist_labels(&entries);
+        Self {
+            entries,
+            labels,
+            current,
+        }
     }
 
     fn single(path: PathBuf) -> Self {
+        let labels = playlist_labels(std::slice::from_ref(&path));
         Self {
             entries: vec![path],
+            labels,
             current: 0,
         }
     }
@@ -73,6 +89,14 @@ impl Playlist {
         PlaylistControls {
             previous_available: self.current > 0,
             next_available: self.current + 1 < self.entries.len(),
+        }
+    }
+
+    pub(super) fn view(&self) -> PlaylistView {
+        PlaylistView {
+            controls: self.controls(),
+            labels: Arc::clone(&self.labels),
+            current: self.current,
         }
     }
 
@@ -89,6 +113,30 @@ impl Playlist {
             _ => None,
         }
     }
+
+    pub(super) fn select(&mut self, index: usize) -> Option<&Path> {
+        if index >= self.entries.len() {
+            return None;
+        }
+        self.current = index;
+        Some(self.current())
+    }
+}
+
+fn playlist_labels(entries: &[PathBuf]) -> Arc<[Arc<str>]> {
+    entries
+        .iter()
+        .map(|path| {
+            let label = path
+                .file_name()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned();
+            Arc::<str>::from(label)
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 fn is_video_candidate(path: &Path) -> bool {
@@ -227,6 +275,15 @@ mod tests {
         assert_eq!(playlist.step(PlaylistStep::Next), Some(ep2.as_path()));
         assert_eq!(playlist.step(PlaylistStep::Next), Some(ep10.as_path()));
         assert_eq!(playlist.step(PlaylistStep::Next), None);
+
+        let view = playlist.view();
+        assert_eq!(view.current, 2);
+        assert_eq!(
+            view.labels.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+            ["Episode 1.mkv", "Episode 2.mkv", "Episode 10.mkv"]
+        );
+        assert_eq!(playlist.select(0), Some(ep1.as_path()));
+        assert_eq!(playlist.select(3), None);
 
         let _ = fs::remove_dir_all(&dir);
     }
