@@ -105,8 +105,8 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Char('?') => PlaybackCommand::ToggleHelp,
         KeyCode::Esc => PlaybackCommand::CloseTransientUi,
         KeyCode::Enter => PlaybackCommand::ConfirmPicker,
-        KeyCode::Char('[') => PlaybackCommand::PlaylistPrevious,
-        KeyCode::Char(']') => PlaybackCommand::PlaylistNext,
+        KeyCode::PageUp => PlaybackCommand::PlaylistPrevious,
+        KeyCode::PageDown => PlaybackCommand::PlaylistNext,
         _ => PlaybackCommand::None,
     }
 }
@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn letter_keys_map_to_playback_commands() {
+    fn playback_keys_map_to_commands() {
         assert_eq!(
             playback_command_for_key(&KeyCode::Char('a')),
             PlaybackCommand::ToggleAudioPicker
@@ -309,11 +309,11 @@ mod tests {
             PlaybackCommand::ConfirmPicker
         );
         assert_eq!(
-            playback_command_for_key(&KeyCode::Char('[')),
+            playback_command_for_key(&KeyCode::PageUp),
             PlaybackCommand::PlaylistPrevious
         );
         assert_eq!(
-            playback_command_for_key(&KeyCode::Char(']')),
+            playback_command_for_key(&KeyCode::PageDown),
             PlaybackCommand::PlaylistNext
         );
         assert_eq!(

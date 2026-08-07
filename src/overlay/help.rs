@@ -69,7 +69,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 action: "Play/pause",
             },
             HelpRow {
-                key: "[/]",
+                key: "PgUp/Dn",
                 action: "Previous/next",
             },
             HelpRow {
