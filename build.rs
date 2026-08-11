@@ -46,10 +46,20 @@ const LINUX_LINK_LIBRARIES: &[&str] = &[
 ];
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=ENZO_FFMPEG_LINK");
+
+    let static_ffmpeg = match std::env::var("ENZO_FFMPEG_LINK").as_deref() {
+        Ok("static") => true,
+        Ok("system") | Err(_) => false,
+        Ok(value) => {
+            panic!("unsupported ENZO_FFMPEG_LINK value `{value}`; expected `system` or `static`")
+        }
+    };
+
     let mut build = cc::Build::new();
     build.include("csrc");
 
-    let native_libraries = probe_native_libraries();
+    let native_libraries = probe_native_libraries(static_ffmpeg);
     if let Some(native_libraries) = &native_libraries {
         for library in native_libraries {
             for include_path in &library.include_paths {
@@ -78,7 +88,7 @@ fn main() {
 
     if native_libraries.is_some() {
         for library in PKG_CONFIG_LIBRARIES {
-            emit_native_library(library);
+            emit_native_library(library, static_ffmpeg && is_ffmpeg_library(library));
         }
     } else {
         for library in LINUX_LINK_LIBRARIES {
@@ -87,32 +97,43 @@ fn main() {
     }
 }
 
-fn probe_native_libraries() -> Option<Vec<pkg_config::Library>> {
+fn probe_native_libraries(static_ffmpeg: bool) -> Option<Vec<pkg_config::Library>> {
     let libraries = PKG_CONFIG_LIBRARIES
         .iter()
         .map(|library| {
-            pkg_config::Config::new()
-                .cargo_metadata(false)
-                .probe(library)
+            let mut config = pkg_config::Config::new();
+            config.cargo_metadata(false);
+            config.statik(static_ffmpeg && is_ffmpeg_library(library));
+            config.probe(library)
         })
         .collect::<Result<Vec<_>, _>>();
 
     match libraries {
         Ok(libraries) => Some(libraries),
+        Err(err) if static_ffmpeg => {
+            panic!("failed to find static FFmpeg dependencies with pkg-config: {err}")
+        }
         Err(_err) if target_is_linux() => None,
         Err(err) => panic!("failed to find native dependencies with pkg-config/pkgconf: {err}"),
     }
+}
+
+fn is_ffmpeg_library(library: &str) -> bool {
+    matches!(
+        library,
+        "libavformat" | "libavcodec" | "libavfilter" | "libswscale" | "libswresample" | "libavutil"
+    )
 }
 
 fn target_is_linux() -> bool {
     std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|target_os| target_os == "linux")
 }
 
-fn emit_native_library(library: &str) {
-    pkg_config::Config::new()
-        .cargo_metadata(true)
-        .probe(library)
-        .unwrap_or_else(|err| {
-            panic!("failed to find native dependency `{library}` with pkg-config/pkgconf: {err}")
-        });
+fn emit_native_library(library: &str, statik: bool) {
+    let mut config = pkg_config::Config::new();
+    config.cargo_metadata(true);
+    config.statik(statik);
+    config.probe(library).unwrap_or_else(|err| {
+        panic!("failed to find native dependency `{library}` with pkg-config/pkgconf: {err}")
+    });
 }
