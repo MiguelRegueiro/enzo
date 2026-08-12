@@ -98,6 +98,11 @@ jobs:
             echo "Tag ${tag} does not match Cargo.lock version ${lock_version}" >&2
             exit 1
           fi
+          spec_version="$(awk '$1 == "%global" && $2 == "fallback_version" { print $3; exit }' packaging/fedora/enzo.spec)"
+          if [[ "${version}" != "${spec_version}" ]]; then
+            echo "Tag ${tag} does not match Fedora spec version ${spec_version:-missing}" >&2
+            exit 1
+          fi
           if ! git show-ref --verify --quiet "refs/tags/${tag}"; then
             echo "${tag} is not an existing Git tag" >&2
             exit 1
@@ -462,6 +467,7 @@ jobs:
           set -euxo pipefail
           dnf -y install \
             cargo \
+            cpio \
             copr-cli \
             git \
             make \
@@ -514,5 +520,19 @@ jobs:
             echo "No source RPM was created in ${srpm_dir}" >&2
             exit 1
           fi
+
+          verify_dir="$(mktemp -d)"
+          mkdir -p "${verify_dir}/SOURCES" "${verify_dir}/SPECS" "${verify_dir}/SRPMS"
+          (
+            cd "${verify_dir}"
+            rpm2cpio "${srpm_path}" | cpio -idm --quiet
+          )
+          mv "${verify_dir}/enzo.spec" "${verify_dir}/SPECS/"
+          mv "${verify_dir}/enzo-${{ needs.validate.outputs.version }}.tar.gz" \
+            "${verify_dir}/vendor-${{ needs.validate.outputs.version }}.tar.zst" \
+            "${verify_dir}/SOURCES/"
+          rpmbuild -bs "${verify_dir}/SPECS/enzo.spec" \
+            --define "_topdir ${verify_dir}" \
+            --define "_srcrpmdir ${verify_dir}/SRPMS"
 
           copr-cli build "${COPR_PROJECT}" "${srpm_path}"
