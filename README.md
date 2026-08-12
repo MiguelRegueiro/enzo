@@ -18,7 +18,7 @@ Terminal video player with a graphical interface.
 - Linux or FreeBSD
 - Kitty terminal
 - PulseAudio, FreeType, HarfBuzz, and FriBidi
-- FFmpeg for source builds and distro packages; the portable Linux release bundles FFmpeg and dav1d
+- FFmpeg for source builds and distro packages; portable binary releases bundle FFmpeg and dav1d
 
 ## Installation
 

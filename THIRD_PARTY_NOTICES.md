@@ -1,6 +1,6 @@
 # Third-party notices
 
-The portable Linux build of Enzo includes the following third-party software as statically linked components. Enzo itself remains licensed under the MIT License in `LICENSE`.
+Portable Enzo builds include the following third-party software as statically linked components. Enzo itself remains licensed under the MIT License in `LICENSE`.
 
 ## FFmpeg 9.0
 
@@ -21,7 +21,7 @@ Source archive: `ffmpeg-9.0.tar.xz`
 Source URL: <https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz>
 SHA-256: `7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52`
 
-The portable Linux archive includes the exact Enzo, FFmpeg, and dav1d sources, build scripts, configuration records, and instructions needed to rebuild Enzo with a modified FFmpeg. See `compliance/RELINK.md`.
+The portable archive includes the exact Enzo, FFmpeg, and dav1d sources, build scripts, configuration records, and instructions needed to rebuild Enzo with a modified FFmpeg. See `compliance/RELINK.md`.
 
 ## dav1d 1.5.4
 
@@ -35,4 +35,4 @@ Source archive: `dav1d-1.5.4.tar.xz`
 Source URL: <https://downloads.videolan.org/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz>
 SHA-256: `686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5`
 
-The portable Linux archive contains the exact dav1d source archive used by the build.
+The portable archive contains the exact dav1d source archive used by the build.
