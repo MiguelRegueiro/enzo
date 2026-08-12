@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-12
+
 ### Added
 
 - Folder playlists with natural ordering, direct selection, previous/next controls, and autoplay.
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The subtitle control now remains visible when no subtitles are available.
+- Portable Linux releases now bundle FFmpeg and dav1d for broader distribution compatibility.
 
 ### Fixed
 
@@ -45,5 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and FreeBSD support, plus Linux desktop entry and application icon assets.
 - Command-line help and version output, terminal detection override, explicit subtitle selection, and resume controls.
 
-[Unreleased]: https://github.com/MiguelRegueiro/enzo/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/enzo/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/MiguelRegueiro/enzo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/MiguelRegueiro/enzo/releases/tag/v1.0.0
