@@ -34,7 +34,7 @@ jobs:
             pkg update -f
             pkg install -y \
               bash binutils coreutils curl freetype2 fribidi git gmake gnutls gtar \
-              harfbuzz meson nasm ninja pkgconf pulseaudio rust xz
+              harfbuzz meson nasm ninja pkgconf pulseaudio rust
           run: |
             set -eu
             git config --global --add safe.directory "$(pwd)"

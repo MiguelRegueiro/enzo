@@ -20,7 +20,7 @@ Official FreeBSD artifacts are built on FreeBSD 15.1 with the Rust toolchain pin
 
 ```sh
 pkg install rust curl git gmake gtar meson nasm ninja pkgconf \
-    gnutls pulseaudio freetype2 harfbuzz fribidi xz
+    gnutls pulseaudio freetype2 harfbuzz fribidi
 ```
 
 Enter the exact versioned Enzo source directory under `compliance/sources/`. The commands below assume that directory is current.
