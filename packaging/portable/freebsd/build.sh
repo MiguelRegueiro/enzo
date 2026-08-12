@@ -212,6 +212,8 @@ else
 
     ffmpeg_configure_args=(
         "--prefix=${prefix_dir}"
+        "--cc=cc"
+        "--cxx=c++"
         "--disable-autodetect"
         "--disable-debug"
         "--disable-doc"
