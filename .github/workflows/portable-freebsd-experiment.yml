@@ -39,10 +39,10 @@ jobs:
             set -eu
             git config --global --add safe.directory "$(pwd)"
             packaging/portable/freebsd/build.sh
-            mkdir -p dist
             target/portable-freebsd/cargo/release/enzo --version \
-              | tee dist/freebsd-portable-version.txt
+              | tee /tmp/freebsd-portable-version.txt
             packaging/portable/freebsd/package.sh 1.1.0
+            mv /tmp/freebsd-portable-version.txt dist/freebsd-portable-version.txt
 
             archive="dist/enzo-1.1.0-x86_64-unknown-freebsd.tar.gz"
             test -f "${archive}"
