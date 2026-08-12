@@ -60,8 +60,8 @@ for command in cargo cc cp git gmake ldd pkg-config rustc sed stat sysctl; do
     require_command "${command}"
 done
 
-sha256sum_command="$(command -v sha256sum || command -v gsha256sum || true)"
-readelf_command="$(command -v readelf || command -v greadelf || true)"
+sha256sum_command="$(command -v gsha256sum || command -v sha256sum || true)"
+readelf_command="$(command -v greadelf || command -v readelf || true)"
 if [[ -z "${sha256sum_command}" ]]; then
     printf 'missing required command: sha256sum or gsha256sum\n' >&2
     exit 1
