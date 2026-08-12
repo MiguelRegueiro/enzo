@@ -39,6 +39,9 @@ jobs:
             set -eu
             git config --global --add safe.directory "$(pwd)"
             packaging/portable/freebsd/build.sh
+            mkdir -p dist
+            target/portable-freebsd/cargo/release/enzo --version \
+              | tee dist/freebsd-portable-version.txt
             packaging/portable/freebsd/package.sh 1.1.0
 
             archive="dist/enzo-1.1.0-x86_64-unknown-freebsd.tar.gz"
@@ -55,5 +58,6 @@ jobs:
             dist/enzo-1.1.0-x86_64-unknown-freebsd.tar.gz
             dist/freebsd-portable-inventory.txt
             dist/freebsd-portable-sha256.txt
+            dist/freebsd-portable-version.txt
           if-no-files-found: error
           retention-days: 7
