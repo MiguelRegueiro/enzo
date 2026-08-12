@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.0.0
+%global fallback_version 1.1.0
 %global fallback_release 1
 
 Name:           enzo
@@ -58,5 +58,8 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Wed Aug 12 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.1.0-1
+- Add folder playlists and improve HLS playback, remote media handling, and portable Linux releases
+
 * Tue Aug 04 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.0.0-1
 - Initial COPR package

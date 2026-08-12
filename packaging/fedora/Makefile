@@ -25,6 +25,11 @@ srpm:
 	mkdir -p "$$outdir" "$$workdir/build" "$$workdir/rpms"; \
 	git -C "$(REPO_ROOT)" archive --format=tar --prefix="$(NAME)-$$version/" HEAD | tar -C "$$workdir" -xf -; \
 	cp "$(FEDORA_DIR)/$(NAME).spec" "$$workdir/"; \
+	sed -i "s/^%global fallback_version .*/%global fallback_version $$version/" "$$workdir/$(NAME).spec"; \
+	if ! grep -qxF "%global fallback_version $$version" "$$workdir/$(NAME).spec"; then \
+		echo "Failed to embed version $$version in $(NAME).spec" >&2; \
+		exit 1; \
+	fi; \
 	tar -C "$$workdir" -czf "$$outdir/$(NAME)-$$version.tar.gz" "$(NAME)-$$version"; \
 	cd "$(REPO_ROOT)" && cargo vendor --locked "$$workdir/vendor" >/dev/null; \
 	tar -C "$$workdir" -caf "$$outdir/vendor-$$version.tar.zst" vendor; \
