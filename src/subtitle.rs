@@ -520,8 +520,11 @@ pub(crate) struct SubtitleRenderer {
     font: Option<FontRenderer>,
     fallback_paths: Vec<PathBuf>,
     cached_layout: Option<CachedSubtitleLayout>,
+    cached_overlay: Option<CachedTextOverlay>,
     #[cfg(test)]
     layout_generation: usize,
+    #[cfg(test)]
+    overlay_generation: usize,
 }
 
 struct CachedSubtitleLayout {
@@ -536,6 +539,17 @@ struct PreparedSubtitleLine {
     text: String,
     width: u32,
     layout: Option<TextLayout>,
+}
+
+struct CachedTextOverlay {
+    canvas_width: u32,
+    canvas_height: u32,
+    bottom_reserve: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    premultiplied_rgba: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -560,8 +574,11 @@ impl SubtitleRenderer {
             font,
             fallback_paths,
             cached_layout: None,
+            cached_overlay: None,
             #[cfg(test)]
             layout_generation: 0,
+            #[cfg(test)]
+            overlay_generation: 0,
         }
     }
 
@@ -571,7 +588,9 @@ impl SubtitleRenderer {
             font: None,
             fallback_paths: Vec::new(),
             cached_layout: None,
+            cached_overlay: None,
             layout_generation: 0,
+            overlay_generation: 0,
         }
     }
 
@@ -634,6 +653,7 @@ impl SubtitleRenderer {
                 fallback_scale,
                 lines: prepared,
             });
+            self.cached_overlay = None;
             #[cfg(test)]
             {
                 self.layout_generation += 1;
@@ -656,21 +676,141 @@ impl SubtitleRenderer {
         let start_y = height
             .saturating_sub(bottom_margin)
             .saturating_sub(block_height);
-        let mut y = start_y;
-
-        for line in &cached.lines {
-            let x = width.saturating_sub(line.width) / 2;
-            draw_prepared_subtitle_line(
-                font.as_deref_mut(),
-                frame,
+        let overlay_matches = self.cached_overlay.as_ref().is_some_and(|overlay| {
+            overlay.canvas_width == width
+                && overlay.canvas_height == height
+                && overlay.bottom_reserve == bottom_reserve
+        });
+        if !overlay_matches {
+            self.cached_overlay = build_text_overlay(
+                font,
                 width,
                 height,
-                x,
-                y,
+                start_y,
+                line_height,
+                line_gap,
                 fallback_scale,
-                line,
+                &cached.lines,
+                bottom_reserve,
             );
-            y = y.saturating_add(line_height).saturating_add(line_gap);
+            #[cfg(test)]
+            {
+                self.overlay_generation += 1;
+            }
+        }
+        if let Some(overlay) = self.cached_overlay.as_ref() {
+            composite_text_overlay(frame, overlay);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_text_overlay(
+    mut font: Option<&mut FontRenderer>,
+    canvas_width: u32,
+    canvas_height: u32,
+    start_y: u32,
+    line_height: u32,
+    line_gap: u32,
+    fallback_scale: u32,
+    lines: &[PreparedSubtitleLine],
+    bottom_reserve: u32,
+) -> Option<CachedTextOverlay> {
+    const PADDING: u32 = 3;
+    let left = lines
+        .iter()
+        .map(|line| canvas_width.saturating_sub(line.width) / 2)
+        .min()?
+        .saturating_sub(PADDING);
+    let right = lines
+        .iter()
+        .map(|line| {
+            (canvas_width.saturating_sub(line.width) / 2)
+                .saturating_add(line.width)
+                .saturating_add(PADDING)
+        })
+        .max()?
+        .min(canvas_width);
+    let top = start_y.saturating_sub(PADDING);
+    let block_height = line_height
+        .saturating_mul(lines.len() as u32)
+        .saturating_add(line_gap.saturating_mul(lines.len().saturating_sub(1) as u32));
+    let bottom = start_y
+        .saturating_add(block_height)
+        .saturating_add(PADDING)
+        .min(canvas_height);
+    let overlay_width = right.saturating_sub(left);
+    let overlay_height = bottom.saturating_sub(top);
+    if overlay_width == 0 || overlay_height == 0 {
+        return None;
+    }
+
+    let rgb_len = overlay_width as usize * overlay_height as usize * 3;
+    let mut over_black = vec![0_u8; rgb_len];
+    let mut over_white = vec![255_u8; rgb_len];
+    let mut y = start_y.saturating_sub(top);
+    for line in lines {
+        let x = (canvas_width.saturating_sub(line.width) / 2).saturating_sub(left);
+        draw_prepared_subtitle_line(
+            font.as_deref_mut(),
+            &mut over_black,
+            overlay_width,
+            overlay_height,
+            x,
+            y,
+            fallback_scale,
+            line,
+        );
+        draw_prepared_subtitle_line(
+            font.as_deref_mut(),
+            &mut over_white,
+            overlay_width,
+            overlay_height,
+            x,
+            y,
+            fallback_scale,
+            line,
+        );
+        y = y.saturating_add(line_height).saturating_add(line_gap);
+    }
+
+    let mut premultiplied_rgba =
+        Vec::with_capacity(overlay_width as usize * overlay_height as usize * 4);
+    for (black, white) in over_black.chunks_exact(3).zip(over_white.chunks_exact(3)) {
+        let inverse_alpha = white[0]
+            .saturating_sub(black[0])
+            .max(white[1].saturating_sub(black[1]))
+            .max(white[2].saturating_sub(black[2]));
+        premultiplied_rgba.extend_from_slice(&[black[0], black[1], black[2], inverse_alpha]);
+    }
+    Some(CachedTextOverlay {
+        canvas_width,
+        canvas_height,
+        bottom_reserve,
+        x: left,
+        y: top,
+        width: overlay_width,
+        height: overlay_height,
+        premultiplied_rgba,
+    })
+}
+
+fn composite_text_overlay(frame: &mut [u8], overlay: &CachedTextOverlay) {
+    for row in 0..overlay.height {
+        for col in 0..overlay.width {
+            let source_offset = ((row * overlay.width + col) * 4) as usize;
+            let inverse_alpha = overlay.premultiplied_rgba[source_offset + 3];
+            if inverse_alpha == 255 {
+                continue;
+            }
+            let destination_offset =
+                rgb_offset(overlay.canvas_width, overlay.x + col, overlay.y + row);
+            for channel in 0..3 {
+                let source = u16::from(overlay.premultiplied_rgba[source_offset + channel]);
+                let destination = u16::from(frame[destination_offset + channel]);
+                frame[destination_offset + channel] =
+                    (source + (destination * u16::from(inverse_alpha) + 127) / 255).min(255) as u8;
+            }
         }
     }
 }
@@ -2529,6 +2669,62 @@ Hello
     }
 
     #[test]
+    fn cached_text_overlay_matches_direct_subtitle_rendering() {
+        let width = 320;
+        let height = 180;
+        let fallback_scale = fallback_text_scale(width, height);
+        let line_height = 7 * fallback_scale;
+        let line_gap = (line_height / 5).max(2);
+        let lines = prepare_subtitle_lines(
+            &[String::from("Cached subtitle")],
+            width,
+            fallback_scale,
+            None,
+        );
+        let start_y = 120;
+        let mut direct = (0..width * height * 3)
+            .map(|index| (index.wrapping_mul(37) % 251) as u8)
+            .collect::<Vec<_>>();
+        let mut cached = direct.clone();
+        let x = width.saturating_sub(lines[0].width) / 2;
+        draw_prepared_subtitle_line(
+            None,
+            &mut direct,
+            width,
+            height,
+            x,
+            start_y,
+            fallback_scale,
+            &lines[0],
+        );
+
+        let overlay = build_text_overlay(
+            None,
+            width,
+            height,
+            start_y,
+            line_height,
+            line_gap,
+            fallback_scale,
+            &lines,
+            0,
+        )
+        .expect("text overlay should be built");
+        composite_text_overlay(&mut cached, &overlay);
+
+        let max_difference = direct
+            .iter()
+            .zip(&cached)
+            .map(|(&expected, &actual)| expected.abs_diff(actual))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_difference <= 1,
+            "maximum channel difference: {max_difference}"
+        );
+    }
+
+    #[test]
     fn renderer_reuses_prepared_lines_until_text_or_geometry_changes() {
         let track = SubtitleTrack {
             cues: parse_srt(
@@ -2557,6 +2753,11 @@ This subtitle is prepared once
         renderer.render(&mut frame, small, &track, position, 0);
         renderer.render(&mut frame, small, &track, position, 0);
         assert_eq!(renderer.layout_generation, 1);
+        assert_eq!(renderer.overlay_generation, 1);
+
+        renderer.render(&mut frame, small, &track, position, 28);
+        assert_eq!(renderer.layout_generation, 1);
+        assert_eq!(renderer.overlay_generation, 2);
 
         let large = SubtitleLayout {
             canvas_width: 640,
@@ -2568,6 +2769,7 @@ This subtitle is prepared once
         frame.resize(640 * 360 * 3, 0);
         renderer.render(&mut frame, large, &track, position, 0);
         assert_eq!(renderer.layout_generation, 2);
+        assert_eq!(renderer.overlay_generation, 3);
     }
 
     #[test]
