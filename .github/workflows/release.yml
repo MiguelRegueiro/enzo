@@ -209,6 +209,10 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.validate.outputs.commit }}
 
+      - name: Trust checked-out repository
+        shell: bash
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
       - name: Install Rust toolchain
         shell: bash
         run: |
