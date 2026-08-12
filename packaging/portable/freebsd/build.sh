@@ -233,7 +233,12 @@ else
     printf '\n' >> "${build_info_dir}/ffmpeg-configure-command.txt"
 
     pushd "${source_dir}" >/dev/null
-    ./configure "${ffmpeg_configure_args[@]}"
+    if ! ./configure "${ffmpeg_configure_args[@]}"; then
+        printf 'dav1d pkg-config metadata:\n' >&2
+        pkg-config --debug --print-errors --static --cflags --libs dav1d >&2 || true
+        tail -n 120 ffbuild/config.log >&2 || true
+        exit 1
+    fi
 
     config_gpl=""
     config_nonfree=""
