@@ -275,6 +275,18 @@ else
     gmake install >/dev/null
     popd >/dev/null
 
+    ffmpeg_pc="$(find "${prefix_dir}" -type f -name libavformat.pc -print -quit)"
+    if [[ -z "${ffmpeg_pc}" ]]; then
+        printf 'FFmpeg installation did not produce pkg-config metadata under %s\n' \
+            "${prefix_dir}" >&2
+        exit 1
+    fi
+    ffmpeg_pkgconfig_dir="$(dirname "${ffmpeg_pc}")"
+    case ":${PKG_CONFIG_PATH}:" in
+        *":${ffmpeg_pkgconfig_dir}:"*) ;;
+        *) export PKG_CONFIG_PATH="${ffmpeg_pkgconfig_dir}:${PKG_CONFIG_PATH}" ;;
+    esac
+
     meson introspect "${dav1d_build_dir}" --buildoptions > "${build_info_dir}/dav1d-build-options.json"
     {
         if [[ -n "${ffmpeg_source_input}" ]]; then
