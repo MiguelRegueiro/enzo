@@ -19,7 +19,7 @@ The portable FreeBSD archive contains the exact Enzo source, both dependency sou
 Official FreeBSD artifacts are built on FreeBSD 15.1 with the Rust toolchain pinned by `rust-toolchain.toml`. The portable builder requires a C toolchain, Cargo, curl, GNU Make, GNU tar, Meson, NASM, Ninja, pkgconf, GnuTLS, PulseAudio, FreeType, HarfBuzz, FriBidi, zlib, and liblzma.
 
 ```sh
-pkg install rust curl git gmake gtar meson nasm ninja pkgconf \
+pkg install rust curl git gmake gtar meson nasm ninja pkgconf python3 \
     gnutls pulseaudio freetype2 harfbuzz fribidi
 ```
 
