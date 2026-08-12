@@ -251,51 +251,36 @@ jobs:
           if-no-files-found: error
 
   freebsd:
-    name: Build FreeBSD release asset
+    name: Build portable FreeBSD release asset
     needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - name: Check out tagged source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ needs.validate.outputs.commit }}
 
-      - name: Build and package on FreeBSD
+      - name: Build and package on FreeBSD 15.1
         uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1
         with:
-          release: "14.4"
+          release: "15.1"
           usesh: true
           prepare: |
             env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
             pkg update -f
-            pkg install -y rust ffmpeg pulseaudio freetype2 harfbuzz fribidi pkgconf
+            pkg install -y \
+              bash binutils coreutils curl freetype2 fribidi git gmake gnutls gtar \
+              harfbuzz meson nasm ninja pkgconf pulseaudio python3 rust
           run: |
             set -eu
+            git config --global --add safe.directory "$(pwd)"
+            packaging/portable/freebsd/build.sh
+            packaging/portable/freebsd/package.sh "${{ needs.validate.outputs.version }}"
 
-            crate_name="${{ needs.validate.outputs.crate_name }}"
-            version="${{ needs.validate.outputs.version }}"
-
-            rustc --version
-            cargo --version
-            host_target="$(rustc -vV | sed -n 's/^host: //p')"
-            if [ -z "${host_target}" ]; then
-              echo "Could not determine the Rust host target" >&2
-              exit 1
-            fi
-            bundle="${crate_name}-${version}-${host_target}"
-            cargo build --locked --release --all-features
-            install -d "dist/${bundle}"
-            install -m 0755 "target/release/${crate_name}" "dist/${bundle}/${crate_name}"
-            install -m 0644 README.md "dist/${bundle}/README.md"
-            install -m 0644 CHANGELOG.md "dist/${bundle}/CHANGELOG.md"
-            install -m 0644 LICENSE "dist/${bundle}/LICENSE"
-            install -d "dist/${bundle}/packaging"
-            cp -R packaging/linux "dist/${bundle}/packaging/"
-            tar -C dist -czf "dist/${bundle}.tar.gz" "${bundle}"
-
-      - name: Upload FreeBSD release asset
+      - name: Upload portable FreeBSD release asset
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-asset-freebsd
