@@ -179,12 +179,6 @@ jobs:
     container:
       image: debian:12-slim
     steps:
-      - name: Check out tagged source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          persist-credentials: false
-          ref: ${{ needs.validate.outputs.commit }}
-
       - name: Install build dependencies
         shell: bash
         run: |
@@ -208,6 +202,12 @@ jobs:
             pkg-config \
             xz-utils \
             zlib1g-dev
+
+      - name: Check out tagged source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
 
       - name: Install Rust toolchain
         shell: bash
