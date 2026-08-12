@@ -321,6 +321,9 @@ int enzo_input_read_frame(
     if (input == NULL || input->format == NULL || packet == NULL) {
         return AVERROR(EINVAL);
     }
+    if (input->origin == ENZO_INPUT_LOCAL) {
+        return av_read_frame(input->format, packet);
+    }
     enzo_input_begin_io(input, stop_flag);
     int ret = av_read_frame(input->format, packet);
     return enzo_input_finish_io(input, ret);
