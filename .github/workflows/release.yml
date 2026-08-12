@@ -172,10 +172,12 @@ jobs:
         run: cargo test --locked
 
   linux:
-    name: Build Ubuntu release asset
+    name: Build portable Linux release asset
     needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
+    container:
+      image: debian:12-slim
     steps:
       - name: Check out tagged source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -183,55 +185,59 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.validate.outputs.commit }}
 
-      - name: Install Rust toolchain
-        run: rustup show active-toolchain
-
-      - name: Install native dependencies
+      - name: Install build dependencies
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          set -euo pipefail
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            binutils \
             build-essential \
-            ffmpeg \
-            libavcodec-dev \
-            libavfilter-dev \
-            libavformat-dev \
-            libavutil-dev \
+            ca-certificates \
+            curl \
+            git \
+            gnutls-dev \
             libfreetype6-dev \
             libfribidi-dev \
             libharfbuzz-dev \
+            liblzma-dev \
             libpulse-dev \
-            libswresample-dev \
-            libswscale-dev \
-            pkg-config
+            meson \
+            nasm \
+            ninja-build \
+            pkg-config \
+            xz-utils \
+            zlib1g-dev
 
-      - name: Build release binary
-        run: cargo build --locked --release --all-features
-
-      - name: Package Ubuntu release asset
-        env:
-          CRATE_NAME: ${{ needs.validate.outputs.crate_name }}
-          VERSION: ${{ needs.validate.outputs.version }}
+      - name: Install Rust toolchain
+        shell: bash
         run: |
           set -euo pipefail
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+            https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          "${HOME}/.cargo/bin/rustup" show active-toolchain
 
-          host_target="$(rustc -vV | sed -n 's/^host: //p')"
-          if [[ -z "${host_target}" ]]; then
-            echo "Could not determine the Rust host target" >&2
-            exit 1
-          fi
-          bundle="${CRATE_NAME}-${VERSION}-${host_target}"
-          install -Dm755 "target/release/${CRATE_NAME}" "dist/${bundle}/${CRATE_NAME}"
-          install -Dm644 README.md "dist/${bundle}/README.md"
-          install -Dm644 CHANGELOG.md "dist/${bundle}/CHANGELOG.md"
-          install -Dm644 LICENSE "dist/${bundle}/LICENSE"
-          install -d "dist/${bundle}/packaging"
-          cp -R packaging/linux "dist/${bundle}/packaging/"
-          tar -C dist -czf "dist/${bundle}.tar.gz" "${bundle}"
+      - name: Build portable Linux binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+          packaging/portable/linux/build.sh
 
-      - name: Upload Ubuntu release asset
+      - name: Package portable Linux release asset
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+          packaging/portable/linux/package.sh "${VERSION}"
+
+      - name: Upload portable Linux release asset
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: release-asset-ubuntu
+          name: release-asset-linux
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -304,10 +310,10 @@ jobs:
           name: release-notes
           path: release-notes
 
-      - name: Download Ubuntu release asset
+      - name: Download portable Linux release asset
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-asset-ubuntu
+          name: release-asset-linux
           path: dist
 
       - name: Download FreeBSD release asset
@@ -315,10 +321,6 @@ jobs:
         with:
           name: release-asset-freebsd
           path: dist
-
-      - name: Create checksums
-        working-directory: dist
-        run: sha256sum -- *.tar.gz > SHA256SUMS
 
       - name: Publish GitHub release
         env:
