@@ -12,7 +12,7 @@ dav1d 1.5.4
 SHA-256 686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5
 ```
 
-The matching source/relink archive published beside each portable binary contains the exact Enzo source, both dependency source archives, the build script, and configuration records from the official build.
+The portable Linux archive contains the exact Enzo source, both dependency source archives, the build script, and configuration records from the official build under `compliance/sources/` and `compliance/build-info/`.
 
 ## Build environment
 
@@ -29,7 +29,7 @@ apt-get install --yes --no-install-recommends \
     ninja-build pkg-config xz-utils zlib1g-dev
 ```
 
-Install Rust using rustup, then enter the exact Enzo source directory from the source/relink archive.
+Install Rust using rustup, then enter the exact versioned Enzo source directory under `compliance/sources/` in the portable archive. The commands below assume that directory is the current working directory.
 
 ## Reproduce the official build
 
@@ -37,8 +37,8 @@ Place the matching FFmpeg and dav1d archives in the builder's download directory
 
 ```sh
 mkdir -p target/portable-linux/downloads
-cp ../sources/ffmpeg-9.0.tar.xz target/portable-linux/downloads/
-cp ../sources/dav1d-1.5.4.tar.xz target/portable-linux/downloads/
+cp ../ffmpeg-9.0.tar.xz target/portable-linux/downloads/
+cp ../dav1d-1.5.4.tar.xz target/portable-linux/downloads/
 ./packaging/portable/linux/build.sh
 ```
 
@@ -59,7 +59,7 @@ target/portable-linux/build-info/
 Extract the supplied FFmpeg source archive outside `target/portable-linux`, modify it, and pass its directory to the builder:
 
 ```sh
-tar -xf ../sources/ffmpeg-9.0.tar.xz -C ..
+tar -xf ../ffmpeg-9.0.tar.xz -C ..
 ENZO_FFMPEG_SOURCE=../ffmpeg-9.0 \
     ./packaging/portable/linux/build.sh
 ```
@@ -71,7 +71,7 @@ The builder copies the supplied tree before configuring it, so the original modi
 Extract and modify dav1d, then provide its source directory:
 
 ```sh
-tar -xf ../sources/dav1d-1.5.4.tar.xz -C ..
+tar -xf ../dav1d-1.5.4.tar.xz -C ..
 ENZO_DAV1D_SOURCE=../dav1d-1.5.4 \
     ./packaging/portable/linux/build.sh
 ```

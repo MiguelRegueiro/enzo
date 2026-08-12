@@ -16,6 +16,15 @@ version="$1"
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 work_root="${ENZO_PORTABLE_WORK_DIR:-${repo_root}/target/portable-linux}"
+if [[ ! -d "${work_root}" ]]; then
+    printf 'portable work directory does not exist: %s\n' "${work_root}" >&2
+    exit 1
+fi
+work_root="$(cd -- "${work_root}" && pwd)"
+if [[ "${work_root}" == "/" || "${work_root}" == "${repo_root}" ]]; then
+    printf 'unsafe portable work directory: %s\n' "${work_root}" >&2
+    exit 1
+fi
 download_dir="${ENZO_PORTABLE_DOWNLOAD_DIR:-${work_root}/downloads}"
 cargo_target_dir="${work_root}/cargo"
 build_info_dir="${work_root}/build-info"
@@ -115,80 +124,84 @@ if [[ -z "${host_target}" ]]; then
 fi
 
 bundle="enzo-${version}-${host_target}"
-source_bundle="${bundle}-source"
+enzo_source="enzo-${version}"
 stage_root="${work_root}/package-stage"
 source_date_epoch="$(git -C "${repo_root}" show -s --format=%ct HEAD)"
 
 rm -rf "${stage_root}"
-mkdir -p "${stage_root}/${bundle}/packaging" "${stage_root}/${source_bundle}/sources"
+mkdir -p \
+    "${stage_root}/${bundle}/share/icons" \
+    "${stage_root}/${bundle}/compliance/sources/${enzo_source}"
 
 install -m 0755 "${binary}" "${stage_root}/${bundle}/enzo"
 install -m 0644 "${repo_root}/README.md" "${stage_root}/${bundle}/README.md"
 install -m 0644 "${repo_root}/CHANGELOG.md" "${stage_root}/${bundle}/CHANGELOG.md"
 install -m 0644 "${repo_root}/LICENSE" "${stage_root}/${bundle}/LICENSE"
 install -m 0644 "${repo_root}/THIRD_PARTY_NOTICES.md" "${stage_root}/${bundle}/THIRD_PARTY_NOTICES.md"
-install -Dm 0644 "${repo_root}/packaging/portable/RELINK.md" "${stage_root}/${bundle}/packaging/portable/RELINK.md"
+install -m 0644 "${repo_root}/packaging/linux/enzo.desktop" "${stage_root}/${bundle}/share/enzo.desktop"
+install -m 0644 "${repo_root}/packaging/portable/RELINK.md" "${stage_root}/${bundle}/compliance/RELINK.md"
 cp -R "${repo_root}/LICENSES" "${stage_root}/${bundle}/"
-cp -R "${repo_root}/packaging/linux" "${stage_root}/${bundle}/packaging/"
-cp -R "${build_info_dir}" "${stage_root}/${bundle}/build-info"
+cp -R "${repo_root}/packaging/linux/icons/." "${stage_root}/${bundle}/share/icons/"
+cp -R "${build_info_dir}" "${stage_root}/${bundle}/compliance/build-info"
 
-mkdir -p "${stage_root}/${source_bundle}/enzo"
-git -C "${repo_root}" archive --format=tar HEAD | tar -xf - -C "${stage_root}/${source_bundle}/enzo"
-install -m 0644 "${download_dir}/${FFMPEG_ARCHIVE}" "${stage_root}/${source_bundle}/sources/${FFMPEG_ARCHIVE}"
-install -m 0644 "${download_dir}/${DAV1D_ARCHIVE}" "${stage_root}/${source_bundle}/sources/${DAV1D_ARCHIVE}"
-cp -R "${build_info_dir}" "${stage_root}/${source_bundle}/build-info"
+git -C "${repo_root}" archive --format=tar HEAD \
+    | tar -xf - -C "${stage_root}/${bundle}/compliance/sources/${enzo_source}"
+install -m 0644 "${download_dir}/${FFMPEG_ARCHIVE}" \
+    "${stage_root}/${bundle}/compliance/sources/${FFMPEG_ARCHIVE}"
+install -m 0644 "${download_dir}/${DAV1D_ARCHIVE}" \
+    "${stage_root}/${bundle}/compliance/sources/${DAV1D_ARCHIVE}"
 
 (
-    cd "${stage_root}/${source_bundle}/sources"
+    cd "${stage_root}/${bundle}/compliance/sources"
     sha256sum -- "${FFMPEG_ARCHIVE}" "${DAV1D_ARCHIVE}" > SHA256SUMS
 )
 
-mkdir -p "${dist_dir}"
-rm -f "${dist_dir}/${bundle}.tar.gz" "${dist_dir}/${source_bundle}.tar.gz"
-for archive_root in "${bundle}" "${source_bundle}"; do
-    tar \
-        --sort=name \
-        --mtime="@${source_date_epoch}" \
-        --owner=0 \
-        --group=0 \
-        --numeric-owner \
-        -C "${stage_root}" \
-        -cf - "${archive_root}" \
-        | gzip -n > "${dist_dir}/${archive_root}.tar.gz"
-done
+# Normalize staged modes so the archive is independent of the caller's umask.
+chmod -R u=rwX,go=rX "${stage_root}/${bundle}"
 
-gzip --test "${dist_dir}/${bundle}.tar.gz" "${dist_dir}/${source_bundle}.tar.gz"
+mkdir -p "${dist_dir}"
+rm -f "${dist_dir}/${bundle}.tar.gz"
+tar \
+    --sort=name \
+    --mtime="@${source_date_epoch}" \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    -C "${stage_root}" \
+    -cf - "${bundle}" \
+    | gzip -n > "${dist_dir}/${bundle}.tar.gz"
+
+gzip --test "${dist_dir}/${bundle}.tar.gz"
 for entry in \
     "${bundle}/enzo" \
+    "${bundle}/README.md" \
+    "${bundle}/CHANGELOG.md" \
     "${bundle}/LICENSE" \
     "${bundle}/THIRD_PARTY_NOTICES.md" \
-    "${bundle}/packaging/portable/RELINK.md" \
     "${bundle}/LICENSES/FFmpeg-LGPL-2.1-or-later.txt" \
     "${bundle}/LICENSES/dav1d-BSD-2-Clause.txt" \
-    "${bundle}/build-info/ffmpeg-config.h"; do
+    "${bundle}/share/enzo.desktop" \
+    "${bundle}/share/icons/hicolor/512x512/apps/enzo.png" \
+    "${bundle}/compliance/RELINK.md" \
+    "${bundle}/compliance/build-info/ffmpeg-config.h" \
+    "${bundle}/compliance/build-info/ffmpeg-config.log" \
+    "${bundle}/compliance/build-info/ffmpeg-configure-command.txt" \
+    "${bundle}/compliance/build-info/dav1d-build-command.txt" \
+    "${bundle}/compliance/build-info/dav1d-build-options.json" \
+    "${bundle}/compliance/build-info/ldd.txt" \
+    "${bundle}/compliance/build-info/readelf-dynamic.txt" \
+    "${bundle}/compliance/build-info/source-inputs.txt" \
+    "${bundle}/compliance/build-info/toolchain.txt" \
+    "${bundle}/compliance/sources/${enzo_source}/Cargo.lock" \
+    "${bundle}/compliance/sources/${enzo_source}/rust-toolchain.toml" \
+    "${bundle}/compliance/sources/${enzo_source}/packaging/portable/linux/build.sh" \
+    "${bundle}/compliance/sources/${FFMPEG_ARCHIVE}" \
+    "${bundle}/compliance/sources/${DAV1D_ARCHIVE}" \
+    "${bundle}/compliance/sources/SHA256SUMS"; do
     if ! tar -tzf "${dist_dir}/${bundle}.tar.gz" "${entry}" >/dev/null; then
-        printf 'binary archive is missing required entry: %s\n' "${entry}" >&2
-        exit 1
-    fi
-done
-for entry in \
-    "${source_bundle}/enzo/packaging/portable/linux/build.sh" \
-    "${source_bundle}/enzo/packaging/portable/RELINK.md" \
-    "${source_bundle}/sources/${FFMPEG_ARCHIVE}" \
-    "${source_bundle}/sources/${DAV1D_ARCHIVE}" \
-    "${source_bundle}/sources/SHA256SUMS" \
-    "${source_bundle}/build-info/ffmpeg-config.h"; do
-    if ! tar -tzf "${dist_dir}/${source_bundle}.tar.gz" "${entry}" >/dev/null; then
-        printf 'source/relink archive is missing required entry: %s\n' "${entry}" >&2
+        printf 'portable archive is missing required entry: %s\n' "${entry}" >&2
         exit 1
     fi
 done
 
-(
-    cd "${dist_dir}"
-    sha256sum -- "${bundle}.tar.gz" "${source_bundle}.tar.gz" > "${bundle}-SHA256SUMS"
-)
-
-printf 'binary archive: %s\n' "${dist_dir}/${bundle}.tar.gz"
-printf 'source/relink archive: %s\n' "${dist_dir}/${source_bundle}.tar.gz"
-printf 'checksums: %s\n' "${dist_dir}/${bundle}-SHA256SUMS"
+printf 'portable archive: %s\n' "${dist_dir}/${bundle}.tar.gz"
