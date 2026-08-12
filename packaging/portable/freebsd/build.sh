@@ -56,7 +56,7 @@ copy_source_tree() {
     cp -a -- "${input}/." "${destination}/"
 }
 
-for command in cargo cc cp git gmake ldd pkg-config rustc sed stat sysctl; do
+for command in cargo cc cp dirname find git gmake ldd pkg-config rustc sed stat sysctl; do
     require_command "${command}"
 done
 
@@ -208,7 +208,19 @@ else
     ninja -C "${dav1d_build_dir}" >/dev/null
     ninja -C "${dav1d_build_dir}" install >/dev/null
 
-    export PKG_CONFIG_PATH="${prefix_dir}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    dav1d_pc="$(find "${prefix_dir}" -type f -name dav1d.pc -print -quit)"
+    if [[ -z "${dav1d_pc}" ]]; then
+        printf 'dav1d installation did not produce pkg-config metadata under %s\n' \
+            "${prefix_dir}" >&2
+        exit 1
+    fi
+    private_pkgconfig_dir="$(dirname "${dav1d_pc}")"
+    export PKG_CONFIG_PATH="${private_pkgconfig_dir}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    if ! pkg-config --exists 'dav1d >= 1.0.0'; then
+        printf 'installed dav1d pkg-config metadata is not resolvable: %s\n' \
+            "${dav1d_pc}" >&2
+        exit 1
+    fi
 
     ffmpeg_configure_args=(
         "--prefix=${prefix_dir}"
