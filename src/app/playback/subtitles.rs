@@ -3,7 +3,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
-    thread,
 };
 
 use anyhow::Result;
@@ -269,27 +268,21 @@ pub(super) fn spawn_embedded_subtitle_loader(
     jobs: Vec<PendingEmbeddedSubtitle>,
 ) -> mpsc::Receiver<LoadedEmbeddedSubtitle> {
     let (sender, receiver) = mpsc::channel();
-    // Diagnostic experiment: embedded subtitle payload decoding is disabled by
-    // default, while metadata remains available in the picker. Opt in only to
-    // compare against the normal loader on this branch.
-    if std::env::var_os("ENZO_EXPERIMENT_ENABLE_EMBEDDED_SUBTITLES").is_some() {
-        thread::spawn(move || {
-            for job in jobs {
-                let track =
-                    load_embedded_subtitle_track(&media_path, &job.stream, job.fallback_index)
-                        .ok()
-                        .flatten();
-                if sender
-                    .send(LoadedEmbeddedSubtitle {
-                        index: job.index,
-                        track,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
+    // Decode before the playback engine starts so full-container subtitle
+    // scans cannot compete with active video presentation.
+    for job in jobs {
+        let track = load_embedded_subtitle_track(&media_path, &job.stream, job.fallback_index)
+            .ok()
+            .flatten();
+        if sender
+            .send(LoadedEmbeddedSubtitle {
+                index: job.index,
+                track,
+            })
+            .is_err()
+        {
+            break;
+        }
     }
     receiver
 }
