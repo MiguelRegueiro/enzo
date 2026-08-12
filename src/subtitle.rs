@@ -716,46 +716,18 @@ fn build_text_overlay(
     lines: &[PreparedSubtitleLine],
     bottom_reserve: u32,
 ) -> Option<CachedTextOverlay> {
-    const PADDING: u32 = 3;
-    let left = lines
-        .iter()
-        .map(|line| canvas_width.saturating_sub(line.width) / 2)
-        .min()?
-        .saturating_sub(PADDING);
-    let right = lines
-        .iter()
-        .map(|line| {
-            (canvas_width.saturating_sub(line.width) / 2)
-                .saturating_add(line.width)
-                .saturating_add(PADDING)
-        })
-        .max()?
-        .min(canvas_width);
-    let top = start_y.saturating_sub(PADDING);
-    let block_height = line_height
-        .saturating_mul(lines.len() as u32)
-        .saturating_add(line_gap.saturating_mul(lines.len().saturating_sub(1) as u32));
-    let bottom = start_y
-        .saturating_add(block_height)
-        .saturating_add(PADDING)
-        .min(canvas_height);
-    let overlay_width = right.saturating_sub(left);
-    let overlay_height = bottom.saturating_sub(top);
-    if overlay_width == 0 || overlay_height == 0 {
-        return None;
-    }
-
-    let rgb_len = overlay_width as usize * overlay_height as usize * 3;
+    let pixel_count = (canvas_width as usize).checked_mul(canvas_height as usize)?;
+    let rgb_len = pixel_count.checked_mul(3)?;
     let mut over_black = vec![0_u8; rgb_len];
     let mut over_white = vec![255_u8; rgb_len];
-    let mut y = start_y.saturating_sub(top);
+    let mut y = start_y;
     for line in lines {
-        let x = (canvas_width.saturating_sub(line.width) / 2).saturating_sub(left);
+        let x = canvas_width.saturating_sub(line.width) / 2;
         draw_prepared_subtitle_line(
             font.as_deref_mut(),
             &mut over_black,
-            overlay_width,
-            overlay_height,
+            canvas_width,
+            canvas_height,
             x,
             y,
             fallback_scale,
@@ -764,8 +736,8 @@ fn build_text_overlay(
         draw_prepared_subtitle_line(
             font.as_deref_mut(),
             &mut over_white,
-            overlay_width,
-            overlay_height,
+            canvas_width,
+            canvas_height,
             x,
             y,
             fallback_scale,
@@ -774,14 +746,43 @@ fn build_text_overlay(
         y = y.saturating_add(line_height).saturating_add(line_gap);
     }
 
-    let mut premultiplied_rgba =
-        Vec::with_capacity(overlay_width as usize * overlay_height as usize * 4);
-    for (black, white) in over_black.chunks_exact(3).zip(over_white.chunks_exact(3)) {
+    let mut left = canvas_width;
+    let mut top = canvas_height;
+    let mut right = 0_u32;
+    let mut bottom = 0_u32;
+    for pixel in 0..pixel_count {
+        let offset = pixel * 3;
+        let black = &over_black[offset..offset + 3];
+        let white = &over_white[offset..offset + 3];
         let inverse_alpha = white[0]
             .saturating_sub(black[0])
             .max(white[1].saturating_sub(black[1]))
             .max(white[2].saturating_sub(black[2]));
-        premultiplied_rgba.extend_from_slice(&[black[0], black[1], black[2], inverse_alpha]);
+        if inverse_alpha == 255 {
+            continue;
+        }
+        let x = pixel as u32 % canvas_width;
+        let y = pixel as u32 / canvas_width;
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x + 1);
+        bottom = bottom.max(y + 1);
+    }
+    let overlay_width = right.checked_sub(left)?;
+    let overlay_height = bottom.checked_sub(top)?;
+    let overlay_pixels = (overlay_width as usize).checked_mul(overlay_height as usize)?;
+    let mut premultiplied_rgba = Vec::with_capacity(overlay_pixels.checked_mul(4)?);
+    for row in top..bottom {
+        for col in left..right {
+            let offset = ((row * canvas_width + col) * 3) as usize;
+            let black = &over_black[offset..offset + 3];
+            let white = &over_white[offset..offset + 3];
+            let inverse_alpha = white[0]
+                .saturating_sub(black[0])
+                .max(white[1].saturating_sub(black[1]))
+                .max(white[2].saturating_sub(black[2]));
+            premultiplied_rgba.extend_from_slice(&[black[0], black[1], black[2], inverse_alpha]);
+        }
     }
     Some(CachedTextOverlay {
         canvas_width,
