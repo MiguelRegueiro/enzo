@@ -716,18 +716,28 @@ fn build_text_overlay(
     lines: &[PreparedSubtitleLine],
     bottom_reserve: u32,
 ) -> Option<CachedTextOverlay> {
-    let pixel_count = (canvas_width as usize).checked_mul(canvas_height as usize)?;
+    let block_height = line_height
+        .saturating_mul(lines.len() as u32)
+        .saturating_add(line_gap.saturating_mul(lines.len().saturating_sub(1) as u32));
+    let band_padding = line_height.saturating_mul(2);
+    let band_top = start_y.saturating_sub(band_padding);
+    let band_bottom = start_y
+        .saturating_add(block_height)
+        .saturating_add(band_padding)
+        .min(canvas_height);
+    let band_height = band_bottom.checked_sub(band_top)?;
+    let pixel_count = (canvas_width as usize).checked_mul(band_height as usize)?;
     let rgb_len = pixel_count.checked_mul(3)?;
     let mut over_black = vec![0_u8; rgb_len];
     let mut over_white = vec![255_u8; rgb_len];
-    let mut y = start_y;
+    let mut y = start_y.saturating_sub(band_top);
     for line in lines {
         let x = canvas_width.saturating_sub(line.width) / 2;
         draw_prepared_subtitle_line(
             font.as_deref_mut(),
             &mut over_black,
             canvas_width,
-            canvas_height,
+            band_height,
             x,
             y,
             fallback_scale,
@@ -737,7 +747,7 @@ fn build_text_overlay(
             font.as_deref_mut(),
             &mut over_white,
             canvas_width,
-            canvas_height,
+            band_height,
             x,
             y,
             fallback_scale,
@@ -747,7 +757,7 @@ fn build_text_overlay(
     }
 
     let mut left = canvas_width;
-    let mut top = canvas_height;
+    let mut top = band_height;
     let mut right = 0_u32;
     let mut bottom = 0_u32;
     for pixel in 0..pixel_count {
@@ -789,7 +799,7 @@ fn build_text_overlay(
         canvas_height,
         bottom_reserve,
         x: left,
-        y: top,
+        y: band_top.saturating_add(top),
         width: overlay_width,
         height: overlay_height,
         premultiplied_rgba,
