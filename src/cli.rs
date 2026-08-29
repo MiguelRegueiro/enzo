@@ -1,8 +1,14 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Result, bail};
 
-use crate::media_input::{media_path_from_argument, validate_subtitle_path};
+use crate::{
+    config::{Config, MAX_VOLUME_MAX, MIN_VOLUME_MAX},
+    media_input::{media_path_from_argument, validate_subtitle_path},
+};
 
 pub(crate) const HELP: &str = "\
 enzo - terminal video player
@@ -16,8 +22,11 @@ Options:
       --force                    Bypass Kitty terminal detection
       --force-media-title TITLE  Override the displayed title
       --sub-file PATH            Load an external subtitle file
+      --config PATH              Load configuration from a custom path
       --volume-max PERCENT       Set maximum volume (100-1000; default: 100)
-      --no-resume                Disable reading and writing resume data
+      --resume                   Enable resume data
+      --no-resume                Disable resume data
+      --autoplay-next            Play next video when playback ends
       --no-autoplay-next         Do not play next video when playback ends
       --clear-resume             Remove saved playback state and exit
 ";
@@ -42,6 +51,13 @@ pub(crate) struct Options {
 }
 
 pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action> {
+    parse_args_with_config_loader(args, Config::load)
+}
+
+fn parse_args_with_config_loader(
+    args: impl Iterator<Item = OsString>,
+    load_config: impl FnOnce(Option<&Path>) -> Result<Config>,
+) -> Result<Action> {
     let args = args.collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         return Ok(Action::Help);
@@ -52,9 +68,10 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     let mut force = false;
     let mut force_media_title = None::<String>;
     let mut sub_file = None::<PathBuf>;
-    let mut volume_max = 100;
-    let mut resume_enabled = true;
-    let mut autoplay_next = true;
+    let mut config_file = None::<PathBuf>;
+    let mut volume_max = None::<u16>;
+    let mut resume_enabled = None::<bool>;
+    let mut autoplay_next = None::<bool>;
     let mut clear_resume = false;
     let mut positionals = Vec::<OsString>::new();
     let mut args = args.into_iter();
@@ -70,12 +87,20 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
             force_media_title = Some(value.to_string_lossy().into_owned());
             continue;
         }
+        if arg == "--resume" {
+            resume_enabled = Some(true);
+            continue;
+        }
         if arg == "--no-resume" {
-            resume_enabled = false;
+            resume_enabled = Some(false);
+            continue;
+        }
+        if arg == "--autoplay-next" {
+            autoplay_next = Some(true);
             continue;
         }
         if arg == "--no-autoplay-next" {
-            autoplay_next = false;
+            autoplay_next = Some(false);
             continue;
         }
         if arg == "--clear-resume" {
@@ -91,11 +116,18 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
             sub_file = Some(path);
             continue;
         }
+        if arg == "--config" {
+            let value = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--config requires a path"))?;
+            config_file = Some(PathBuf::from(value));
+            continue;
+        }
         if arg == "--volume-max" {
             let value = args
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("--volume-max requires a value"))?;
-            volume_max = parse_volume_max(&value)?;
+            volume_max = Some(parse_volume_max(&value)?);
             continue;
         }
         let arg_text = arg.to_string_lossy();
@@ -109,8 +141,12 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
             sub_file = Some(path);
             continue;
         }
+        if let Some(value) = arg_text.strip_prefix("--config=") {
+            config_file = Some(PathBuf::from(value));
+            continue;
+        }
         if let Some(value) = arg_text.strip_prefix("--volume-max=") {
-            volume_max = parse_volume_max(value)?;
+            volume_max = Some(parse_volume_max(value)?);
             continue;
         }
 
@@ -127,15 +163,16 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     if clear_resume && (path.is_some() || sub_file.is_some()) {
         bail!("--clear-resume cannot be combined with media or subtitle paths");
     }
+    let config = load_config(config_file.as_deref())?;
 
     Ok(Action::Run(Options {
         path,
         force,
         force_media_title,
         sub_file,
-        volume_max,
-        resume_enabled,
-        autoplay_next,
+        volume_max: volume_max.unwrap_or(config.volume_max),
+        resume_enabled: resume_enabled.unwrap_or(config.resume),
+        autoplay_next: autoplay_next.unwrap_or(config.autoplay_next),
         clear_resume,
     }))
 }
@@ -145,8 +182,8 @@ fn parse_volume_max(value: impl AsRef<std::ffi::OsStr>) -> Result<u16> {
     let percent = value
         .parse::<u16>()
         .map_err(|_| anyhow::anyhow!("invalid --volume-max value: {value}"))?;
-    if !(100..=1000).contains(&percent) {
-        bail!("--volume-max must be between 100 and 1000");
+    if !(MIN_VOLUME_MAX..=MAX_VOLUME_MAX).contains(&percent) {
+        bail!("--volume-max must be between {MIN_VOLUME_MAX} and {MAX_VOLUME_MAX}");
     }
     Ok(percent)
 }
@@ -167,7 +204,13 @@ mod tests {
     use super::*;
 
     fn run_options(args: Vec<OsString>) -> Options {
-        match parse_args(args.into_iter()).expect("args should parse") {
+        run_options_with_config(args, Config::default())
+    }
+
+    fn run_options_with_config(args: Vec<OsString>, config: Config) -> Options {
+        match parse_args_with_config_loader(args.into_iter(), |_| Ok(config))
+            .expect("args should parse")
+        {
             Action::Run(options) => options,
             Action::Help | Action::Version => panic!("expected run options"),
         }
@@ -209,6 +252,57 @@ mod tests {
     }
 
     #[test]
+    fn config_values_supply_playback_defaults() {
+        let options = run_options_with_config(
+            Vec::new(),
+            Config {
+                volume_max: 220,
+                resume: false,
+                autoplay_next: false,
+            },
+        );
+
+        assert_eq!(options.volume_max, 220);
+        assert!(!options.resume_enabled);
+        assert!(!options.autoplay_next);
+    }
+
+    #[test]
+    fn command_line_values_override_config() {
+        let options = run_options_with_config(
+            vec![
+                OsString::from("--volume-max=180"),
+                OsString::from("--resume"),
+                OsString::from("--autoplay-next"),
+            ],
+            Config {
+                volume_max: 220,
+                resume: false,
+                autoplay_next: false,
+            },
+        );
+
+        assert_eq!(options.volume_max, 180);
+        assert!(options.resume_enabled);
+        assert!(options.autoplay_next);
+    }
+
+    #[test]
+    fn custom_config_path_is_forwarded_to_loader() {
+        let path = PathBuf::from("/tmp/custom-enzo.toml");
+        let action = parse_args_with_config_loader(
+            vec![OsString::from("--config"), path.clone().into_os_string()].into_iter(),
+            |actual| {
+                assert_eq!(actual, Some(path.as_path()));
+                Ok(Config::default())
+            },
+        )
+        .expect("custom config path should parse");
+
+        assert!(matches!(action, Action::Run(_)));
+    }
+
+    #[test]
     fn parse_args_rejects_invalid_volume_max() {
         for value in ["99", "1001", "loud"] {
             let error =
@@ -225,6 +319,15 @@ mod tests {
         assert!(!no_resume.resume_enabled);
         assert!(!no_resume.clear_resume);
 
+        let resume = run_options_with_config(
+            vec![OsString::from("--resume")],
+            Config {
+                resume: false,
+                ..Config::default()
+            },
+        );
+        assert!(resume.resume_enabled);
+
         let clear = run_options(vec![OsString::from("--clear-resume")]);
         assert!(clear.clear_resume);
         assert!(clear.path.is_none());
@@ -236,6 +339,15 @@ mod tests {
 
         assert!(!config.autoplay_next);
         assert!(config.resume_enabled);
+
+        let config = run_options_with_config(
+            vec![OsString::from("--autoplay-next")],
+            Config {
+                autoplay_next: false,
+                ..Config::default()
+            },
+        );
+        assert!(config.autoplay_next);
     }
 
     #[test]

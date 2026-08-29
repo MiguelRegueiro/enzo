@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod config;
 mod font;
 mod font_system;
 mod media;
