@@ -42,7 +42,7 @@ impl AudioPlayer {
         position: Duration,
         paused: bool,
         muted: bool,
-        volume_percent: u8,
+        volume_percent: u16,
     ) -> Result<Self> {
         let path = path_cstring(path)?;
         let audio_stream_index = audio_stream_index
@@ -56,7 +56,7 @@ impl AudioPlayer {
             stop: Arc::new(AtomicI32::new(0)),
             pause: Arc::new(AtomicI32::new(i32::from(paused))),
             mute: Arc::new(AtomicI32::new(i32::from(muted))),
-            volume_percent: Arc::new(AtomicI32::new(i32::from(volume_percent.min(100)))),
+            volume_percent: Arc::new(AtomicI32::new(i32::from(volume_percent))),
             seek_generation: Arc::new(AtomicI32::new(initial_seek_generation)),
             seek_micros: Arc::new(AtomicI64::new(duration_micros_i64(position))),
             released_seek_generation: Arc::new(AtomicI32::new(
@@ -150,10 +150,10 @@ impl AudioPlayer {
         self.shared.mute.store(i32::from(muted), Ordering::Relaxed);
     }
 
-    pub(crate) fn set_volume(&self, volume_percent: u8) {
+    pub(crate) fn set_volume(&self, volume_percent: u16) {
         self.shared
             .volume_percent
-            .store(i32::from(volume_percent.min(100)), Ordering::Relaxed);
+            .store(i32::from(volume_percent), Ordering::Relaxed);
     }
 
     pub(crate) fn seek_held(&self, position: Duration) -> i32 {

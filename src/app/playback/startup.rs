@@ -39,7 +39,7 @@ pub(crate) fn play(
     font_system: &FontSystem,
 ) -> Result<()> {
     let mut playlist = Playlist::from_opened_path(path);
-    let mut carryover = PlaybackCarryover::default();
+    let mut carryover = PlaybackCarryover::new(options.volume_max);
     let initial_path = playlist.current().to_path_buf();
     loop {
         let playlist_view = playlist.view();

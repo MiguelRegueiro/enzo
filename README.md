@@ -66,6 +66,7 @@ Flags:
 - `--force` — bypass Kitty terminal detection
 - `--force-media-title <title>` — override the displayed title
 - `--sub-file <path>` — load an external SRT, WebVTT, SSA, or ASS subtitle file
+- `--volume-max <percent>` — set the maximum volume from 100 to 1000 (default: 100)
 - `--no-resume` — play without reading or writing resume data
 - `--no-autoplay-next` — stop instead of playing the next video when playback ends
 - `--clear-resume` — remove saved resume data and exit

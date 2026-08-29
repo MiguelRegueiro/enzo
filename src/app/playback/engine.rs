@@ -9,7 +9,7 @@ use crate::media::{AudioPlayer, FrameStatus, VideoDecoder};
 
 use super::{carryover::PlaybackCarryover, layout::TargetFrame};
 
-pub(super) const VOLUME_STEP_PERCENT: u8 = 2;
+pub(super) const VOLUME_STEP_PERCENT: u16 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AudioChoice {
@@ -35,7 +35,8 @@ pub(super) struct PlaybackEngine {
     pub(super) video_ended: bool,
     pub(super) paused: bool,
     pub(super) muted: bool,
-    pub(super) volume_percent: u8,
+    pub(super) volume_percent: u16,
+    pub(super) volume_max: u16,
     pub(super) position: Duration,
     pub(super) frame_interval: Duration,
     pub(super) next_frame_at: Instant,
@@ -80,6 +81,7 @@ impl PlaybackEngine {
             paused: carryover.paused,
             muted: carryover.muted,
             volume_percent: carryover.volume_percent,
+            volume_max: carryover.volume_max,
             position,
             frame_interval: frame_interval(fps),
             next_frame_at: started_at,
@@ -119,8 +121,8 @@ impl PlaybackEngine {
         }
     }
 
-    pub(super) fn adjust_volume(&mut self, steps: i32) -> u8 {
-        self.volume_percent = adjusted_volume(self.volume_percent, steps);
+    pub(super) fn adjust_volume(&mut self, steps: i32) -> u16 {
+        self.volume_percent = adjusted_volume(self.volume_percent, steps, self.volume_max);
         if let Some(audio) = self.audio.as_ref() {
             audio.set_volume(self.volume_percent);
         }
@@ -178,9 +180,11 @@ fn frame_interval(fps: f64) -> Duration {
     Duration::from_secs_f64(1.0 / fps.max(1.0))
 }
 
-fn adjusted_volume(current: u8, steps: i32) -> u8 {
+fn adjusted_volume(current: u16, steps: i32, maximum: u16) -> u16 {
     let delta = steps.saturating_mul(i32::from(VOLUME_STEP_PERCENT));
-    i32::from(current).saturating_add(delta).clamp(0, 100) as u8
+    i32::from(current)
+        .saturating_add(delta)
+        .clamp(0, i32::from(maximum)) as u16
 }
 
 #[cfg(test)]
@@ -194,11 +198,13 @@ mod tests {
 
     #[test]
     fn volume_adjustment_uses_two_percent_steps_and_clamps() {
-        assert_eq!(adjusted_volume(50, 1), 52);
-        assert_eq!(adjusted_volume(50, -2), 46);
-        assert_eq!(adjusted_volume(100, 1), 100);
-        assert_eq!(adjusted_volume(0, -1), 0);
-        assert_eq!(adjusted_volume(50, i32::MAX), 100);
-        assert_eq!(adjusted_volume(50, i32::MIN), 0);
+        assert_eq!(adjusted_volume(50, 1, 100), 52);
+        assert_eq!(adjusted_volume(50, -2, 100), 46);
+        assert_eq!(adjusted_volume(100, 1, 100), 100);
+        assert_eq!(adjusted_volume(100, 1, 200), 102);
+        assert_eq!(adjusted_volume(198, 2, 200), 200);
+        assert_eq!(adjusted_volume(0, -1, 200), 0);
+        assert_eq!(adjusted_volume(50, i32::MAX, 200), 200);
+        assert_eq!(adjusted_volume(50, i32::MIN, 200), 0);
     }
 }

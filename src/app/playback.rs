@@ -25,5 +25,6 @@ pub(super) use startup::play;
 pub(super) struct PlaybackOptions {
     pub(super) resume_enabled: bool,
     pub(super) autoplay_next: bool,
+    pub(super) volume_max: u16,
     pub(super) force_media_title: Option<std::sync::Arc<str>>,
 }

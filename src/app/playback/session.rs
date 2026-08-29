@@ -486,6 +486,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             paused: self.engine.paused,
             muted: self.engine.muted,
             volume_percent: self.engine.volume_percent,
+            volume_max: self.engine.volume_max,
             media_info_pinned: self.ui.media_info.pinned(),
         };
         let resume_result = if outcome.clears_resume() {
