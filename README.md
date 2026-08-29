@@ -87,9 +87,10 @@ Use `enzo --config FILE` to load a custom path instead. Command-line options ove
 volume_max = 200
 resume = true
 autoplay_next = true
+accent_color = "#ef4444"
 ```
 
-`volume_max` accepts values from 100 to 1000. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
+`volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
 
 <details>
 <summary><strong>Controls</strong></summary>

@@ -42,6 +42,7 @@ impl<W: Write> PlaybackView<W> {
         canvas: CanvasFrame,
         fonts: &FontSystem,
         subtitle_language: Option<&str>,
+        accent_color: [u8; 3],
     ) -> io::Result<Self> {
         clear_screen_and_images(&mut output)?;
         Ok(Self {
@@ -49,7 +50,7 @@ impl<W: Write> PlaybackView<W> {
             target,
             canvas,
             sequence: Vec::with_capacity(canvas.frame_len() + canvas.frame_len() / 2 + 4096),
-            overlay: PlaybackOverlay::new(fonts),
+            overlay: PlaybackOverlay::new(fonts, accent_color),
             subtitle_renderer: SubtitleRenderer::new(fonts, subtitle_language),
             frame: vec![0_u8; target.frame_len()],
             composited_frame: vec![0_u8; canvas.frame_len()],

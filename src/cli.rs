@@ -47,6 +47,7 @@ pub(crate) struct Options {
     pub(crate) volume_max: u16,
     pub(crate) resume_enabled: bool,
     pub(crate) autoplay_next: bool,
+    pub(crate) accent_color: [u8; 3],
     pub(crate) clear_resume: bool,
 }
 
@@ -173,6 +174,7 @@ fn parse_args_with_config_loader(
         volume_max: volume_max.unwrap_or(config.volume_max),
         resume_enabled: resume_enabled.unwrap_or(config.resume),
         autoplay_next: autoplay_next.unwrap_or(config.autoplay_next),
+        accent_color: config.accent_color,
         clear_resume,
     }))
 }
@@ -239,6 +241,7 @@ mod tests {
         assert_eq!(config.volume_max, 100);
         assert!(config.resume_enabled);
         assert!(config.autoplay_next);
+        assert_eq!(config.accent_color, Config::default().accent_color);
         assert!(!config.clear_resume);
     }
 
@@ -259,12 +262,14 @@ mod tests {
                 volume_max: 220,
                 resume: false,
                 autoplay_next: false,
+                accent_color: [1, 2, 3],
             },
         );
 
         assert_eq!(options.volume_max, 220);
         assert!(!options.resume_enabled);
         assert!(!options.autoplay_next);
+        assert_eq!(options.accent_color, [1, 2, 3]);
     }
 
     #[test]
@@ -279,6 +284,7 @@ mod tests {
                 volume_max: 220,
                 resume: false,
                 autoplay_next: false,
+                accent_color: [1, 2, 3],
             },
         );
 

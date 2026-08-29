@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 pub(crate) const MIN_VOLUME_MAX: u16 = 100;
 pub(crate) const MAX_VOLUME_MAX: u16 = 1000;
+pub(crate) const DEFAULT_ACCENT_COLOR: [u8; 3] = [239, 68, 68];
 const DEFAULT_VOLUME_MAX: u16 = MIN_VOLUME_MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,6 +16,7 @@ pub(crate) struct Config {
     pub(crate) volume_max: u16,
     pub(crate) resume: bool,
     pub(crate) autoplay_next: bool,
+    pub(crate) accent_color: [u8; 3],
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -23,6 +25,7 @@ struct ConfigFile {
     volume_max: Option<u16>,
     resume: Option<bool>,
     autoplay_next: Option<bool>,
+    accent_color: Option<String>,
 }
 
 impl Default for Config {
@@ -31,6 +34,7 @@ impl Default for Config {
             volume_max: DEFAULT_VOLUME_MAX,
             resume: true,
             autoplay_next: true,
+            accent_color: DEFAULT_ACCENT_COLOR,
         }
     }
 }
@@ -54,7 +58,40 @@ impl Config {
             volume_max,
             resume: parsed.resume.unwrap_or(true),
             autoplay_next: parsed.autoplay_next.unwrap_or(true),
+            accent_color: parsed
+                .accent_color
+                .as_deref()
+                .map(parse_hex_color)
+                .transpose()?
+                .unwrap_or(DEFAULT_ACCENT_COLOR),
         })
+    }
+}
+
+fn parse_hex_color(value: &str) -> Result<[u8; 3]> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 7 || bytes[0] != b'#' {
+        bail!("accent_color must use #RRGGBB format");
+    }
+    let mut color = [0_u8; 3];
+    for (component, pair) in color.iter_mut().zip(bytes[1..].chunks_exact(2)) {
+        let Some(high) = hex_digit(pair[0]) else {
+            bail!("accent_color must use #RRGGBB format");
+        };
+        let Some(low) = hex_digit(pair[1]) else {
+            bail!("accent_color must use #RRGGBB format");
+        };
+        *component = high * 16 + low;
+    }
+    Ok(color)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -161,23 +198,34 @@ mod tests {
                 volume_max: 100,
                 resume: true,
                 autoplay_next: true,
+                accent_color: DEFAULT_ACCENT_COLOR,
             }
         );
     }
 
     #[test]
     fn partial_config_overrides_defaults() {
-        let config = Config::from_str("volume_max = 220\nresume = false\n")
-            .expect("valid config should parse");
+        let config =
+            Config::from_str("volume_max = 220\nresume = false\naccent_color = \"#1aB2c3\"\n")
+                .expect("valid config should parse");
 
         assert_eq!(config.volume_max, 220);
         assert!(!config.resume);
         assert!(config.autoplay_next);
+        assert_eq!(config.accent_color, [0x1a, 0xb2, 0xc3]);
     }
 
     #[test]
     fn config_rejects_invalid_values_and_unknown_keys() {
-        for contents in ["volume_max = 99\n", "volume_max = 1001\n", "resum = true\n"] {
+        for contents in [
+            "volume_max = 99\n",
+            "volume_max = 1001\n",
+            "resum = true\n",
+            "accent_color = \"ef4444\"\n",
+            "accent_color = \"#abcd\"\n",
+            "accent_color = \"#gg0000\"\n",
+            "accent_color = #ef4444\n",
+        ] {
             assert!(Config::from_str(contents).is_err(), "contents: {contents}");
         }
     }
@@ -189,7 +237,7 @@ mod tests {
         fs::create_dir_all(&root).expect("config directory should be created");
         fs::write(
             &path,
-            "volume_max = 180\nresume = false\nautoplay_next = false\n",
+            "volume_max = 180\nresume = false\nautoplay_next = false\naccent_color = \"#102030\"\n",
         )
         .expect("config should be written");
 
@@ -201,6 +249,7 @@ mod tests {
                 volume_max: 180,
                 resume: false,
                 autoplay_next: false,
+                accent_color: [0x10, 0x20, 0x30],
             }
         );
         fs::remove_dir_all(root).expect("config directory should be removed");

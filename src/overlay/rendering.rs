@@ -14,7 +14,7 @@ use super::{
     playlist::draw_playlist_menu,
     raster::{RoundedRect, fill_rounded_rect},
     state::OverlayState,
-    style::{ACCENT_COLOR, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
+    style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
     text::draw_overlay_text,
     timeline::{format_position_timestamp, format_timestamp, progress_pixels, time_column_width},
 };
@@ -28,6 +28,7 @@ pub(super) fn render_overlay_rgb(
     terminal_rows: u16,
     scale_percent: u32,
     state: OverlayState,
+    palette: OverlayPalette,
     scratch: &mut String,
     acrylic: &mut AcrylicScratch,
     font: Option<&mut FontRenderer>,
@@ -62,6 +63,7 @@ pub(super) fn render_overlay_rgb(
             fallback_text_scale,
             text_height,
             &state.playlist,
+            palette,
             acrylic,
         );
         return;
@@ -125,6 +127,7 @@ pub(super) fn render_overlay_rgb(
             fallback_text_scale,
             text_height,
             state.help_scroll_offset,
+            palette,
             acrylic,
         );
     }
@@ -194,12 +197,12 @@ pub(super) fn render_overlay_rgb(
                 height: f64::from(metrics.bar_height),
                 radius: f64::from(rounded_radius(filled, metrics.bar_height, bar_radius)),
             },
-            ACCENT_COLOR,
+            palette.accent,
             248,
         );
     }
     if state.duration.is_some_and(|duration| !duration.is_zero()) {
-        draw_progress_handle(frame, width, height, metrics, filled);
+        draw_progress_handle(frame, width, height, metrics, filled, palette);
     }
 
     scratch.clear();
@@ -245,6 +248,7 @@ pub(super) fn render_overlay_rgb(
                 state.audio_picker_offset,
                 state.audio_picker_focus,
                 false,
+                palette,
                 acrylic,
             );
         }
@@ -268,6 +272,7 @@ pub(super) fn render_overlay_rgb(
             state.subtitle_picker_offset,
             state.subtitle_picker_focus,
             true,
+            palette,
             acrylic,
         );
     }

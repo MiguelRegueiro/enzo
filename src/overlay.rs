@@ -33,7 +33,8 @@ use layout::{
     OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
 };
 use playlist::{playlist_menu_action, playlist_menu_hover_index, playlist_menu_visible_row_count};
-use rendering::render_overlay_rgb;
+use rendering::render_overlay_rgb as render_overlay_rgb_with_palette;
+use style::OverlayPalette;
 
 use crate::{
     font::FontRenderer,
@@ -50,10 +51,11 @@ pub(crate) struct PlaybackOverlay {
     scratch: String,
     acrylic: AcrylicScratch,
     font: Option<FontRenderer>,
+    palette: OverlayPalette,
 }
 
 impl PlaybackOverlay {
-    pub(crate) fn new(fonts: &FontSystem) -> Self {
+    pub(crate) fn new(fonts: &FontSystem, accent_color: [u8; 3]) -> Self {
         let mut font = fonts
             .resolve_all(FontRole::Ui)
             .find_map(|path| FontRenderer::open_path(path, 18));
@@ -70,6 +72,7 @@ impl PlaybackOverlay {
             scratch: String::new(),
             acrylic: AcrylicScratch::default(),
             font,
+            palette: OverlayPalette::new(accent_color),
         }
     }
 
@@ -79,7 +82,7 @@ impl PlaybackOverlay {
         context: OverlayRenderContext,
         state: OverlayState,
     ) {
-        render_overlay_rgb(
+        render_overlay_rgb_with_palette(
             frame,
             context.width,
             context.height,
@@ -87,6 +90,7 @@ impl PlaybackOverlay {
             context.terminal_rows,
             context.scale_percent,
             state,
+            self.palette,
             &mut self.scratch,
             &mut self.acrylic,
             self.font.as_mut(),
@@ -297,4 +301,33 @@ impl PlaybackOverlay {
             self.font.as_mut(),
         )
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn render_overlay_rgb(
+    frame: &mut [u8],
+    width: u32,
+    height: u32,
+    terminal_cols: u16,
+    terminal_rows: u16,
+    scale_percent: u32,
+    state: OverlayState,
+    scratch: &mut String,
+    acrylic: &mut AcrylicScratch,
+    font: Option<&mut FontRenderer>,
+) {
+    render_overlay_rgb_with_palette(
+        frame,
+        width,
+        height,
+        terminal_cols,
+        terminal_rows,
+        scale_percent,
+        state,
+        OverlayPalette::new(crate::config::DEFAULT_ACCENT_COLOR),
+        scratch,
+        acrylic,
+        font,
+    );
 }

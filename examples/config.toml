@@ -8,3 +8,7 @@ resume = true
 
 # Continue with the next video in the folder when playback finishes.
 autoplay_next = true
+
+# Overlay accent used for progress, selection markers, and scrollbars.
+# Hex colors must be quoted because # begins a TOML comment.
+accent_color = "#ef4444"

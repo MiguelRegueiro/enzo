@@ -9,7 +9,7 @@ use super::{
     layout::{fallback_text_scale, rounded_radius, text_size},
     raster::{Circle, RoundedRect, fill_circle, fill_rounded_rect},
     state::{HitboxRect, OverlayHitPoint, PlaylistMenuAction, PlaylistMenuState},
-    style::{ACCENT_COLOR, PANEL_COLOR, TEXT_COLOR},
+    style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR},
     text::{draw_overlay_text, fit_overlay_text, overlay_text_width},
 };
 
@@ -39,6 +39,7 @@ pub(super) fn draw_playlist_menu(
     fallback_scale: u32,
     text_height: u32,
     state: &PlaylistMenuState,
+    palette: OverlayPalette,
     acrylic: &mut AcrylicScratch,
 ) {
     let geometry = playlist_geometry(
@@ -136,7 +137,7 @@ pub(super) fn draw_playlist_menu(
                     y: f64::from(row.top.saturating_add(geometry.row_height / 2)),
                     radius: f64::from(geometry.marker_size / 2),
                 },
-                ACCENT_COLOR,
+                palette.accent,
                 245,
             );
         }
@@ -170,7 +171,15 @@ pub(super) fn draw_playlist_menu(
     }
 
     if has_scrollbar {
-        draw_playlist_scrollbar(frame, width, height, geometry, scroll_offset, row_count);
+        draw_playlist_scrollbar(
+            frame,
+            width,
+            height,
+            geometry,
+            scroll_offset,
+            row_count,
+            palette,
+        );
     }
 }
 
@@ -412,6 +421,7 @@ fn draw_playlist_scrollbar(
     geometry: PlaylistGeometry,
     scroll_offset: usize,
     row_count: usize,
+    palette: OverlayPalette,
 ) {
     let track_top = geometry.rows_top;
     let track_height = geometry
@@ -443,7 +453,7 @@ fn draw_playlist_scrollbar(
             height: f64::from(thumb_height),
             radius: f64::from(geometry.scrollbar_width),
         },
-        ACCENT_COLOR,
+        palette.accent,
         232,
     );
 }

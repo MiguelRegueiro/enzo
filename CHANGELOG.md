@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Configuration file support through `config.toml`.
+- Custom configuration paths through `--config <path>`.
+- Configurable maximum volume from 100% to 1000%.
+- Custom `#RRGGBB` overlay accent colors.
+
 ## [1.1.0] - 2026-08-12
 
 ### Added

@@ -16,7 +16,7 @@ use super::{
         stroke_rounded_rect,
     },
     state::HitboxRect,
-    style::{ACCENT_COLOR, PANEL_COLOR, SHADOW_COLOR, TEXT_COLOR},
+    style::{OverlayPalette, PANEL_COLOR, SHADOW_COLOR, TEXT_COLOR},
     text::{bitmap_text_width, draw_overlay_text},
 };
 
@@ -308,6 +308,7 @@ pub(super) fn draw_track_picker(
     scroll_offset: usize,
     focused_track: Option<usize>,
     include_off: bool,
+    palette: OverlayPalette,
     acrylic: &mut AcrylicScratch,
 ) {
     let row_count = labels.len().saturating_add(usize::from(include_off));
@@ -377,10 +378,12 @@ pub(super) fn draw_track_picker(
                 frame,
                 width,
                 height,
-                marker_x,
-                row.top,
-                row_height,
-                marker_size,
+                Circle {
+                    x: f64::from(marker_x.saturating_add(marker_size / 2)),
+                    y: f64::from(row.top.saturating_add(row_height / 2)),
+                    radius: f64::from(marker_size / 2),
+                },
+                palette,
             );
         }
         let label = fit_picker_text(
@@ -408,11 +411,21 @@ pub(super) fn draw_track_picker(
             width,
             height,
             picker,
-            scroll_offset,
-            visible_count,
-            row_count,
+            PickerScroll {
+                offset: scroll_offset,
+                visible_count,
+                row_count,
+            },
+            palette,
         );
     }
+}
+
+#[derive(Clone, Copy)]
+struct PickerScroll {
+    offset: usize,
+    visible_count: usize,
+    row_count: usize,
 }
 
 fn draw_picker_scrollbar(
@@ -420,24 +433,23 @@ fn draw_picker_scrollbar(
     width: u32,
     height: u32,
     picker: HitboxRect,
-    scroll_offset: usize,
-    visible_count: usize,
-    row_count: usize,
+    scroll: PickerScroll,
+    palette: OverlayPalette,
 ) {
     let pad = 4;
     let bar_width = 3;
     let track_top = picker.top.saturating_add(pad);
     let track_bottom = picker.bottom.saturating_sub(pad);
-    if track_bottom <= track_top || row_count == 0 {
+    if track_bottom <= track_top || scroll.row_count == 0 {
         return;
     }
     let track_height = track_bottom - track_top;
-    let thumb_height = ((track_height as usize * visible_count) / row_count)
+    let thumb_height = ((track_height as usize * scroll.visible_count) / scroll.row_count)
         .max(8)
         .min(track_height as usize) as u32;
-    let max_offset = row_count.saturating_sub(visible_count).max(1);
+    let max_offset = scroll.row_count.saturating_sub(scroll.visible_count).max(1);
     let thumb_top = track_top
-        + ((track_height - thumb_height) as usize * scroll_offset.min(max_offset) / max_offset)
+        + ((track_height - thumb_height) as usize * scroll.offset.min(max_offset) / max_offset)
             as u32;
     let x = picker.right.saturating_sub(pad).saturating_sub(bar_width);
     fill_rounded_rect(
@@ -451,7 +463,7 @@ fn draw_picker_scrollbar(
             height: f64::from(thumb_height),
             radius: f64::from(bar_width),
         },
-        ACCENT_COLOR,
+        palette.accent,
         232,
     );
 }
@@ -597,23 +609,10 @@ fn draw_picker_marker(
     frame: &mut [u8],
     width: u32,
     height: u32,
-    x: u32,
-    row_y: u32,
-    row_height: u32,
-    size: u32,
+    circle: Circle,
+    palette: OverlayPalette,
 ) {
-    fill_circle(
-        frame,
-        width,
-        height,
-        Circle {
-            x: f64::from(x.saturating_add(size / 2)),
-            y: f64::from(row_y.saturating_add(row_height / 2)),
-            radius: f64::from(size / 2),
-        },
-        ACCENT_COLOR,
-        245,
-    );
+    fill_circle(frame, width, height, circle, palette.accent, 245);
 }
 
 pub(super) fn draw_progress_handle(
@@ -622,6 +621,7 @@ pub(super) fn draw_progress_handle(
     height: u32,
     metrics: OverlayMetrics,
     filled: u32,
+    palette: OverlayPalette,
 ) {
     let radius = progress_handle_radius(metrics.bar_height);
     let center_x = f64::from(metrics.bar_x + filled.min(metrics.bar_width));
@@ -648,7 +648,7 @@ pub(super) fn draw_progress_handle(
             y: center_y,
             radius: f64::from(radius),
         },
-        ACCENT_COLOR,
+        palette.accent,
         255,
     );
 }
