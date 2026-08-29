@@ -66,10 +66,30 @@ Flags:
 - `--force` — bypass Kitty terminal detection
 - `--force-media-title <title>` — override the displayed title
 - `--sub-file <path>` — load an external SRT, WebVTT, SSA, or ASS subtitle file
+- `--config <path>` — load configuration from a custom path
 - `--volume-max <percent>` — set the maximum volume from 100 to 1000 (default: 100)
-- `--no-resume` — play without reading or writing resume data
-- `--no-autoplay-next` — stop instead of playing the next video when playback ends
+- `--resume`, `--no-resume` — enable or disable reading and writing resume data
+- `--autoplay-next`, `--no-autoplay-next` — enable or disable playing the next video when playback ends
 - `--clear-resume` — remove saved resume data and exit
+
+## Configuration
+
+Enzo reads `config.toml` from the platform config directory:
+
+| Platform | Config file |
+|---|---|
+| Linux / BSD | `$XDG_CONFIG_HOME/enzo/config.toml` or `~/.config/enzo/config.toml` |
+| macOS | `$XDG_CONFIG_HOME/enzo/config.toml`, `~/.config/enzo/config.toml`, or `~/Library/Application Support/enzo/config.toml` |
+
+Use `enzo --config FILE` to load a custom path instead. Command-line options override values from the config file.
+
+```toml
+volume_max = 200
+resume = true
+autoplay_next = true
+```
+
+`volume_max` accepts values from 100 to 1000. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
 
 <details>
 <summary><strong>Controls</strong></summary>

@@ -1,0 +1,10 @@
+# Copy to ~/.config/enzo/config.toml to customize Enzo.
+
+# Maximum volume reachable with the volume controls, from 100 to 1000.
+volume_max = 100
+
+# Read and write saved playback positions.
+resume = true
+
+# Continue with the next video in the folder when playback finishes.
+autoplay_next = true
