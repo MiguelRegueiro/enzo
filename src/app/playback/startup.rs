@@ -58,7 +58,7 @@ pub(crate) fn play(
             carryover,
             entry_sub_file,
             entry_media_title,
-            options.resume_enabled,
+            &options,
             font_system,
         )?;
         carryover = result.carryover;
@@ -83,7 +83,7 @@ fn play_current(
     carryover: PlaybackCarryover,
     sub_file: Option<&Path>,
     force_media_title: Option<&str>,
-    resume_enabled: bool,
+    options: &PlaybackOptions,
     font_system: &FontSystem,
 ) -> Result<super::session::PlaybackSessionResult> {
     let source = probe_video(&path)
@@ -91,7 +91,7 @@ fn play_current(
     let mut resume = ResumeTracker::open(
         &path,
         source.duration,
-        resume_available(resume_enabled, source.seekable),
+        resume_available(options.resume_enabled, source.seekable),
         force_media_title,
     );
     let restored = resume.restored().cloned();
@@ -141,6 +141,7 @@ fn play_current(
         canvas,
         font_system,
         subtitles.active().and_then(SubtitleTrack::language),
+        options.accent_color,
     )?;
     let status_message = if restored_external_subtitle_missing {
         Some(PlaybackUi::status(

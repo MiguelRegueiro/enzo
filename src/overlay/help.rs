@@ -6,7 +6,7 @@ use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
     layout::{fallback_text_scale, rounded_radius, text_size},
     raster::{RoundedRect, fill_rounded_rect},
-    style::{ACCENT_COLOR, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
+    style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
     text::{bitmap_text_width, draw_overlay_text, fit_overlay_text, overlay_text_width},
 };
 
@@ -174,6 +174,7 @@ pub(super) fn draw_help_panel(
     fallback_scale: u32,
     text_height: u32,
     scroll_offset: usize,
+    palette: OverlayPalette,
     acrylic: &mut AcrylicScratch,
 ) {
     let mut font = font;
@@ -205,6 +206,7 @@ pub(super) fn draw_help_panel(
             column_width,
             lines,
             scroll_offset,
+            palette,
         );
         column_x = column_x
             .saturating_add(column_width)
@@ -212,7 +214,15 @@ pub(super) fn draw_help_panel(
     }
 
     if max_offset > 0 {
-        draw_scrollbar(frame, width, height, geometry, scroll_offset, max_offset);
+        draw_scrollbar(
+            frame,
+            width,
+            height,
+            geometry,
+            scroll_offset,
+            max_offset,
+            palette,
+        );
     }
 }
 
@@ -245,6 +255,7 @@ fn draw_help_column(
     column_width: u32,
     lines: &[HelpLine],
     scroll_offset: usize,
+    palette: OverlayPalette,
 ) {
     let visible_lines = visible_line_count(geometry);
     let column_right = column_x.saturating_add(column_width);
@@ -287,7 +298,7 @@ fn draw_help_column(
                     y.saturating_add(geometry.key_pad_y),
                     fallback_scale,
                     title,
-                    ACCENT_COLOR,
+                    palette.accent,
                     238,
                 );
             }
@@ -389,6 +400,7 @@ fn draw_scrollbar(
     geometry: HelpGeometry,
     scroll_offset: usize,
     max_offset: usize,
+    palette: OverlayPalette,
 ) {
     let panel_right = (geometry.panel.x as u32).saturating_add(geometry.panel.width as u32);
     let track_x = panel_right
@@ -415,7 +427,7 @@ fn draw_scrollbar(
             height: f64::from(thumb_height),
             radius: f64::from(geometry.scrollbar_width),
         },
-        ACCENT_COLOR,
+        palette.accent,
         232,
     );
 }

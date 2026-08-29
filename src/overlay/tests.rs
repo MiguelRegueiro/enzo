@@ -6,8 +6,9 @@ use super::{
     acrylic::AcrylicScratch,
     layout::{OverlayMetrics, fallback_text_scale, text_size},
     raster::rgb_offset,
-    rendering::render_overlay_rgb,
+    render_overlay_rgb, render_overlay_rgb_with_palette,
     state::{MediaInfo, MediaInfoState, OverlayState},
+    style::OverlayPalette,
     timeline::{progress_pixels, time_column_width},
 };
 
@@ -191,6 +192,67 @@ fn rendered_overlay_changes_bottom_pixels_only() {
     assert!(frame[offset] > 200);
     assert!(frame[offset + 1] < 120);
     assert!(frame[offset + 2] < 120);
+}
+
+#[test]
+fn configured_accent_colors_the_progress_bar() {
+    let width = 320;
+    let height = 180;
+    let mut frame = vec![20_u8; (width * height * 3) as usize];
+    let mut scratch = String::new();
+    let mut acrylic = AcrylicScratch::default();
+    let position = Duration::from_secs(30);
+    let duration = Some(Duration::from_secs(120));
+
+    render_overlay_rgb_with_palette(
+        &mut frame,
+        width,
+        height,
+        width as u16,
+        height as u16,
+        100,
+        OverlayState {
+            position,
+            duration,
+            paused: false,
+            visible: true,
+            playlist_previous_available: false,
+            playlist_next_available: false,
+            playlist: super::state::PlaylistMenuState::default(),
+            audio_available: false,
+            selected_audio: None,
+            audio_picker_open: false,
+            audio_picker_offset: 0,
+            audio_picker_focus: None,
+            audio_labels: Arc::default(),
+            subtitles_available: false,
+            selected_subtitle: None,
+            subtitle_picker_open: false,
+            subtitle_picker_offset: 0,
+            subtitle_picker_focus: None,
+            subtitle_labels: Arc::default(),
+            status_message: None,
+            media_title: None,
+            media_info: None,
+            help_visible: false,
+            help_scroll_offset: 0,
+        },
+        OverlayPalette::new([0, 255, 32]),
+        &mut scratch,
+        &mut acrylic,
+        None,
+    );
+
+    let metrics = test_metrics(width, height);
+    let filled = progress_pixels(metrics.bar_width, position, duration);
+    let offset = rgb_offset(
+        width,
+        metrics.bar_x + filled / 2,
+        metrics.bar_y + metrics.bar_height / 2,
+    );
+    assert!(frame[offset] < 40);
+    assert!(frame[offset + 1] > 220);
+    assert!(frame[offset + 2] < 70);
 }
 
 #[test]

@@ -35,6 +35,7 @@ pub(crate) fn run(options: Options) -> Result<()> {
         resume_enabled: options.resume_enabled,
         autoplay_next: options.autoplay_next,
         volume_max: options.volume_max,
+        accent_color: options.accent_color,
         force_media_title: options
             .force_media_title
             .filter(|title| !title.is_empty())

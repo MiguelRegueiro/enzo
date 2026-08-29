@@ -26,5 +26,6 @@ pub(super) struct PlaybackOptions {
     pub(super) resume_enabled: bool,
     pub(super) autoplay_next: bool,
     pub(super) volume_max: u16,
+    pub(super) accent_color: [u8; 3],
     pub(super) force_media_title: Option<std::sync::Arc<str>>,
 }
