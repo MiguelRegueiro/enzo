@@ -26,7 +26,7 @@ int enzo_volume_percent_value(const int *volume_percent) {
     if (value < 0) {
         return 0;
     }
-    return value > 100 ? 100 : value;
+    return value > 1000 ? 1000 : value;
 }
 
 int enzo_seek_generation_value(const int *seek_generation) {

@@ -635,11 +635,15 @@ static int write_converted_audio(
         int volume = enzo_volume_percent_value(volume_percent);
         if (enzo_mute_requested(mute_flag) || volume == 0) {
             memset(output_data, 0, (size_t)bytes);
-        } else if (volume < 100) {
+        } else if (volume != 100) {
             int16_t *samples = (int16_t *)output_data;
             size_t sample_count = (size_t)bytes / sizeof(*samples);
             for (size_t index = 0; index < sample_count; index++) {
-                samples[index] = (int16_t)((int32_t)samples[index] * volume / 100);
+                int32_t scaled = (int32_t)samples[index] * volume / 100;
+                samples[index] = (int16_t)(
+                    scaled < INT16_MIN ? INT16_MIN :
+                    scaled > INT16_MAX ? INT16_MAX : scaled
+                );
             }
         }
         int ret = enzo_pulse_output_write(

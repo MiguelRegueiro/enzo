@@ -88,7 +88,7 @@ pub(super) fn seek_playback(
     exact_video_seek: bool,
     paused: bool,
     muted: bool,
-    volume_percent: u8,
+    volume_percent: u16,
 ) -> Result<PendingSeek> {
     let video_generation = if exact_video_seek {
         decoder.seek(position)

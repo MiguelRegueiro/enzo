@@ -16,6 +16,7 @@ Options:
       --force                    Bypass Kitty terminal detection
       --force-media-title TITLE  Override the displayed title
       --sub-file PATH            Load an external subtitle file
+      --volume-max PERCENT       Set maximum volume (100-1000; default: 100)
       --no-resume                Disable reading and writing resume data
       --no-autoplay-next         Do not play next video when playback ends
       --clear-resume             Remove saved playback state and exit
@@ -34,6 +35,7 @@ pub(crate) struct Options {
     pub(crate) force: bool,
     pub(crate) force_media_title: Option<String>,
     pub(crate) sub_file: Option<PathBuf>,
+    pub(crate) volume_max: u16,
     pub(crate) resume_enabled: bool,
     pub(crate) autoplay_next: bool,
     pub(crate) clear_resume: bool,
@@ -50,6 +52,7 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
     let mut force = false;
     let mut force_media_title = None::<String>;
     let mut sub_file = None::<PathBuf>;
+    let mut volume_max = 100;
     let mut resume_enabled = true;
     let mut autoplay_next = true;
     let mut clear_resume = false;
@@ -88,6 +91,13 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
             sub_file = Some(path);
             continue;
         }
+        if arg == "--volume-max" {
+            let value = args
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--volume-max requires a value"))?;
+            volume_max = parse_volume_max(&value)?;
+            continue;
+        }
         let arg_text = arg.to_string_lossy();
         if let Some(value) = arg_text.strip_prefix("--force-media-title=") {
             force_media_title = Some(value.to_owned());
@@ -97,6 +107,10 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
             let path = PathBuf::from(value);
             validate_subtitle_path(&path)?;
             sub_file = Some(path);
+            continue;
+        }
+        if let Some(value) = arg_text.strip_prefix("--volume-max=") {
+            volume_max = parse_volume_max(value)?;
             continue;
         }
 
@@ -119,10 +133,22 @@ pub(crate) fn parse_args(args: impl Iterator<Item = OsString>) -> Result<Action>
         force,
         force_media_title,
         sub_file,
+        volume_max,
         resume_enabled,
         autoplay_next,
         clear_resume,
     }))
+}
+
+fn parse_volume_max(value: impl AsRef<std::ffi::OsStr>) -> Result<u16> {
+    let value = value.as_ref().to_string_lossy();
+    let percent = value
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("invalid --volume-max value: {value}"))?;
+    if !(100..=1000).contains(&percent) {
+        bail!("--volume-max must be between 100 and 1000");
+    }
+    Ok(percent)
 }
 
 fn join_positionals(positionals: Vec<OsString>) -> Option<PathBuf> {
@@ -167,9 +193,30 @@ mod tests {
         assert!(!config.force);
         assert_eq!(config.force_media_title, None);
         assert_eq!(config.sub_file, None);
+        assert_eq!(config.volume_max, 100);
         assert!(config.resume_enabled);
         assert!(config.autoplay_next);
         assert!(!config.clear_resume);
+    }
+
+    #[test]
+    fn parse_args_supports_volume_max_forms() {
+        let separate = run_options(vec![OsString::from("--volume-max"), OsString::from("180")]);
+        assert_eq!(separate.volume_max, 180);
+
+        let joined = run_options(vec![OsString::from("--volume-max=250")]);
+        assert_eq!(joined.volume_max, 250);
+    }
+
+    #[test]
+    fn parse_args_rejects_invalid_volume_max() {
+        for value in ["99", "1001", "loud"] {
+            let error =
+                parse_args(vec![OsString::from(format!("--volume-max={value}"))].into_iter())
+                    .err()
+                    .expect("invalid maximum volume should fail");
+            assert!(error.to_string().contains("--volume-max"));
+        }
     }
 
     #[test]
