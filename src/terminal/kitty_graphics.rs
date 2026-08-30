@@ -6,7 +6,15 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::Engine as _;
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+static BASE64: std::sync::LazyLock<base64::engine::Simd> = std::sync::LazyLock::new(|| {
+    base64::engine::Simd::standard(base64::engine::general_purpose::PAD)
+});
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+use base64::engine::general_purpose::STANDARD as BASE64;
 
 use super::{
     env::{inside_tmux, looks_like_kitty},
@@ -312,6 +320,36 @@ mod tests {
         let text = String::from_utf8_lossy(&out);
         assert!(text.contains("\x1b[3;2H"));
         assert!(text.contains("a=T,q=2,f=24,s=2,v=1,i=7,p=9,c=3,r=4,C=1,z=11,m=0;"));
+        assert!(text.contains("AAAA////"));
+    }
+
+    #[test]
+    fn kitty_direct_frame_sequence_chunks_large_frames() {
+        let frame = vec![0xFF; KITTY_RAW_CHUNK_BYTES + 3];
+        let placement = KittyFramePlacement {
+            image_id: 7,
+            placement_id: 9,
+            z_index: 11,
+            previous_image_id: None,
+            width: 1,
+            height: 1,
+            area: ImageArea {
+                x: 0,
+                y: 0,
+                cols: 1,
+                rows: 1,
+            },
+        };
+        let mut out = Vec::new();
+        let mut scratch = Vec::new();
+
+        write_kitty_direct_image(&mut out, placement, &frame, &mut scratch)
+            .expect("kitty frame should encode");
+
+        let text = String::from_utf8_lossy(&out);
+        assert_eq!(text.matches("a=T,").count(), 1);
+        assert_eq!(text.matches("\x1b_Gm=0;").count(), 1);
+        assert!(text.contains("z=11,m=1;"));
     }
 
     #[test]
