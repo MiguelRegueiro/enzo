@@ -343,8 +343,8 @@ mod tests {
     fn renderer_scales_bitmap_subtitle_into_video_viewport() {
         let mut palette_rgba = Box::new([0_u8; 256 * 4]);
         palette_rgba[4..8].copy_from_slice(&[12, 34, 56, 255]);
-        let track = SubtitleTrack {
-            cues: vec![SubtitleCue {
+        let track = SubtitleTrack::from_cues(
+            vec![SubtitleCue {
                 start: Duration::from_secs(1),
                 end: Duration::from_secs(2),
                 lines: Vec::new(),
@@ -359,9 +359,9 @@ mod tests {
                     palette_rgba,
                 }),
             }],
-            language: Some("en".to_string()),
-            label: String::from("English (en hdmv_pgs_subtitle)"),
-        };
+            Some("en".to_string()),
+            String::from("English (en hdmv_pgs_subtitle)"),
+        );
         let mut renderer = SubtitleRenderer::without_font();
         let mut frame = vec![0_u8; 8 * 8 * 3];
 

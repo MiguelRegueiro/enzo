@@ -1,9 +1,11 @@
 mod bitmap;
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Condvar, Mutex, TryLockError},
+    thread,
     time::Duration,
 };
 
@@ -30,7 +32,10 @@ const TEXT_COLOR: [u8; 3] = [255, 255, 255];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];
 const MAX_SUBTITLE_WIDTH_RATIO: f64 = 0.84;
 const MAX_ACTIVE_SUBTITLE_LINES: usize = 3;
+const MAX_TRANSIENT_POSITIONED_ASS_DURATION: Duration = Duration::from_millis(100);
 const MAX_SUBTITLE_FALLBACK_FONTS: usize = 8;
+const MAX_SUBTITLE_PREFETCH_CUES: usize = 8;
+const MAX_READY_SUBTITLE_OVERLAYS: usize = 16;
 const LANGUAGE_DETECTION_SAMPLE_BYTES: usize = 16 * 1024;
 const SUPPORTED_SUBTITLE_CODECS: &[&str] = &[
     "ass",
@@ -55,8 +60,16 @@ pub(crate) struct SubtitleCue {
 #[derive(Debug)]
 pub(crate) struct SubtitleTrack {
     cues: Vec<SubtitleCue>,
+    text_timeline: Vec<SubtitleTextState>,
     language: Option<String>,
     label: String,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SubtitleTextState {
+    start: Duration,
+    end: Duration,
+    lines: Vec<String>,
 }
 
 impl SubtitleTrack {
@@ -68,11 +81,18 @@ impl SubtitleTrack {
             bail!("subtitle file has no cues: {}", path.display());
         }
         let language = infer_subtitle_language(path, &text);
-        Ok(Self {
-            label: external_subtitle_label(path, language.as_deref()),
-            language,
+        let label = external_subtitle_label(path, language.as_deref());
+        Ok(Self::from_cues(cues, language, label))
+    }
+
+    fn from_cues(cues: Vec<SubtitleCue>, language: Option<String>, label: String) -> Self {
+        let text_timeline = compile_text_timeline(&cues);
+        Self {
             cues,
-        })
+            text_timeline,
+            language,
+            label,
+        }
     }
 
     pub(crate) fn with_label(mut self, label: String) -> Self {
@@ -89,23 +109,13 @@ impl SubtitleTrack {
     }
 
     fn active_lines(&self, position: Duration) -> Option<Vec<String>> {
-        let mut lines = Vec::new();
-        let end = self.cues.partition_point(|cue| cue.start <= position);
-        for cue in &self.cues[..end] {
-            if position >= cue.end {
-                continue;
-            }
-            for line in &cue.lines {
-                if !lines.contains(line) {
-                    lines.push(line.clone());
-                }
-            }
-        }
-        if lines.len() > MAX_ACTIVE_SUBTITLE_LINES {
-            lines.sort_by_key(|line| std::cmp::Reverse(line.chars().count()));
-            lines.truncate(MAX_ACTIVE_SUBTITLE_LINES);
-        }
-        (!lines.is_empty()).then_some(lines)
+        let end = self
+            .text_timeline
+            .partition_point(|state| state.start <= position);
+        let state = end
+            .checked_sub(1)
+            .and_then(|index| self.text_timeline.get(index))?;
+        (position < state.end).then(|| state.lines.clone())
     }
 
     fn active_bitmaps(&self, position: Duration) -> impl Iterator<Item = &DecodedSubtitleBitmap> {
@@ -115,6 +125,83 @@ impl SubtitleTrack {
             .filter(move |cue| position < cue.end)
             .filter_map(|cue| cue.bitmap.as_ref())
     }
+
+    fn upcoming_line_sets(&self, position: Duration, limit: usize) -> Vec<Vec<String>> {
+        let start = self
+            .text_timeline
+            .partition_point(|state| state.start <= position);
+        let mut upcoming = Vec::new();
+        for state in &self.text_timeline[start..] {
+            if !upcoming.contains(&state.lines) {
+                upcoming.push(state.lines.clone());
+            }
+            if upcoming.len() >= limit {
+                break;
+            }
+        }
+        upcoming
+    }
+}
+
+fn compile_text_timeline(cues: &[SubtitleCue]) -> Vec<SubtitleTextState> {
+    let mut events = cues
+        .iter()
+        .enumerate()
+        .filter(|(_, cue)| !cue.lines.is_empty() && cue.start < cue.end)
+        .flat_map(|(index, cue)| [(cue.start, true, index), (cue.end, false, index)])
+        .collect::<Vec<_>>();
+    events.sort_unstable_by_key(|&(time, starts, index)| (time, starts, index));
+
+    let mut timeline = Vec::<SubtitleTextState>::new();
+    let mut active = BTreeSet::new();
+    let mut cursor = 0;
+    while cursor < events.len() {
+        let time = events[cursor].0;
+        while cursor < events.len() && events[cursor].0 == time {
+            let (_, starts, index) = events[cursor];
+            if starts {
+                active.insert(index);
+            } else {
+                active.remove(&index);
+            }
+            cursor += 1;
+        }
+        let Some(next_time) = events.get(cursor).map(|event| event.0) else {
+            break;
+        };
+        if active.is_empty() || time >= next_time {
+            continue;
+        }
+
+        let mut lines = Vec::new();
+        for &index in &active {
+            for line in &cues[index].lines {
+                if !lines.contains(line) {
+                    lines.push(line.clone());
+                }
+            }
+        }
+        if lines.len() > MAX_ACTIVE_SUBTITLE_LINES {
+            lines.sort_by_key(|line| std::cmp::Reverse(line.chars().count()));
+            lines.truncate(MAX_ACTIVE_SUBTITLE_LINES);
+        }
+        if lines.is_empty() {
+            continue;
+        }
+        if let Some(previous) = timeline.last_mut()
+            && previous.end == time
+            && previous.lines == lines
+        {
+            previous.end = next_time;
+        } else {
+            timeline.push(SubtitleTextState {
+                start: time,
+                end: next_time,
+                lines,
+            });
+        }
+    }
+    timeline
 }
 
 pub(crate) fn sidecar_subtitle_paths(media_path: &Path) -> Vec<PathBuf> {
@@ -192,11 +279,11 @@ pub(crate) fn load_embedded_subtitle_track(
         .language
         .clone()
         .or_else(|| detect_text_language(&sample));
-    Ok(Some(SubtitleTrack {
+    Ok(Some(SubtitleTrack::from_cues(
         cues,
         language,
-        label: stream.label(),
-    }))
+        stream.label(),
+    )))
 }
 
 fn subtitle_language_sample(cues: &[SubtitleCue]) -> String {
@@ -245,6 +332,7 @@ fn subtitle_cue_from_decoded(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
 }
 
 fn subtitle_cue_from_decoded_ass(cue: DecodedSubtitleCue) -> Option<SubtitleCue> {
+    let duration = cue.end.saturating_sub(cue.start);
     let decoded_format = decoded_ass_format();
     let dialogue_format = ass_default_format();
     let fields = if cue.text.trim_start().starts_with("Dialogue:") {
@@ -261,7 +349,7 @@ fn subtitle_cue_from_decoded_ass(cue: DecodedSubtitleCue) -> Option<SubtitleCue>
     let text = strip_srt_markup(fields.text);
     let text = text.trim();
     if text.is_empty()
-        || !ass_dialogue_line_is_useful(fields.style, fields.effect, fields.text, text)
+        || !ass_dialogue_line_is_useful(fields.style, fields.effect, fields.text, text, duration)
     {
         return None;
     }
@@ -517,25 +605,73 @@ fn matches_subtitle_extension(path: &Path, extensions: &[&str]) -> bool {
 }
 
 pub(crate) struct SubtitleRenderer {
+    worker: Arc<TextOverlayWorkerState>,
+    current_key: Option<TextOverlayRequestKey>,
+    current_generation: u64,
+    submitted_generation: Option<u64>,
+    cached_overlay: Option<CachedTextOverlay>,
+    ready_overlays: VecDeque<TextOverlayResult>,
+    prefetch_initialized: bool,
+    #[cfg(test)]
+    request_submissions: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TextOverlayRequestKey {
+    lines: Vec<String>,
+    canvas_width: u32,
+    canvas_height: u32,
+    bottom_reserve: u32,
+}
+
+struct TextOverlayRequest {
+    key: TextOverlayRequestKey,
+}
+
+struct TextOverlayResult {
+    key: TextOverlayRequestKey,
+    overlay: Option<CachedTextOverlay>,
+}
+
+#[derive(Default)]
+struct TextOverlayWorkerData {
+    pending: Option<TextOverlayRequest>,
+    prefetch: VecDeque<TextOverlayRequest>,
+    results: VecDeque<TextOverlayResult>,
+    in_flight: Option<TextOverlayRequestKey>,
+    shutdown: bool,
+}
+
+#[derive(Default)]
+struct TextOverlayWorkerState {
+    data: Mutex<TextOverlayWorkerData>,
+    wake: Condvar,
+}
+
+struct TextOverlayWorker {
     font: Option<FontRenderer>,
     fallback_paths: Vec<PathBuf>,
-    cached_layout: Option<CachedSubtitleLayout>,
-    #[cfg(test)]
-    layout_generation: usize,
 }
 
 struct CachedSubtitleLayout {
-    source_lines: Vec<String>,
-    font_size: u32,
-    max_width: u32,
     fallback_scale: u32,
     lines: Vec<PreparedSubtitleLine>,
+    line_height: u32,
 }
 
 struct PreparedSubtitleLine {
     text: String,
     width: u32,
     layout: Option<TextLayout>,
+}
+
+struct CachedTextOverlay {
+    canvas_width: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    premultiplied_rgba: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -551,28 +687,36 @@ pub(crate) struct SubtitleLayout {
 impl SubtitleRenderer {
     pub(crate) fn new(fonts: &FontSystem, language: Option<&str>) -> Self {
         let subtitle_fonts = fonts.resolve_all_for_language(FontRole::Subtitle, language);
-        let font = open_first_font(&subtitle_fonts, 26);
         let mut fallback_paths = subtitle_fonts;
         fallback_paths.extend(fonts.resolve_all(FontRole::Ui).map(Path::to_path_buf));
         let mut unique_paths = HashSet::new();
         fallback_paths.retain(|path| unique_paths.insert(path.clone()));
+        Self::with_font_paths(fallback_paths)
+    }
+
+    fn with_font_paths(fallback_paths: Vec<PathBuf>) -> Self {
+        let worker = Arc::new(TextOverlayWorkerState::default());
+        let worker_thread = Arc::clone(&worker);
+        thread::Builder::new()
+            .name(String::from("enzo-subtitle-render"))
+            .spawn(move || text_overlay_worker(worker_thread, fallback_paths))
+            .expect("subtitle rendering worker should start");
         Self {
-            font,
-            fallback_paths,
-            cached_layout: None,
+            worker,
+            current_key: None,
+            current_generation: 0,
+            submitted_generation: None,
+            cached_overlay: None,
+            ready_overlays: VecDeque::new(),
+            prefetch_initialized: false,
             #[cfg(test)]
-            layout_generation: 0,
+            request_submissions: 0,
         }
     }
 
     #[cfg(test)]
     fn without_font() -> Self {
-        Self {
-            font: None,
-            fallback_paths: Vec::new(),
-            cached_layout: None,
-            layout_generation: 0,
-        }
+        Self::with_font_paths(Vec::new())
     }
 
     pub(crate) fn render(
@@ -591,86 +735,387 @@ impl SubtitleRenderer {
         for bitmap in track.active_bitmaps(position) {
             draw_bitmap_subtitle(frame, layout, bitmap, bottom_reserve);
         }
-        let Some(lines) = track.active_lines(position) else {
-            return;
+        let current_key = track
+            .active_lines(position)
+            .map(|lines| TextOverlayRequestKey {
+                lines,
+                canvas_width: width,
+                canvas_height: height,
+                bottom_reserve,
+            });
+        let refresh_prefetch =
+            self.set_current_text_request(current_key) || !self.prefetch_initialized;
+        let prefetch = if refresh_prefetch {
+            track
+                .upcoming_line_sets(position, MAX_SUBTITLE_PREFETCH_CUES)
+                .into_iter()
+                .map(|lines| TextOverlayRequestKey {
+                    lines,
+                    canvas_width: width,
+                    canvas_height: height,
+                    bottom_reserve,
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
+        self.prefetch_initialized = true;
+        self.poll_and_submit(refresh_prefetch, prefetch);
+        if let Some(overlay) = self.cached_overlay.as_ref() {
+            composite_text_overlay(frame, overlay);
+        }
+    }
 
-        let font_size = subtitle_font_size(width, height);
-        let fallback_scale = fallback_text_scale(width, height);
-        let max_width = ((f64::from(width) * MAX_SUBTITLE_WIDTH_RATIO).round() as u32).max(1);
+    fn set_current_text_request(&mut self, key: Option<TextOverlayRequestKey>) -> bool {
+        if self.current_key == key {
+            return false;
+        }
+        self.current_key = key;
+        self.current_generation = self.current_generation.wrapping_add(1);
+        self.submitted_generation = None;
+        self.cached_overlay = None;
+        true
+    }
+
+    pub(crate) fn poll_ready(&mut self) -> bool {
+        let worker = Arc::clone(&self.worker);
+        let mut data = match worker.data.try_lock() {
+            Ok(data) => data,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+        };
+        self.collect_results(&mut data)
+    }
+
+    fn poll_and_submit(
+        &mut self,
+        refresh_prefetch: bool,
+        prefetch_keys: Vec<TextOverlayRequestKey>,
+    ) {
+        let worker = Arc::clone(&self.worker);
+        let mut data = match worker.data.try_lock() {
+            Ok(data) => data,
+            Err(TryLockError::WouldBlock) => return,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+        };
+        self.collect_results(&mut data);
+        if self.cached_overlay.is_none()
+            && self.submitted_generation != Some(self.current_generation)
+            && let Some(key) = self.current_key.clone()
+        {
+            if data.in_flight.as_ref() == Some(&key) {
+                self.submitted_generation = Some(self.current_generation);
+            } else {
+                if let Some(index) = data.prefetch.iter().position(|request| request.key == key) {
+                    data.prefetch.remove(index);
+                }
+                data.pending = Some(TextOverlayRequest { key });
+                self.submitted_generation = Some(self.current_generation);
+                #[cfg(test)]
+                {
+                    self.request_submissions += 1;
+                }
+                self.worker.wake.notify_one();
+            }
+        }
+        if refresh_prefetch {
+            data.prefetch.clear();
+            for key in prefetch_keys {
+                if Some(&key) == self.current_key.as_ref()
+                    || data
+                        .pending
+                        .as_ref()
+                        .is_some_and(|request| request.key == key)
+                    || data.in_flight.as_ref() == Some(&key)
+                    || data.prefetch.iter().any(|request| request.key == key)
+                    || data.results.iter().any(|result| result.key == key)
+                    || self.ready_overlays.iter().any(|result| result.key == key)
+                {
+                    continue;
+                }
+                data.prefetch.push_back(TextOverlayRequest { key });
+            }
+            self.worker.wake.notify_one();
+        }
+    }
+
+    fn collect_results(&mut self, data: &mut TextOverlayWorkerData) -> bool {
+        let mut current_ready = false;
+        while let Some(result) = data.results.pop_front() {
+            if Some(&result.key) == self.current_key.as_ref() {
+                self.cached_overlay = result.overlay;
+                current_ready = true;
+            } else {
+                self.ready_overlays.push_back(result);
+                while self.ready_overlays.len() > MAX_READY_SUBTITLE_OVERLAYS {
+                    self.ready_overlays.pop_front();
+                }
+            }
+        }
+        if self.cached_overlay.is_none()
+            && let Some(key) = self.current_key.as_ref()
+            && let Some(index) = self
+                .ready_overlays
+                .iter()
+                .position(|result| &result.key == key)
+            && let Some(result) = self.ready_overlays.remove(index)
+        {
+            self.cached_overlay = result.overlay;
+            current_ready = true;
+        }
+        current_ready
+    }
+}
+
+impl Drop for SubtitleRenderer {
+    fn drop(&mut self) {
+        let mut data = match self.worker.data.lock() {
+            Ok(data) => data,
+            Err(error) => error.into_inner(),
+        };
+        data.shutdown = true;
+        data.pending = None;
+        data.prefetch.clear();
+        self.worker.wake.notify_one();
+    }
+}
+
+fn text_overlay_worker(state: Arc<TextOverlayWorkerState>, fallback_paths: Vec<PathBuf>) {
+    let font = open_first_font(&fallback_paths, 26);
+    let mut renderer = TextOverlayWorker {
+        font,
+        fallback_paths,
+    };
+    loop {
+        let (request, speculative) = {
+            let mut data = match state.data.lock() {
+                Ok(data) => data,
+                Err(error) => error.into_inner(),
+            };
+            while data.pending.is_none() && data.prefetch.is_empty() && !data.shutdown {
+                data = match state.wake.wait(data) {
+                    Ok(data) => data,
+                    Err(error) => error.into_inner(),
+                };
+            }
+            if data.shutdown {
+                return;
+            }
+            let (request, speculative) = if let Some(request) = data.pending.take() {
+                (request, false)
+            } else {
+                (
+                    data.prefetch
+                        .pop_front()
+                        .expect("prefetch request should exist"),
+                    true,
+                )
+            };
+            data.in_flight = Some(request.key.clone());
+            (request, speculative)
+        };
+        let overlay = renderer.build_overlay(&request.key);
+        let mut data = match state.data.lock() {
+            Ok(data) => data,
+            Err(error) => error.into_inner(),
+        };
+        if data.shutdown {
+            return;
+        }
+        data.in_flight = None;
+        data.results.push_back(TextOverlayResult {
+            key: request.key,
+            overlay,
+        });
+        while data.results.len() > MAX_READY_SUBTITLE_OVERLAYS {
+            data.results.pop_front();
+        }
+        drop(data);
+        if speculative {
+            thread::yield_now();
+        }
+    }
+}
+
+impl TextOverlayWorker {
+    fn build_overlay(&mut self, key: &TextOverlayRequestKey) -> Option<CachedTextOverlay> {
+        let cached = self.prepare_layout(key);
+        if cached.lines.is_empty() {
+            return None;
+        }
+        let line_gap = (cached.line_height / 5).max(2);
+        let block_height = cached
+            .line_height
+            .saturating_mul(cached.lines.len() as u32)
+            .saturating_add(line_gap.saturating_mul(cached.lines.len().saturating_sub(1) as u32));
+        let bottom_margin = subtitle_bottom_margin(key.canvas_height)
+            .max(key.bottom_reserve.saturating_add(8))
+            .min(key.canvas_height.saturating_sub(1));
+        let start_y = key
+            .canvas_height
+            .saturating_sub(bottom_margin)
+            .saturating_sub(block_height);
+        build_text_overlay(
+            self.font.as_mut(),
+            key.canvas_width,
+            key.canvas_height,
+            start_y,
+            cached.line_height,
+            line_gap,
+            cached.fallback_scale,
+            &cached.lines,
+        )
+    }
+
+    fn prepare_layout(&mut self, key: &TextOverlayRequestKey) -> CachedSubtitleLayout {
+        let font_size = subtitle_font_size(key.canvas_width, key.canvas_height);
+        let fallback_scale = fallback_text_scale(key.canvas_width, key.canvas_height);
+        let max_width =
+            ((f64::from(key.canvas_width) * MAX_SUBTITLE_WIDTH_RATIO).round() as u32).max(1);
         let mut font = if let Some(font) = self.font.as_mut() {
             font.set_pixel_size(font_size).then_some(font)
         } else {
             None
         };
+        if let Some(font) = font.as_deref_mut() {
+            let text = key.lines.join("\n");
+            let mut loaded = font.fallback_count();
+            for path in &self.fallback_paths {
+                if loaded >= MAX_SUBTITLE_FALLBACK_FONTS || font.covers_text(&text) {
+                    break;
+                }
+                loaded += font.add_fallback_path_for_text(path, &text) as usize;
+            }
+        }
         let line_height = font
             .as_ref()
             .map(|font| font.line_height())
             .unwrap_or(7 * fallback_scale)
             .max(1);
-        let cache_matches = self.cached_layout.as_ref().is_some_and(|cached| {
-            cached.source_lines == lines
-                && cached.font_size == font_size
-                && cached.max_width == max_width
-                && cached.fallback_scale == fallback_scale
-        });
-        if !cache_matches {
-            if let Some(font) = font.as_deref_mut() {
-                let text = lines.join("\n");
-                let mut loaded = font.fallback_count();
-                for path in &self.fallback_paths {
-                    if loaded >= MAX_SUBTITLE_FALLBACK_FONTS || font.covers_text(&text) {
-                        break;
-                    }
-                    loaded += font.add_fallback_path_for_text(path, &text) as usize;
-                }
-            }
-            let prepared =
-                prepare_subtitle_lines(&lines, max_width, fallback_scale, font.as_deref_mut());
-            self.cached_layout = Some(CachedSubtitleLayout {
-                source_lines: lines,
-                font_size,
-                max_width,
-                fallback_scale,
-                lines: prepared,
-            });
-            #[cfg(test)]
-            {
-                self.layout_generation += 1;
-            }
+        let lines = prepare_subtitle_lines(&key.lines, max_width, fallback_scale, font);
+        CachedSubtitleLayout {
+            fallback_scale,
+            lines,
+            line_height,
         }
-        let Some(cached) = self.cached_layout.as_ref() else {
-            return;
-        };
-        if cached.lines.is_empty() {
-            return;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_text_overlay(
+    mut font: Option<&mut FontRenderer>,
+    canvas_width: u32,
+    canvas_height: u32,
+    start_y: u32,
+    line_height: u32,
+    line_gap: u32,
+    fallback_scale: u32,
+    lines: &[PreparedSubtitleLine],
+) -> Option<CachedTextOverlay> {
+    let block_height = line_height
+        .saturating_mul(lines.len() as u32)
+        .saturating_add(line_gap.saturating_mul(lines.len().saturating_sub(1) as u32));
+    let band_padding = line_height.saturating_mul(2);
+    let band_top = start_y.saturating_sub(band_padding);
+    let band_bottom = start_y
+        .saturating_add(block_height)
+        .saturating_add(band_padding)
+        .min(canvas_height);
+    let band_height = band_bottom.checked_sub(band_top)?;
+    let pixel_count = (canvas_width as usize).checked_mul(band_height as usize)?;
+    let rgb_len = pixel_count.checked_mul(3)?;
+    let mut over_black = vec![0_u8; rgb_len];
+    let mut over_white = vec![255_u8; rgb_len];
+    let mut y = start_y.saturating_sub(band_top);
+    for line in lines {
+        let x = canvas_width.saturating_sub(line.width) / 2;
+        draw_prepared_subtitle_line(
+            font.as_deref_mut(),
+            &mut over_black,
+            canvas_width,
+            band_height,
+            x,
+            y,
+            fallback_scale,
+            line,
+        );
+        draw_prepared_subtitle_line(
+            font.as_deref_mut(),
+            &mut over_white,
+            canvas_width,
+            band_height,
+            x,
+            y,
+            fallback_scale,
+            line,
+        );
+        y = y.saturating_add(line_height).saturating_add(line_gap);
+    }
+
+    let mut left = canvas_width;
+    let mut top = band_height;
+    let mut right = 0_u32;
+    let mut bottom = 0_u32;
+    for pixel in 0..pixel_count {
+        let offset = pixel * 3;
+        let black = &over_black[offset..offset + 3];
+        let white = &over_white[offset..offset + 3];
+        let inverse_alpha = white[0]
+            .saturating_sub(black[0])
+            .max(white[1].saturating_sub(black[1]))
+            .max(white[2].saturating_sub(black[2]));
+        if inverse_alpha == 255 {
+            continue;
         }
+        let x = pixel as u32 % canvas_width;
+        let y = pixel as u32 / canvas_width;
+        left = left.min(x);
+        top = top.min(y);
+        right = right.max(x + 1);
+        bottom = bottom.max(y + 1);
+    }
+    let overlay_width = right.checked_sub(left)?;
+    let overlay_height = bottom.checked_sub(top)?;
+    let overlay_pixels = (overlay_width as usize).checked_mul(overlay_height as usize)?;
+    let mut premultiplied_rgba = Vec::with_capacity(overlay_pixels.checked_mul(4)?);
+    for row in top..bottom {
+        for col in left..right {
+            let offset = ((row * canvas_width + col) * 3) as usize;
+            let black = &over_black[offset..offset + 3];
+            let white = &over_white[offset..offset + 3];
+            let inverse_alpha = white[0]
+                .saturating_sub(black[0])
+                .max(white[1].saturating_sub(black[1]))
+                .max(white[2].saturating_sub(black[2]));
+            premultiplied_rgba.extend_from_slice(&[black[0], black[1], black[2], inverse_alpha]);
+        }
+    }
+    Some(CachedTextOverlay {
+        canvas_width,
+        x: left,
+        y: band_top.saturating_add(top),
+        width: overlay_width,
+        height: overlay_height,
+        premultiplied_rgba,
+    })
+}
 
-        let line_gap = (line_height / 5).max(2);
-        let block_height = line_height
-            .saturating_mul(cached.lines.len() as u32)
-            .saturating_add(line_gap.saturating_mul(cached.lines.len().saturating_sub(1) as u32));
-        let bottom_margin = subtitle_bottom_margin(height)
-            .max(bottom_reserve.saturating_add(8))
-            .min(height.saturating_sub(1));
-        let start_y = height
-            .saturating_sub(bottom_margin)
-            .saturating_sub(block_height);
-        let mut y = start_y;
-
-        for line in &cached.lines {
-            let x = width.saturating_sub(line.width) / 2;
-            draw_prepared_subtitle_line(
-                font.as_deref_mut(),
-                frame,
-                width,
-                height,
-                x,
-                y,
-                fallback_scale,
-                line,
-            );
-            y = y.saturating_add(line_height).saturating_add(line_gap);
+fn composite_text_overlay(frame: &mut [u8], overlay: &CachedTextOverlay) {
+    for row in 0..overlay.height {
+        for col in 0..overlay.width {
+            let source_offset = ((row * overlay.width + col) * 4) as usize;
+            let inverse_alpha = overlay.premultiplied_rgba[source_offset + 3];
+            if inverse_alpha == 255 {
+                continue;
+            }
+            let destination_offset =
+                rgb_offset(overlay.canvas_width, overlay.x + col, overlay.y + row);
+            for channel in 0..3 {
+                let source = u16::from(overlay.premultiplied_rgba[source_offset + channel]);
+                let destination = u16::from(frame[destination_offset + channel]);
+                frame[destination_offset + channel] =
+                    (source + (destination * u16::from(inverse_alpha) + 127) / 255).min(255) as u8;
+            }
         }
     }
 }
@@ -827,7 +1272,8 @@ fn parse_ass_dialogue(line: &str, format: &[String]) -> Result<Option<SubtitleCu
 
     let rendered_text = strip_srt_markup(text);
     let rendered_text = rendered_text.trim();
-    if rendered_text.is_empty() || !ass_dialogue_line_is_useful(style, effect, text, rendered_text)
+    if rendered_text.is_empty()
+        || !ass_dialogue_line_is_useful(style, effect, text, rendered_text, end - start)
     {
         return Ok(None);
     }
@@ -853,10 +1299,16 @@ fn is_ass_drawing(text: &str) -> bool {
     false
 }
 
-fn ass_dialogue_line_is_useful(style: &str, effect: &str, raw_text: &str, line: &str) -> bool {
+fn ass_dialogue_line_is_useful(
+    style: &str,
+    effect: &str,
+    raw_text: &str,
+    line: &str,
+    duration: Duration,
+) -> bool {
     effect.trim().is_empty()
         && !ass_style_is_romanized_karaoke(style)
-        && !ass_line_is_tiny_positioned_fragment(raw_text, line)
+        && !ass_line_is_flattened_animation_fragment(raw_text, line, duration)
 }
 
 fn ass_style_is_romanized_karaoke(style: &str) -> bool {
@@ -867,8 +1319,14 @@ fn ass_style_is_romanized_karaoke(style: &str) -> bool {
         || normalized.contains("ROMANJI")
 }
 
-fn ass_line_is_tiny_positioned_fragment(raw_text: &str, line: &str) -> bool {
-    line.chars().count() <= 3 && (raw_text.contains("\\pos") || raw_text.contains("\\move"))
+fn ass_line_is_flattened_animation_fragment(
+    raw_text: &str,
+    line: &str,
+    duration: Duration,
+) -> bool {
+    let is_positioned = raw_text.contains("\\pos") || raw_text.contains("\\move");
+    is_positioned
+        && (line.chars().count() <= 3 || duration <= MAX_TRANSIENT_POSITIONED_ASS_DURATION)
 }
 
 fn parse_srt(text: &str) -> Result<Vec<SubtitleCue>> {
@@ -1882,11 +2340,7 @@ Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8}Normal line\\Nsecond ha
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].lines, ["Normal line", "second half"]);
 
-        let track = SubtitleTrack {
-            cues,
-            language: None,
-            label: String::from("Subtitles"),
-        };
+        let track = SubtitleTrack::from_cues(cues, None, String::from("Subtitles"));
         assert_eq!(
             track.active_lines(Duration::from_millis(1200)),
             Some(vec![
@@ -1912,11 +2366,7 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
 ",
         )
         .expect("ass should parse");
-        let track = SubtitleTrack {
-            cues,
-            language: None,
-            label: String::from("Subtitles"),
-        };
+        let track = SubtitleTrack::from_cues(cues, None, String::from("Subtitles"));
 
         assert_eq!(
             track.active_lines(Duration::from_millis(22 * 60 * 1000 + 40 * 1000)),
@@ -2095,8 +2545,8 @@ Dialogue: 0,0:22:39.41,0:22:40.06,ED-R1,,0,0,0,,{\\pos(495,54)}n
 
     #[test]
     fn active_lines_uses_current_position() {
-        let track = SubtitleTrack {
-            cues: parse_srt(
+        let track = SubtitleTrack::from_cues(
+            parse_srt(
                 "\
 1
 00:00:01,000 --> 00:00:02,000
@@ -2104,9 +2554,9 @@ One
 ",
             )
             .expect("srt should parse"),
-            language: None,
-            label: String::from("Subtitles"),
-        };
+            None,
+            String::from("Subtitles"),
+        );
 
         assert!(track.active_lines(Duration::from_millis(999)).is_none());
         assert_eq!(
@@ -2118,8 +2568,8 @@ One
 
     #[test]
     fn active_lines_preserves_two_line_order() {
-        let track = SubtitleTrack {
-            cues: parse_srt(
+        let track = SubtitleTrack::from_cues(
+            parse_srt(
                 "\
 1
 00:00:01,000 --> 00:00:02,000
@@ -2128,9 +2578,9 @@ Second line
 ",
             )
             .expect("srt should parse"),
-            language: None,
-            label: String::from("Subtitles"),
-        };
+            None,
+            String::from("Subtitles"),
+        );
 
         assert_eq!(
             track.active_lines(Duration::from_millis(1000)),
@@ -2143,8 +2593,8 @@ Second line
 
     #[test]
     fn active_lines_caps_dense_ass_fallbacks_to_longest_lines() {
-        let track = SubtitleTrack {
-            cues: vec![
+        let track = SubtitleTrack::from_cues(
+            vec![
                 SubtitleCue {
                     start: Duration::ZERO,
                     end: Duration::from_secs(1),
@@ -2170,9 +2620,9 @@ Second line
                     bitmap: None,
                 },
             ],
-            language: None,
-            label: String::from("Subtitles"),
-        };
+            None,
+            String::from("Subtitles"),
+        );
 
         assert_eq!(
             track.active_lines(Duration::ZERO),
@@ -2181,6 +2631,44 @@ Second line
                 String::from("another useful line"),
                 String::from("medium label"),
             ])
+        );
+    }
+
+    #[test]
+    fn ass_skips_transient_positioned_animation_slices_but_keeps_stable_text() {
+        let cues = parse_ass(
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n\
+Dialogue: 1,0:00:01.00,0:00:01.04,General Title,,0,0,0,,{\\pos(490,907)}A valuabq{\\alpha&HFF&}e herb\n\
+Dialogue: 1,0:00:01.04,0:00:01.08,General Title,,0,0,0,,{\\pos(490,907)}A valuable{\\alpha&HFF&} herb\n\
+Dialogue: 2,0:00:01.00,0:00:03.00,General Title,,0,0,0,,{\\pos(490,907)}A valuable herb\n\
+Dialogue: 0,0:00:04.00,0:00:04.04,Default,,0,0,0,,Brief dialogue\n",
+        )
+        .expect("ass should parse");
+
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[0].lines, ["A valuable herb"]);
+        assert_eq!(cues[1].lines, ["Brief dialogue"]);
+    }
+
+    #[test]
+    fn text_timeline_collapses_dense_duplicate_layers() {
+        let cues = (0..512)
+            .map(|offset| SubtitleCue {
+                start: Duration::from_millis(offset),
+                end: Duration::from_millis(offset + 100),
+                lines: vec![String::from("Stable visible subtitle")],
+                bitmap: None,
+            })
+            .collect::<Vec<_>>();
+
+        let track = SubtitleTrack::from_cues(cues, None, String::from("Subtitles"));
+
+        assert_eq!(track.text_timeline.len(), 1);
+        assert_eq!(track.text_timeline[0].start, Duration::ZERO);
+        assert_eq!(track.text_timeline[0].end, Duration::from_millis(611));
+        assert_eq!(
+            track.active_lines(Duration::from_millis(500)),
+            Some(vec![String::from("Stable visible subtitle")])
         );
     }
 
@@ -2493,8 +2981,8 @@ Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\an8}Whole sentence, not syl
 
     #[test]
     fn renderer_draws_active_subtitle() {
-        let track = SubtitleTrack {
-            cues: parse_srt(
+        let track = SubtitleTrack::from_cues(
+            parse_srt(
                 "\
 1
 00:00:00,000 --> 00:00:10,000
@@ -2502,36 +2990,134 @@ Hello
 ",
             )
             .expect("srt should parse"),
-            language: None,
-            label: String::from("Subtitles"),
-        };
+            None,
+            String::from("Subtitles"),
+        );
         let mut renderer = SubtitleRenderer::without_font();
         let width = 320;
         let height = 180;
         let mut frame = vec![20_u8; (width * height * 3) as usize];
 
-        renderer.render(
-            &mut frame,
-            SubtitleLayout {
-                canvas_width: width,
-                canvas_height: height,
-                video_x: 0,
-                video_y: 0,
-                video_width: width,
-                video_height: height,
-            },
-            &track,
-            Duration::from_secs(1),
-            0,
-        );
+        let layout = SubtitleLayout {
+            canvas_width: width,
+            canvas_height: height,
+            video_x: 0,
+            video_y: 0,
+            video_width: width,
+            video_height: height,
+        };
+        for _ in 0..100 {
+            renderer.render(&mut frame, layout, &track, Duration::from_secs(1), 0);
+            if frame.iter().any(|&value| value > 220) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
 
         assert!(frame.iter().any(|&value| value > 220));
     }
 
     #[test]
-    fn renderer_reuses_prepared_lines_until_text_or_geometry_changes() {
-        let track = SubtitleTrack {
-            cues: parse_srt(
+    fn renderer_prefetches_a_cue_before_its_first_active_frame() {
+        let track = SubtitleTrack::from_cues(
+            parse_srt(
+                "\
+1
+00:00:01,000 --> 00:00:02,000
+Ready before display
+",
+            )
+            .expect("srt should parse"),
+            None,
+            String::from("Subtitles"),
+        );
+        let mut renderer = SubtitleRenderer::without_font();
+        let width = 320;
+        let height = 180;
+        let layout = SubtitleLayout {
+            canvas_width: width,
+            canvas_height: height,
+            video_x: 0,
+            video_y: 0,
+            video_width: width,
+            video_height: height,
+        };
+        let mut frame = vec![20_u8; (width * height * 3) as usize];
+
+        for _ in 0..100 {
+            renderer.render(&mut frame, layout, &track, Duration::ZERO, 0);
+            if !renderer.ready_overlays.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!renderer.ready_overlays.is_empty());
+
+        frame.fill(20);
+        renderer.render(&mut frame, layout, &track, Duration::from_secs(1), 0);
+
+        assert!(frame.iter().any(|&value| value > 220));
+    }
+
+    #[test]
+    fn cached_text_overlay_matches_direct_subtitle_rendering() {
+        let width = 320;
+        let height = 180;
+        let fallback_scale = fallback_text_scale(width, height);
+        let line_height = 7 * fallback_scale;
+        let line_gap = (line_height / 5).max(2);
+        let lines = prepare_subtitle_lines(
+            &[String::from("Cached subtitle")],
+            width,
+            fallback_scale,
+            None,
+        );
+        let start_y = 120;
+        let mut direct = (0..width * height * 3)
+            .map(|index| (index.wrapping_mul(37) % 251) as u8)
+            .collect::<Vec<_>>();
+        let mut cached = direct.clone();
+        let x = width.saturating_sub(lines[0].width) / 2;
+        draw_prepared_subtitle_line(
+            None,
+            &mut direct,
+            width,
+            height,
+            x,
+            start_y,
+            fallback_scale,
+            &lines[0],
+        );
+
+        let overlay = build_text_overlay(
+            None,
+            width,
+            height,
+            start_y,
+            line_height,
+            line_gap,
+            fallback_scale,
+            &lines,
+        )
+        .expect("text overlay should be built");
+        composite_text_overlay(&mut cached, &overlay);
+
+        let max_difference = direct
+            .iter()
+            .zip(&cached)
+            .map(|(&expected, &actual)| expected.abs_diff(actual))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_difference <= 1,
+            "maximum channel difference: {max_difference}"
+        );
+    }
+
+    #[test]
+    fn renderer_submits_only_when_text_or_geometry_changes() {
+        let track = SubtitleTrack::from_cues(
+            parse_srt(
                 "\
 1
 00:00:00,000 --> 00:00:10,000
@@ -2539,9 +3125,9 @@ This subtitle is prepared once
 ",
             )
             .expect("srt should parse"),
-            language: None,
-            label: String::from("Subtitles"),
-        };
+            None,
+            String::from("Subtitles"),
+        );
         let mut renderer = SubtitleRenderer::without_font();
         let position = Duration::from_secs(1);
         let small = SubtitleLayout {
@@ -2556,7 +3142,17 @@ This subtitle is prepared once
 
         renderer.render(&mut frame, small, &track, position, 0);
         renderer.render(&mut frame, small, &track, position, 0);
-        assert_eq!(renderer.layout_generation, 1);
+        assert_eq!(renderer.request_submissions, 1);
+
+        renderer.render(&mut frame, small, &track, position, 28);
+        for _ in 0..100 {
+            if renderer.request_submissions == 2 {
+                break;
+            }
+            thread::yield_now();
+            renderer.render(&mut frame, small, &track, position, 28);
+        }
+        assert_eq!(renderer.request_submissions, 2);
 
         let large = SubtitleLayout {
             canvas_width: 640,
@@ -2567,7 +3163,134 @@ This subtitle is prepared once
         };
         frame.resize(640 * 360 * 3, 0);
         renderer.render(&mut frame, large, &track, position, 0);
-        assert_eq!(renderer.layout_generation, 2);
+        for _ in 0..100 {
+            if renderer.request_submissions == 3 {
+                break;
+            }
+            thread::yield_now();
+            renderer.render(&mut frame, large, &track, position, 0);
+        }
+        assert_eq!(renderer.request_submissions, 3);
+    }
+
+    #[test]
+    fn renderer_request_path_never_waits_for_worker_lock() {
+        let track = SubtitleTrack::from_cues(
+            parse_srt("1\n00:00:00,000 --> 00:00:10,000\nNonblocking\n").expect("srt should parse"),
+            None,
+            String::from("Subtitles"),
+        );
+        let mut renderer = SubtitleRenderer::without_font();
+        let worker = Arc::clone(&renderer.worker);
+        let _worker_lock = worker.data.lock().expect("worker state lock");
+        let layout = SubtitleLayout {
+            canvas_width: 320,
+            canvas_height: 180,
+            video_x: 0,
+            video_y: 0,
+            video_width: 320,
+            video_height: 180,
+        };
+        let mut frame = vec![0_u8; 320 * 180 * 3];
+
+        renderer.render(&mut frame, layout, &track, Duration::ZERO, 0);
+
+        assert_eq!(renderer.request_submissions, 0);
+        assert!(renderer.cached_overlay.is_none());
+    }
+
+    #[test]
+    fn renderer_ignores_stale_worker_results() {
+        let mut renderer = SubtitleRenderer::without_font();
+        let old_key = TextOverlayRequestKey {
+            lines: vec![String::from("old")],
+            canvas_width: 8,
+            canvas_height: 8,
+            bottom_reserve: 0,
+        };
+        let current_key = TextOverlayRequestKey {
+            lines: vec![String::from("current")],
+            ..old_key.clone()
+        };
+        renderer.set_current_text_request(Some(current_key));
+        let stale_overlay = CachedTextOverlay {
+            canvas_width: 8,
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+            premultiplied_rgba: vec![255, 255, 255, 0],
+        };
+        renderer
+            .worker
+            .data
+            .lock()
+            .expect("worker state lock")
+            .results
+            .push_back(TextOverlayResult {
+                key: old_key,
+                overlay: Some(stale_overlay),
+            });
+
+        renderer.poll_and_submit(false, Vec::new());
+
+        assert!(renderer.cached_overlay.is_none());
+        assert_eq!(renderer.ready_overlays.len(), 1);
+        assert_eq!(renderer.request_submissions, 1);
+    }
+
+    #[test]
+    fn renderer_reports_when_the_current_overlay_becomes_ready() {
+        let mut renderer = SubtitleRenderer::without_font();
+        let key = TextOverlayRequestKey {
+            lines: vec![String::from("current")],
+            canvas_width: 8,
+            canvas_height: 8,
+            bottom_reserve: 0,
+        };
+        renderer.set_current_text_request(Some(key.clone()));
+        renderer
+            .worker
+            .data
+            .lock()
+            .expect("worker state lock")
+            .results
+            .push_back(TextOverlayResult {
+                key,
+                overlay: Some(CachedTextOverlay {
+                    canvas_width: 8,
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                    premultiplied_rgba: vec![255, 255, 255, 0],
+                }),
+            });
+
+        assert!(renderer.poll_ready());
+        assert!(renderer.cached_overlay.is_some());
+        assert!(!renderer.poll_ready());
+    }
+
+    #[test]
+    fn renderer_coalesces_pending_requests_to_the_latest_cue() {
+        let mut renderer = SubtitleRenderer::without_font();
+        let worker = Arc::clone(&renderer.worker);
+        let mut data = worker.data.lock().expect("worker state lock");
+        for index in 0..10 {
+            renderer.set_current_text_request(Some(TextOverlayRequestKey {
+                lines: vec![format!("cue {index}")],
+                canvas_width: 320,
+                canvas_height: 180,
+                bottom_reserve: 0,
+            }));
+            data.pending = Some(TextOverlayRequest {
+                key: renderer.current_key.clone().expect("current request key"),
+            });
+        }
+
+        let pending = data.pending.as_ref().expect("latest request should remain");
+        assert_eq!(pending.key.lines, ["cue 9"]);
     }
 
     #[test]

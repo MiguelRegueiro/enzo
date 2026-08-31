@@ -183,6 +183,9 @@ impl<W: Write> PlaybackSession<'_, W> {
         if self.resume.take_error().is_some() {
             self.ui.status_message = Some(PlaybackUi::status("RESUME SAVE FAILED", Instant::now()));
         }
+        if self.view.subtitle_renderer.poll_ready() && self.engine.paused && self.view.have_frame {
+            self.view.dirty = true;
+        }
         self.engine.poll_audio()?;
         self.engine.sync_audio_clock();
         if progress_pending_seek(

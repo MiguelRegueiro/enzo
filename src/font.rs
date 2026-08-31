@@ -154,7 +154,10 @@ pub(crate) struct FontRenderer {
     face: FtFace,
     pixel_size: u32,
     ascii_glyphs: HashMap<char, CachedGlyph>,
+    shaped_glyphs: HashMap<u32, CachedGlyph>,
     fallbacks: Vec<FontRenderer>,
+    #[cfg(test)]
+    shaped_glyph_rasterizations: usize,
 }
 
 struct CachedGlyph {
@@ -182,6 +185,7 @@ impl FontRenderer {
         if ok {
             self.pixel_size = pixel_size;
             self.ascii_glyphs.clear();
+            self.shaped_glyphs.clear();
             self.fallbacks
                 .retain_mut(|fallback| fallback.set_pixel_size(pixel_size));
         }
@@ -308,15 +312,17 @@ impl FontRenderer {
             } else {
                 continue;
             };
-            if !font.load_glyph(glyph.index, FT_LOAD_RENDER) {
+            if !font.ensure_shaped_glyph(glyph.index) {
                 continue;
             }
-            font.draw_current_glyph(
+            let cached = &font.shaped_glyphs[&glyph.index];
+            draw_cached_glyph(
                 frame,
                 width,
                 height,
                 x.saturating_add(glyph.x),
                 baseline.saturating_sub(glyph.y),
+                cached,
                 color,
                 alpha,
             );
@@ -347,7 +353,10 @@ impl FontRenderer {
             face,
             pixel_size: 0,
             ascii_glyphs: HashMap::new(),
+            shaped_glyphs: HashMap::new(),
             fallbacks: Vec::new(),
+            #[cfg(test)]
+            shaped_glyph_rasterizations: 0,
         };
         if !renderer.set_pixel_size(pixel_size) {
             return None;
@@ -471,6 +480,22 @@ impl FontRenderer {
             return false;
         }
         self.ascii_glyphs.insert(ch, self.cache_current_glyph());
+        true
+    }
+
+    fn ensure_shaped_glyph(&mut self, glyph_index: u32) -> bool {
+        if self.shaped_glyphs.contains_key(&glyph_index) {
+            return true;
+        }
+        if !self.load_glyph(glyph_index, FT_LOAD_RENDER) {
+            return false;
+        }
+        self.shaped_glyphs
+            .insert(glyph_index, self.cache_current_glyph());
+        #[cfg(test)]
+        {
+            self.shaped_glyph_rasterizations += 1;
+        }
         true
     }
 
@@ -733,6 +758,36 @@ mod tests {
         font.draw_text(&mut without_mark, 160, 48, 4, 4, "NETFLIX", [255; 3], 255);
 
         assert_eq!(with_mark, without_mark);
+    }
+
+    #[test]
+    fn shaped_glyph_bitmaps_are_reused_across_subtitle_passes() {
+        let Some(path) = crate::font_system::FontSystem::discover()
+            .resolve_all(crate::font_system::FontRole::Ui)
+            .next()
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+        let Some(mut font) = FontRenderer::open_path(&path, 20) else {
+            return;
+        };
+        let Some(layout) = font.shape_text("Subtitle cache") else {
+            return;
+        };
+        let mut frame = vec![0_u8; 240 * 48 * 3];
+
+        for offset in -4..=4 {
+            font.draw_text_layout(&mut frame, 240, 48, 8 + offset, 4, &layout, [255; 3], 255);
+        }
+        let first_pass_rasterizations = font.shaped_glyph_rasterizations;
+        assert!(first_pass_rasterizations > 0);
+
+        for offset in -4..=4 {
+            font.draw_text_layout(&mut frame, 240, 48, 8 + offset, 4, &layout, [255; 3], 255);
+        }
+
+        assert_eq!(font.shaped_glyph_rasterizations, first_pass_rasterizations);
     }
 
     #[test]
