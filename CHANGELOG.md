@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable maximum volume from 100% to 1000%.
 - Custom `#RRGGBB` overlay accent colors.
 
+### Fixed
+
+- Frame-rate drops and delayed subtitle display when rendering or seeking with complex ASS tracks.
+
 ## [1.1.0] - 2026-08-12
 
 ### Added
