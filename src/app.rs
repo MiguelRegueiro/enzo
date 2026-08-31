@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     cli::Options,
-    font_system::FontSystem,
+    font::FontSystem,
     resume::ResumeTracker,
     shutdown,
     terminal::{TerminalGuard, enable_tmux_passthrough, inside_tmux, looks_like_kitty},

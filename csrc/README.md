@@ -9,7 +9,7 @@ Everything in `internal.h` and `audio_output.h` is private to this directory.
 ## ABI contract
 
 `media.h` and `text_layout.h` are the canonical C interfaces.
-`src/media/media_ffi.rs` and `src/text_layout.rs` are their exact Rust mirrors, so
+`src/media/media_ffi.rs` and `src/font/text_shaping.rs` are their exact Rust mirrors, so
 every change to an ABI function, type, constant, or ownership rule must update
 both sides in the same commit.
 

@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    font_system::FontSystem,
+    font::FontSystem,
     media::{FrameStatus, VideoInfo},
     resume::ResumeTracker,
     shutdown,

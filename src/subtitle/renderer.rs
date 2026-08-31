@@ -6,10 +6,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    font::FontRenderer,
-    font_system::{FontRole, FontSystem},
-};
+use crate::font::{FontRenderer, FontRole, FontSystem};
 
 use super::{
     bitmap::draw_bitmap_subtitle,

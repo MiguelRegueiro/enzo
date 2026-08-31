@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    font_system::FontSystem,
+    font::FontSystem,
     overlay::{OverlayRenderContext, OverlayState, PlaybackOverlay},
     subtitle::{SubtitleLayout, SubtitleRenderer, SubtitleTrack},
     terminal::{

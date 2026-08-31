@@ -7,7 +7,7 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-    font_system::FontSystem,
+    font::FontSystem,
     media::VideoInfo,
     overlay::{
         AudioPickerAction, OverlayHitContext, PlaylistMenuAction, SubtitlePickerAction,

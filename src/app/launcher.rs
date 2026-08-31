@@ -12,7 +12,7 @@ use crossterm::{
 };
 
 use crate::{
-    font_system::FontSystem,
+    font::FontSystem,
     media::media_path_from_drop_text,
     terminal::{TerminalGuard, clear_screen_and_images},
 };

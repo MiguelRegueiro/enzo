@@ -1,9 +1,6 @@
 use std::path::PathBuf;
 
-use crate::{
-    font::FontRenderer,
-    text_layout::{ParagraphDirection, TextLayout},
-};
+use crate::font::{FontRenderer, ParagraphDirection, TextLayout};
 
 const TEXT_COLOR: [u8; 3] = [255, 255, 255];
 const SHADOW_COLOR: [u8; 3] = [0, 0, 0];

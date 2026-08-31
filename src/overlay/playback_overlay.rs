@@ -1,50 +1,24 @@
-//! Playback overlay state, rendering, layout, and pointer interaction.
-//!
-//! This facade keeps the rest of the application independent from the
-//! overlay's drawing implementation. Rendering and interaction share the same
-//! layout model so visible controls and their pointer targets stay aligned.
-
-mod acrylic;
-mod controls;
-mod help;
-mod interaction;
-mod layout;
-mod panels;
-mod playlist;
-mod raster;
-mod rendering;
-mod state;
-mod style;
-mod text;
-mod timeline;
-
-#[cfg(test)]
-mod tests;
-
 use std::sync::Arc;
 
-use acrylic::AcrylicScratch;
-use help::help_scroll_limit;
-use interaction::{
-    audio_picker_action, progress_hit_ratio, progress_ratio_for_x, subtitle_picker_action,
-    track_picker_hover_index, transport_control_action,
-};
-use layout::{
-    OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
-};
-use playlist::{playlist_menu_action, playlist_menu_hover_index, playlist_menu_visible_row_count};
-use rendering::render_overlay_rgb as render_overlay_rgb_with_palette;
-use style::OverlayPalette;
+use crate::font::{FontRenderer, FontRole, FontSystem};
 
-use crate::{
-    font::FontRenderer,
-    font_system::{FontRole, FontSystem},
-};
-
-pub(crate) use state::{
-    AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext, OverlayHitPoint,
-    OverlayRenderContext, OverlayState, PlaylistMenuAction, PlaylistMenuState,
-    SubtitlePickerAction, TransportControlAction,
+use super::{
+    acrylic::AcrylicScratch,
+    help::help_scroll_limit,
+    interaction::{
+        audio_picker_action, progress_hit_ratio, progress_ratio_for_x, subtitle_picker_action,
+        track_picker_hover_index, transport_control_action,
+    },
+    layout::{
+        OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
+    },
+    playlist::{playlist_menu_action, playlist_menu_hover_index, playlist_menu_visible_row_count},
+    rendering::render_overlay_rgb as render_overlay_rgb_with_palette,
+    state::{
+        AudioPickerAction, OverlayHitContext, OverlayHitPoint, OverlayRenderContext, OverlayState,
+        PlaylistMenuAction, SubtitlePickerAction, TransportControlAction,
+    },
+    style::OverlayPalette,
 };
 
 pub(crate) struct PlaybackOverlay {
@@ -305,7 +279,7 @@ impl PlaybackOverlay {
 
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
-fn render_overlay_rgb(
+pub(super) fn render_overlay_rgb(
     frame: &mut [u8],
     width: u32,
     height: u32,

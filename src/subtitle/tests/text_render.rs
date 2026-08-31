@@ -1,5 +1,5 @@
 use super::*;
-use crate::font_system::{FontRole, FontSystem};
+use crate::font::{FontRole, FontSystem};
 
 #[test]
 fn cached_text_overlay_matches_direct_subtitle_rendering() {

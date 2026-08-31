@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    font_system::FontSystem,
+    font::FontSystem,
     media::{AudioPlayer, probe_video},
     overlay::MediaInfo,
     resume::ResumeTracker,

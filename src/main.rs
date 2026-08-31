@@ -2,14 +2,12 @@ mod app;
 mod cli;
 mod config;
 mod font;
-mod font_system;
 mod media;
 mod overlay;
 mod resume;
 mod shutdown;
 mod subtitle;
 mod terminal;
-mod text_layout;
 
 use std::env;
 
