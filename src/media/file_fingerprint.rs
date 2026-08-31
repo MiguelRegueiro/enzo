@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use super::{ffi::enzo_file_fingerprint, native::ErrorBuffer};
+use super::{ffi_support::ErrorBuffer, media_ffi::enzo_file_fingerprint};
 
 pub(crate) fn file_fingerprint_digest(
     path: &Path,

@@ -53,13 +53,5 @@ pub(super) fn duration_micros_i64(duration: Duration) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn error_buffer_uses_fallback_when_empty() {
-        let error = ErrorBuffer::new();
-
-        assert_eq!(error.message("fallback"), "fallback");
-    }
-}
+#[path = "tests/ffi_support.rs"]
+mod tests;

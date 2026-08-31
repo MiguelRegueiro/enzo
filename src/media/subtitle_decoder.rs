@@ -7,11 +7,11 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{
-    ffi::{
+    ffi_support::{ErrorBuffer, path_cstring},
+    media_ffi::{
         EnzoDecodedSubtitleCue, EnzoDecodedSubtitleTrack, SUBTITLE_ASS, SUBTITLE_BITMAP,
         SUBTITLE_TEXT, enzo_decode_subtitle_stream, enzo_decoded_subtitle_track_free,
     },
-    native::{ErrorBuffer, path_cstring},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
