@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use super::parser::strip_srt_markup;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LanguageName {
     pub(crate) tag: &'static str,
@@ -307,37 +311,140 @@ fn titlecase_ascii(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "tests/language.rs"]
+mod tests;
 
-    #[test]
-    fn normalizes_common_subtitle_language_tags() {
-        assert_eq!(normalize_language_tag("eng"), Some("en".to_string()));
-        assert_eq!(normalize_language_tag("jpn"), Some("ja".to_string()));
-        assert_eq!(normalize_language_tag("cze"), Some("cs".to_string()));
-        assert_eq!(normalize_language_tag("dut"), Some("nl".to_string()));
-        assert_eq!(normalize_language_tag("rum"), Some("ro".to_string()));
-        assert_eq!(
-            normalize_language_tag("zh_Hans"),
-            Some("zh-Hans".to_string())
-        );
-        assert_eq!(normalize_language_tag("und"), None);
+pub(super) fn infer_subtitle_language(path: &Path, text: &str) -> Option<String> {
+    language_from_filename(path).or_else(|| detect_text_language(text))
+}
+
+pub(super) fn language_from_filename(path: &Path) -> Option<String> {
+    let stem = path.file_stem()?.to_str()?;
+    let normalized = stem.replace(['_', ' ', '[', ']', '(', ')'], ".");
+    let parts = normalized
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+
+    for pair in parts.windows(2) {
+        let candidate = format!("{}-{}", pair[0], pair[1]);
+        if let Some(language) = normalize_filename_language_tag(&candidate) {
+            return Some(language);
+        }
     }
 
-    #[test]
-    fn preserves_well_formed_unknown_language_tags() {
-        assert_eq!(normalize_language_tag("ast"), Some("ast".to_string()));
-        assert_eq!(
-            normalize_language_tag("sr-Latn-RS"),
-            Some("sr-Latn-RS".to_string())
-        );
-        assert_eq!(language_display_name("ast"), "ast");
+    for part in &parts {
+        if let Some(language) = normalize_filename_language_tag(part) {
+            return Some(language);
+        }
     }
 
-    #[test]
-    fn formats_subtitle_codec_labels() {
-        assert_eq!(subtitle_codec_label("subrip"), "SRT");
-        assert_eq!(subtitle_codec_label("ass"), "ASS");
-        assert_eq!(subtitle_codec_label("hdmv_pgs_subtitle"), "PGS");
+    None
+}
+
+pub(super) fn normalize_filename_language_tag(tag: &str) -> Option<String> {
+    let language = normalize_language_tag(tag)?;
+    language_name(&language).is_some().then_some(language)
+}
+
+pub(super) fn detect_text_language(text: &str) -> Option<String> {
+    let mut cjk = 0_u32;
+    let mut kana = 0_u32;
+    let mut hangul = 0_u32;
+    let mut cyrillic = 0_u32;
+    let mut arabic = 0_u32;
+    let mut latin = 0_u32;
+    let mut english_stopwords = 0_u32;
+
+    for line in text.lines().take(400) {
+        let line = strip_srt_markup(line);
+        if line.contains("-->") || line.trim().parse::<u32>().is_ok() {
+            continue;
+        }
+
+        for ch in line.chars() {
+            match ch {
+                '\u{3040}'..='\u{30ff}' => kana += 1,
+                '\u{3400}'..='\u{9fff}' => cjk += 1,
+                '\u{ac00}'..='\u{d7af}' => hangul += 1,
+                '\u{0400}'..='\u{04ff}' => cyrillic += 1,
+                '\u{0600}'..='\u{06ff}' | '\u{0750}'..='\u{077f}' | '\u{0870}'..='\u{08ff}' => {
+                    arabic += 1
+                }
+                ch if ch.is_ascii_alphabetic() => latin += 1,
+                _ => {}
+            }
+        }
+
+        for word in line
+            .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '\'')
+            .map(|word| word.to_ascii_lowercase())
+        {
+            if is_english_stopword(&word) {
+                english_stopwords += 1;
+            }
+        }
     }
+
+    if kana >= 4 {
+        return Some("ja".to_string());
+    }
+    if hangul >= 4 {
+        return Some("ko".to_string());
+    }
+    if cjk >= 4 {
+        return Some("zh".to_string());
+    }
+    if cyrillic >= 12 {
+        return Some("ru".to_string());
+    }
+    if arabic >= 4 {
+        return Some("ar".to_string());
+    }
+    if latin >= 40 && english_stopwords >= 4 {
+        return Some("en".to_string());
+    }
+
+    None
+}
+
+pub(super) fn is_english_stopword(word: &str) -> bool {
+    matches!(
+        word,
+        "a" | "an"
+            | "and"
+            | "are"
+            | "as"
+            | "at"
+            | "be"
+            | "but"
+            | "by"
+            | "for"
+            | "from"
+            | "had"
+            | "have"
+            | "he"
+            | "i"
+            | "in"
+            | "is"
+            | "it"
+            | "me"
+            | "my"
+            | "not"
+            | "of"
+            | "on"
+            | "or"
+            | "she"
+            | "that"
+            | "the"
+            | "they"
+            | "this"
+            | "to"
+            | "was"
+            | "we"
+            | "were"
+            | "with"
+            | "you"
+            | "your"
+    )
 }

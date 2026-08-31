@@ -2,7 +2,7 @@ use std::{ffi::c_char, path::Path, time::Duration};
 
 use anyhow::{Result, bail};
 
-use crate::subtitle_language::{language_display_name, normalize_language_tag};
+use crate::subtitle::{language_display_name, normalize_language_tag};
 
 use super::{
     ffi::{

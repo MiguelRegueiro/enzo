@@ -9,7 +9,6 @@ mod overlay;
 mod resume;
 mod shutdown;
 mod subtitle;
-mod subtitle_language;
 mod terminal;
 mod text_layout;
 
