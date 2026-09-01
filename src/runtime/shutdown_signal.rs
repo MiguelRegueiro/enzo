@@ -5,12 +5,12 @@ use std::{
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn requested() -> bool {
+pub(crate) fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
 }
 
 #[cfg(unix)]
-pub(crate) fn install_signal_handlers() -> io::Result<()> {
+pub(super) fn install_shutdown_handlers() -> io::Result<()> {
     SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
     unsafe {
         install_handler(libc::SIGHUP)?;
@@ -21,7 +21,7 @@ pub(crate) fn install_signal_handlers() -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn install_signal_handlers() -> io::Result<()> {
+pub(super) fn install_shutdown_handlers() -> io::Result<()> {
     Ok(())
 }
 

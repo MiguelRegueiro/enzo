@@ -20,7 +20,7 @@ use crate::{
 
 use super::terminal_input::{DropCommand, read_drop_events};
 
-pub(super) fn run(
+pub(crate) fn run(
     sub_file: Option<&Path>,
     playback_options: PlaybackOptions,
     font_system: &FontSystem,
@@ -31,12 +31,12 @@ pub(super) fn run(
     let mut status = None::<String>;
 
     loop {
-        if crate::shutdown::requested() {
+        if crate::runtime::shutdown_requested() {
             return Ok(());
         }
         draw(&mut out, status.as_deref())?;
         let input = read_drop_events()?;
-        if crate::shutdown::requested() {
+        if crate::runtime::shutdown_requested() {
             return Ok(());
         }
         if input.command == DropCommand::Quit {

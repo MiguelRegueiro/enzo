@@ -3,22 +3,25 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::{
-    cli::Options, font::FontSystem, playback, resume::ResumeTracker, shutdown,
+    cli::{Options, run_media_drop_launcher},
+    font::FontSystem,
+    playback,
+    resume::ResumeTracker,
     terminal::TerminalGuard,
 };
 
 use super::{
-    media_drop_launcher,
+    shutdown_signal::install_shutdown_handlers,
     terminal_preflight::{prepare_tmux_passthrough, require_supported_terminal},
 };
 
-pub(crate) fn run(options: Options) -> Result<()> {
+pub(super) fn execute(options: Options) -> Result<()> {
     if options.clear_resume {
         let removed = ResumeTracker::clear_all().context("failed to clear saved playback state")?;
         println!("Cleared {removed} saved playback state file(s).");
         return Ok(());
     }
-    shutdown::install_signal_handlers().context("failed to install shutdown handlers")?;
+    install_shutdown_handlers().context("failed to install shutdown handlers")?;
     let font_system = FontSystem::discover();
     require_supported_terminal(options.force)?;
     prepare_tmux_passthrough();
@@ -43,6 +46,6 @@ pub(crate) fn run(options: Options) -> Result<()> {
             &font_system,
         )
     } else {
-        media_drop_launcher::run(options.sub_file.as_deref(), playback_options, &font_system)
+        run_media_drop_launcher(options.sub_file.as_deref(), playback_options, &font_system)
     }
 }

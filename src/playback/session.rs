@@ -13,7 +13,7 @@ use crate::{
     media::{FrameStatus, VideoInfo},
     playlist::{PlaylistControls, PlaylistStep},
     resume::ResumeTracker,
-    shutdown,
+    runtime::shutdown_requested,
     subtitle::{SubtitleRenderer, SubtitleTrack},
     terminal::clear_screen_and_images,
 };
@@ -128,7 +128,7 @@ impl<W: Write> PlaybackSession<'_, W> {
     pub(super) fn run(self) -> Result<PlaybackSessionResult> {
         let mut session = self;
         let playback_outcome = loop {
-            if shutdown::requested() {
+            if shutdown_requested() {
                 break PlaybackOutcome::Interrupted;
             }
             session.poll_backends()?;
