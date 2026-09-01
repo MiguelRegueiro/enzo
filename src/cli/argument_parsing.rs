@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     config::{Config, MAX_VOLUME_MAX, MIN_VOLUME_MAX},
-    media::{media_path_from_argument, validate_subtitle_path},
+    media_source::{media_path_from_argument, validate_subtitle_path},
 };
 
 pub(crate) const HELP: &str = "\

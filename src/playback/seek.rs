@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::media::{AudioPlayer, VideoDecoder};
+use crate::{audio::AudioPlayer, video::VideoDecoder};
 
 use super::engine::AudioChoice;
 

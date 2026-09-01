@@ -2,9 +2,9 @@ use std::path::Path;
 
 use crate::subtitle::{language_display_name, normalize_language_tag};
 
-use super::{
-    ffi_support::{ErrorBuffer, path_cstring},
-    media_ffi::{EnzoAudioTrackInfo, enzo_audio_tracks_free, enzo_probe_audio_tracks},
+use crate::decoder_backend::{
+    backend_bindings::{EnzoAudioTrackInfo, enzo_audio_tracks_free, enzo_probe_audio_tracks},
+    backend_support::{ErrorBuffer, path_cstring},
     metadata_display::{audio_channel_label, codec_display_name, fixed_info_text, format_rate},
 };
 

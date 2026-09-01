@@ -11,9 +11,9 @@ use std::{
 
 use anyhow::Result;
 
+use crate::{audio::AudioPlayer, decoder_backend::backend_support::duration_micros_i64};
+
 use super::{
-    audio_player::AudioPlayer,
-    ffi_support::duration_micros_i64,
     video_frame_decoder::NativeVideoDecoder,
     video_frame_store::{LatestFrame, frame_len, frame_storage_len, validate_frame_guard},
     video_timing::DisplayRate,

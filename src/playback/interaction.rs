@@ -9,7 +9,6 @@ use anyhow::Result;
 use crate::{
     cli::{PlaybackCommand, PlaybackMouse},
     font::FontSystem,
-    media::VideoInfo,
     overlay::{
         AudioPickerAction, OverlayHitContext, PlaylistMenuAction, SubtitlePickerAction,
         TransportControlAction,
@@ -17,6 +16,7 @@ use crate::{
     playlist::{PlaylistControls, PlaylistStep},
     resume::ResumeTracker,
     subtitle::{SubtitleRenderer, SubtitleTrack},
+    video::VideoInfo,
 };
 
 use super::{

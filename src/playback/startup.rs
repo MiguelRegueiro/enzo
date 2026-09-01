@@ -7,12 +7,13 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
+    audio::AudioPlayer,
     font::FontSystem,
-    media::{AudioPlayer, probe_video},
     overlay::MediaInfo,
     playlist::{Playlist, PlaylistControls, PlaylistStep, PlaylistView},
     resume::ResumeTracker,
     subtitle::SubtitleTrack,
+    video::probe_video,
 };
 
 use super::{

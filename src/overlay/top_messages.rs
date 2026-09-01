@@ -4,7 +4,7 @@ use crate::font::FontRenderer;
 
 use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
-    layout::{
+    geometry::{
         horizontal_padding_for_text, rounded_radius, top_message_stack_y, vertical_padding_for_text,
     },
     raster::RoundedRect,
@@ -199,5 +199,5 @@ fn display_info_text(info: &MediaInfoState) -> String {
 }
 
 #[cfg(test)]
-#[path = "tests/panels.rs"]
+#[path = "tests/top_messages.rs"]
 mod tests;

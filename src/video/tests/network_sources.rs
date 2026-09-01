@@ -12,7 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{AudioPlayer, VideoDecoder, probe_video};
+use super::{VideoDecoder, probe_video};
+use crate::audio::AudioPlayer;
 
 type Routes = HashMap<String, (String, Vec<u8>)>;
 

@@ -1,6 +1,6 @@
 use std::ffi::c_char;
 
-pub(super) fn fixed_info_text<const N: usize>(value: &[c_char; N]) -> Option<String> {
+pub(crate) fn fixed_info_text<const N: usize>(value: &[c_char; N]) -> Option<String> {
     let bytes = value
         .iter()
         .copied()
@@ -10,7 +10,7 @@ pub(super) fn fixed_info_text<const N: usize>(value: &[c_char; N]) -> Option<Str
     non_empty(&String::from_utf8_lossy(&bytes))
 }
 
-pub(super) fn codec_display_name(codec: &str) -> String {
+pub(crate) fn codec_display_name(codec: &str) -> String {
     match codec.to_ascii_lowercase().as_str() {
         "h264" => "H.264".to_string(),
         "hevc" => "HEVC".to_string(),
@@ -26,7 +26,7 @@ pub(super) fn codec_display_name(codec: &str) -> String {
     }
 }
 
-pub(super) fn format_rate(value: f64) -> String {
+pub(crate) fn format_rate(value: f64) -> String {
     if (value - value.round()).abs() < 0.005 {
         format!("{value:.0}")
     } else if value >= 100.0 {
@@ -39,7 +39,7 @@ pub(super) fn format_rate(value: f64) -> String {
     }
 }
 
-pub(super) fn audio_channel_label(channels: Option<u32>, layout: Option<&str>) -> Option<String> {
+pub(crate) fn audio_channel_label(channels: Option<u32>, layout: Option<&str>) -> Option<String> {
     if let Some(layout) = layout.filter(|layout| !layout.is_empty() && *layout != "unknown") {
         let layout = layout.replace("(side)", "").replace(['(', ')'], " ");
         return Some(match layout.trim() {

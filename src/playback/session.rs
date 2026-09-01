@@ -10,12 +10,12 @@ use anyhow::{Context, Result};
 use crate::{
     cli::read_input_events,
     font::FontSystem,
-    media::{FrameStatus, VideoInfo},
     playlist::{PlaylistControls, PlaylistStep},
     resume::ResumeTracker,
     runtime::shutdown_requested,
     subtitle::{SubtitleRenderer, SubtitleTrack},
     terminal::clear_screen_and_images,
+    video::{FrameStatus, VideoInfo},
 };
 
 #[cfg(test)]

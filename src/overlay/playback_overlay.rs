@@ -4,15 +4,17 @@ use crate::font::{FontRenderer, FontRole, FontSystem};
 
 use super::{
     acrylic::AcrylicScratch,
-    help::help_scroll_limit,
-    interaction::{
+    click_targets::{
         audio_picker_action, progress_hit_ratio, progress_ratio_for_x, subtitle_picker_action,
         track_picker_hover_index, transport_control_action,
     },
-    layout::{
+    geometry::{
         OverlayMetrics, overlay_metrics, track_picker_layout, track_picker_visible_row_count,
     },
-    playlist::{playlist_menu_action, playlist_menu_hover_index, playlist_menu_visible_row_count},
+    help_overlay::help_scroll_limit,
+    playlist_overlay::{
+        playlist_menu_action, playlist_menu_hover_index, playlist_menu_visible_row_count,
+    },
     rendering::render_overlay_rgb as render_overlay_rgb_with_palette,
     state::{
         AudioPickerAction, OverlayHitContext, OverlayHitPoint, OverlayRenderContext, OverlayState,

@@ -1,8 +1,10 @@
 use std::path::Path;
 
-use super::{
-    ffi_support::{ErrorBuffer, path_cstring},
-    media_ffi::{EnzoSubtitleStreamInfo, enzo_probe_subtitle_streams, enzo_subtitle_streams_free},
+use crate::decoder_backend::{
+    backend_bindings::{
+        EnzoSubtitleStreamInfo, enzo_probe_subtitle_streams, enzo_subtitle_streams_free,
+    },
+    backend_support::{ErrorBuffer, path_cstring},
     metadata_display::fixed_info_text,
 };
 

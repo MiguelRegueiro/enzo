@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::media::is_remote_url_text;
+use crate::media_source::is_remote_url_text;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlaylistStep {

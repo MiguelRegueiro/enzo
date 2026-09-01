@@ -4,7 +4,7 @@ use crate::font::FontRenderer;
 
 use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
-    layout::{fallback_text_scale, rounded_radius, text_size},
+    geometry::{fallback_text_scale, rounded_radius, text_size},
     raster::{RoundedRect, fill_rounded_rect},
     style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
     text::{bitmap_text_width, draw_overlay_text, fit_overlay_text, overlay_text_width},
@@ -681,5 +681,5 @@ fn scroll_limit_for_columns(columns: &[Vec<HelpLine>], geometry: HelpGeometry) -
 }
 
 #[cfg(test)]
-#[path = "tests/help.rs"]
+#[path = "tests/help_overlay.rs"]
 mod tests;

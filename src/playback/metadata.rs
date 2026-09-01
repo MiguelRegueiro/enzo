@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use crate::media::VideoInfo;
+use crate::video::VideoInfo;
 
 pub(super) fn file_info_summary(path: &Path, source: &VideoInfo) -> String {
     let mut parts = Vec::new();

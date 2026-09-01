@@ -6,7 +6,7 @@ use crate::font::FontRenderer;
 
 use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
-    layout::{
+    geometry::{
         OverlayMetrics, picker_padding, picker_text_y, progress_handle_radius, rounded_radius,
         track_icon_dimensions, track_picker_layout, track_picker_track_rect,
         track_picker_visible_row_count,

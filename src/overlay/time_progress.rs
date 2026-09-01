@@ -69,5 +69,5 @@ fn format_timestamp_with_hours(duration: Duration, hour_width: usize) -> String 
 }
 
 #[cfg(test)]
-#[path = "tests/timeline.rs"]
+#[path = "tests/time_progress.rs"]
 mod tests;

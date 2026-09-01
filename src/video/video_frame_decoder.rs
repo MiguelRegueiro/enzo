@@ -2,12 +2,12 @@ use std::{ffi::c_int, path::Path, sync::atomic::AtomicI32, time::Duration};
 
 use anyhow::{Context, Result, bail};
 
-use super::{
-    ffi_support::{ErrorBuffer, path_cstring},
-    media_ffi::{
+use crate::decoder_backend::{
+    backend_bindings::{
         EnzoVideoDecoderOpaque, enzo_video_decoder_close, enzo_video_decoder_next,
         enzo_video_decoder_open, enzo_video_decoder_seek,
     },
+    backend_support::{ErrorBuffer, path_cstring},
 };
 
 pub(super) struct NativeVideoDecoder(*mut EnzoVideoDecoderOpaque);

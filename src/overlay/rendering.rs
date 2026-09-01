@@ -4,19 +4,21 @@ use crate::font::FontRenderer;
 
 use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
-    controls::{
+    buttons::{
         draw_audio_control, draw_next_control, draw_playback_control, draw_previous_control,
         draw_progress_handle, draw_subtitle_control, draw_track_picker,
     },
-    help::draw_help_panel,
-    layout::{OverlayMetrics, fallback_text_scale, rounded_radius, text_size},
-    panels::{draw_media_info_panel, draw_top_message},
-    playlist::draw_playlist_menu,
+    geometry::{OverlayMetrics, fallback_text_scale, rounded_radius, text_size},
+    help_overlay::draw_help_panel,
+    playlist_overlay::draw_playlist_menu,
     raster::{RoundedRect, fill_rounded_rect},
     state::OverlayState,
     style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
     text::draw_overlay_text,
-    timeline::{format_position_timestamp, format_timestamp, progress_pixels, time_column_width},
+    time_progress::{
+        format_position_timestamp, format_timestamp, progress_pixels, time_column_width,
+    },
+    top_messages::{draw_media_info_panel, draw_top_message},
 };
 
 #[allow(clippy::too_many_arguments)]

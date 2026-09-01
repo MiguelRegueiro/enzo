@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::*;
-use crate::media::media_ffi::{
+use crate::decoder_backend::backend_bindings::{
     enzo_audio_seek_leading_silence_samples, enzo_audio_seek_trim_samples,
 };
 

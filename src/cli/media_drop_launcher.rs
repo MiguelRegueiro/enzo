@@ -13,7 +13,7 @@ use crossterm::{
 
 use crate::{
     font::FontSystem,
-    media::media_path_from_drop_text,
+    media_source::media_path_from_drop_text,
     playback::{self, PlaybackOptions},
     terminal::{TerminalGuard, clear_screen_and_images},
 };

@@ -1,6 +1,5 @@
-use crate::media::DecodedSubtitleBitmap;
-
 use super::{
+    embedded_decoder::DecodedSubtitleBitmap,
     renderer::SubtitleLayout,
     text_render::{blend_pixel, rgb_offset, subtitle_bottom_margin},
 };

@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::*;
-use crate::media::ffi_support::duration_micros_i64;
+use crate::decoder_backend::backend_support::duration_micros_i64;
 
 #[test]
 fn display_rate_measures_recent_frame_delivery() {

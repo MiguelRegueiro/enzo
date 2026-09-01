@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::{
-    media::AudioTrack,
+    audio::AudioTrack,
     resume::{RestoredPlayback, ResumeAudioSelection, ResumeSubtitleSelection, ResumeTracker},
 };
 

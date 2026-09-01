@@ -4,12 +4,12 @@ use std::{sync::Arc, time::Duration};
 
 use super::{
     acrylic::AcrylicScratch,
-    layout::{OverlayMetrics, fallback_text_scale, text_size},
+    geometry::{OverlayMetrics, fallback_text_scale, text_size},
     raster::rgb_offset,
     render_overlay_rgb, render_overlay_rgb_with_palette,
     state::{MediaInfo, MediaInfoState, OverlayState},
     style::OverlayPalette,
-    timeline::{progress_pixels, time_column_width},
+    time_progress::{progress_pixels, time_column_width},
 };
 
 #[test]

@@ -1,5 +1,5 @@
 use super::*;
-use crate::overlay::{interaction::progress_hit_ratio, state::*};
+use crate::overlay::{click_targets::progress_hit_ratio, state::*};
 use std::time::Duration;
 
 #[test]

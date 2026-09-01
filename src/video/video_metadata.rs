@@ -2,9 +2,9 @@ use std::{path::Path, time::Duration};
 
 use anyhow::{Result, bail};
 
-use super::{
-    ffi_support::{ErrorBuffer, path_cstring},
-    media_ffi::{EnzoVideoInfo, HDR_HLG, HDR_PQ, INFO_TEXT_LEN, enzo_probe_video},
+use crate::decoder_backend::{
+    backend_bindings::{EnzoVideoInfo, HDR_HLG, HDR_PQ, INFO_TEXT_LEN, enzo_probe_video},
+    backend_support::{ErrorBuffer, path_cstring},
     metadata_display::{codec_display_name, fixed_info_text, format_rate},
 };
 

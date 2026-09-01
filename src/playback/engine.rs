@@ -5,7 +5,10 @@ use std::{
 
 use anyhow::Result;
 
-use crate::media::{AudioPlayer, FrameStatus, VideoDecoder};
+use crate::{
+    audio::AudioPlayer,
+    video::{FrameStatus, VideoDecoder},
+};
 
 use super::{carryover::PlaybackCarryover, layout::TargetFrame};
 

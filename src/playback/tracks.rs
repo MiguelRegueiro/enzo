@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use crate::{
-    media::{AudioTrack, load_audio_tracks},
+    audio::{AudioTrack, load_audio_tracks},
     resume::RestoredPlayback,
 };
 

@@ -1,5 +1,7 @@
 mod ass;
 mod bitmap;
+mod embedded_decoder;
+mod embedded_streams;
 mod language;
 mod parser;
 mod renderer;

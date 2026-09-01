@@ -1,19 +1,19 @@
 //! Playback overlay state, rendering, layout, and pointer interaction.
 
 mod acrylic;
-mod controls;
-mod help;
-mod interaction;
-mod layout;
-mod panels;
+mod buttons;
+mod click_targets;
+mod geometry;
+mod help_overlay;
 mod playback_overlay;
-mod playlist;
+mod playlist_overlay;
 mod raster;
 mod rendering;
 mod state;
 mod style;
 mod text;
-mod timeline;
+mod time_progress;
+mod top_messages;
 
 pub(crate) use playback_overlay::PlaybackOverlay;
 pub(crate) use state::{

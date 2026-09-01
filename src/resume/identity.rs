@@ -107,7 +107,7 @@ pub(super) fn file_fingerprint(path: &Path, len: u64) -> io::Result<Option<Strin
     }
 
     let chunk_len = FINGERPRINT_CHUNK_BYTES.min(len);
-    let digest = crate::media::file_fingerprint_digest(path, len, chunk_len)?;
+    let digest = crate::decoder_backend::file_fingerprint_digest(path, len, chunk_len)?;
     Ok(Some(hex_encode(&digest)))
 }
 

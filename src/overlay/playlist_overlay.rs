@@ -6,7 +6,7 @@ use crate::font::FontRenderer;
 
 use super::{
     acrylic::{AcrylicScratch, fill_acrylic_rounded_rect},
-    layout::{fallback_text_scale, rounded_radius, text_size},
+    geometry::{fallback_text_scale, rounded_radius, text_size},
     raster::{Circle, RoundedRect, fill_circle, fill_rounded_rect},
     state::{HitboxRect, OverlayHitPoint, PlaylistMenuAction, PlaylistMenuState},
     style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR},
@@ -459,5 +459,5 @@ fn draw_playlist_scrollbar(
 }
 
 #[cfg(test)]
-#[path = "tests/playlist.rs"]
+#[path = "tests/playlist_overlay.rs"]
 mod tests;

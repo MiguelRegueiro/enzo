@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::{
-    layout::{
+    geometry::{
         OverlayMetrics, audio_button_rect, midpoint_toward_lower_line, next_button_rect,
         picker_text_y, playback_button_rect, previous_button_rect, progress_handle_radius,
         subtitle_button_rect, track_picker_track_rect,
@@ -12,7 +12,7 @@ use super::{
         AudioPickerAction, HitboxRect, OverlayHitPoint, SubtitlePickerAction,
         TransportControlAction,
     },
-    timeline::progress_pixels,
+    time_progress::progress_pixels,
 };
 
 pub(super) fn transport_control_action(
@@ -237,5 +237,5 @@ pub(super) fn progress_ratio_for_x(metrics: OverlayMetrics, x: u32) -> f64 {
 }
 
 #[cfg(test)]
-#[path = "tests/interaction.rs"]
+#[path = "tests/click_targets.rs"]
 mod tests;

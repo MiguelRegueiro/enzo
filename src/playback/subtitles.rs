@@ -9,7 +9,7 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-    media::{media_candidates_from_text, validate_subtitle_path},
+    media_source::{media_candidates_from_text, validate_subtitle_path},
     resume::{RestoredPlayback, ResumeSubtitleSelection},
     subtitle::{
         EmbeddedSubtitleStream, SubtitleTrack, embedded_subtitle_streams,

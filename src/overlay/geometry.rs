@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::font::FontRenderer;
 
-use super::{state::HitboxRect, text::bitmap_text_width, timeline::time_column_width};
+use super::{state::HitboxRect, text::bitmap_text_width, time_progress::time_column_width};
 
 const MIN_SCALE_PERCENT: u32 = 100;
 const MAX_SCALE_PERCENT: u32 = 125;
@@ -620,5 +620,5 @@ pub(super) fn rounded_radius(width: u32, height: u32, wanted: u32) -> u32 {
 }
 
 #[cfg(test)]
-#[path = "tests/layout.rs"]
+#[path = "tests/geometry.rs"]
 mod tests;

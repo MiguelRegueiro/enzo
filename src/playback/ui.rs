@@ -5,9 +5,9 @@ use std::{
 };
 
 use crate::{
-    media::VideoDecoder,
     overlay::{MediaInfo, MediaInfoState, OverlayState, PlaylistMenuState},
     playlist::PlaylistControls,
+    video::VideoDecoder,
 };
 
 use super::{layout::CanvasFrame, subtitles::SubtitleCatalog, tracks::AudioCatalog};

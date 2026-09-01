@@ -6,12 +6,12 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{
-    ffi_support::{ErrorBuffer, path_cstring},
-    media_ffi::{
+use crate::decoder_backend::{
+    backend_bindings::{
         EnzoDecodedSubtitleCue, EnzoDecodedSubtitleTrack, SUBTITLE_ASS, SUBTITLE_BITMAP,
         SUBTITLE_TEXT, enzo_decode_subtitle_stream, enzo_decoded_subtitle_track_free,
     },
+    backend_support::{ErrorBuffer, path_cstring},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

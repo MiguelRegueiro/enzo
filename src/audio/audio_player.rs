@@ -10,9 +10,9 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use super::{
-    ffi_support::{ErrorBuffer, duration_micros_i64, path_cstring},
-    media_ffi::enzo_play_audio,
+use crate::decoder_backend::{
+    backend_bindings::enzo_play_audio,
+    backend_support::{ErrorBuffer, duration_micros_i64, path_cstring},
 };
 
 #[derive(Clone)]
@@ -189,7 +189,7 @@ impl AudioPlayer {
         (micros >= 0).then(|| Duration::from_micros(micros as u64))
     }
 
-    pub(super) fn playback_clock(&self) -> Arc<AtomicI64> {
+    pub(crate) fn playback_clock(&self) -> Arc<AtomicI64> {
         Arc::clone(&self.shared.playback_micros)
     }
 }

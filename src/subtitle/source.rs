@@ -5,16 +5,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::media::{
-    DecodedSubtitleCue, DecodedSubtitleTextKind, SubtitleStreamInfo, decode_subtitle_stream,
-    load_subtitle_streams,
-};
-
 use super::{
     ass::{
         ass_default_format, ass_dialogue_line_is_useful, decoded_ass_format, is_ass_drawing,
         parse_ass_event_fields,
     },
+    embedded_decoder::{DecodedSubtitleCue, DecodedSubtitleTextKind, decode_subtitle_stream},
+    embedded_streams::{SubtitleStreamInfo, load_subtitle_streams},
     language::{
         detect_text_language, language_display_name, normalize_language_tag, subtitle_codec_label,
     },

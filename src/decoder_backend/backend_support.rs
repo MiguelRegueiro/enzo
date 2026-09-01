@@ -9,26 +9,26 @@ use anyhow::{Context, Result};
 
 const ERROR_BUFFER_LEN: usize = 4096;
 
-pub(super) struct ErrorBuffer {
+pub(crate) struct ErrorBuffer {
     bytes: [c_char; ERROR_BUFFER_LEN],
 }
 
 impl ErrorBuffer {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             bytes: [0; ERROR_BUFFER_LEN],
         }
     }
 
-    pub(super) fn as_mut_ptr(&mut self) -> *mut c_char {
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut c_char {
         self.bytes.as_mut_ptr()
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.bytes.len()
     }
 
-    pub(super) fn message(&self, fallback: &str) -> String {
+    pub(crate) fn message(&self, fallback: &str) -> String {
         let bytes = self
             .bytes
             .iter()
@@ -43,15 +43,15 @@ impl ErrorBuffer {
     }
 }
 
-pub(super) fn path_cstring(path: &Path) -> Result<CString> {
+pub(crate) fn path_cstring(path: &Path) -> Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .with_context(|| format!("path contains an interior NUL byte: {}", path.display()))
 }
 
-pub(super) fn duration_micros_i64(duration: Duration) -> i64 {
+pub(crate) fn duration_micros_i64(duration: Duration) -> i64 {
     duration.as_micros().min(i64::MAX as u128) as i64
 }
 
 #[cfg(test)]
-#[path = "tests/ffi_support.rs"]
+#[path = "tests/backend_support.rs"]
 mod tests;

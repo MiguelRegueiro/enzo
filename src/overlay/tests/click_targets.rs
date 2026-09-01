@@ -1,5 +1,5 @@
 use super::*;
-use crate::overlay::{layout::*, state::*, timeline::time_column_width};
+use crate::overlay::{geometry::*, state::*, time_progress::time_column_width};
 use std::{sync::Arc, time::Duration};
 
 #[test]

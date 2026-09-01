@@ -2,9 +2,8 @@ use std::{collections::BTreeSet, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
 
-use crate::media::DecodedSubtitleBitmap;
-
 use super::{
+    embedded_decoder::DecodedSubtitleBitmap,
     language::infer_subtitle_language,
     parser::parse_subtitle_text,
     source::{external_subtitle_label, load_subtitle_text},
