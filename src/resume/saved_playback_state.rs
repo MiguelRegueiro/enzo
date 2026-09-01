@@ -4,16 +4,119 @@ use std::{
     time::Duration,
 };
 
-use super::{
-    encoding::{hex_decode, hex_encode, path_from_bytes, path_to_bytes},
-    identity::{
-        FINGERPRINT_ALGORITHM, FINGERPRINT_HEX_LEN, MediaIdentity, duration_millis_close,
-        duration_millis_u64, durations_compatible,
-    },
-    model::{ResumeAudioSelection, ResumePlaybackState, ResumeSubtitleSelection},
+use super::saved_media_identity::{
+    FINGERPRINT_ALGORITHM, FINGERPRINT_HEX_LEN, MediaIdentity, duration_millis_close,
+    duration_millis_u64, durations_compatible, normalized_local_path,
 };
 
 const RECORD_FORMAT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug)]
+pub(crate) struct RestoredPlayback {
+    pub(crate) position: Option<Duration>,
+    pub(crate) audio: ResumeAudioSelection,
+    pub(crate) subtitle: ResumeSubtitleSelection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ResumePlaybackState {
+    pub(super) position: Duration,
+    pub(super) audio: ResumeAudioSelection,
+    pub(super) subtitle: ResumeSubtitleSelection,
+}
+
+impl ResumePlaybackState {
+    pub(super) fn new() -> Self {
+        Self {
+            position: Duration::ZERO,
+            audio: ResumeAudioSelection::Unspecified,
+            subtitle: ResumeSubtitleSelection::Unspecified,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResumeAudioSelection {
+    Unspecified,
+    Disabled,
+    Selected {
+        stream_index: Option<usize>,
+        ordinal: Option<usize>,
+        label: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ResumeSubtitleSelection {
+    Unspecified,
+    Off,
+    External {
+        path: PathBuf,
+        relative_path: Option<PathBuf>,
+        file_name: Option<PathBuf>,
+        ordinal: Option<usize>,
+        label: Option<String>,
+    },
+    Embedded {
+        stream_index: Option<usize>,
+        ordinal: Option<usize>,
+        label: Option<String>,
+    },
+}
+
+impl ResumeSubtitleSelection {
+    pub(crate) fn external(
+        path: &Path,
+        media_path: &Path,
+        ordinal: Option<usize>,
+        label: Option<String>,
+    ) -> Self {
+        let path = normalized_local_path(path);
+        let media_path = normalized_local_path(media_path);
+        let media_dir = media_path.parent();
+        let relative_path =
+            media_dir.and_then(|dir| path.strip_prefix(dir).ok().map(Path::to_path_buf));
+        let file_name = path.file_name().map(PathBuf::from);
+        Self::External {
+            path,
+            relative_path,
+            file_name,
+            ordinal,
+            label,
+        }
+    }
+
+    pub(crate) fn external_candidates(&self, media_path: &Path) -> Vec<PathBuf> {
+        let Self::External {
+            path,
+            relative_path,
+            file_name,
+            ..
+        } = self
+        else {
+            return Vec::new();
+        };
+
+        let mut candidates = Vec::new();
+        push_unique_path(&mut candidates, path.clone());
+        let media_path = normalized_local_path(media_path);
+        if let Some(media_dir) = media_path.parent() {
+            if let Some(relative_path) = relative_path {
+                push_unique_path(&mut candidates, media_dir.join(relative_path));
+            }
+            if let Some(file_name) = file_name {
+                push_unique_path(&mut candidates, media_dir.join(file_name));
+            }
+        }
+        candidates
+    }
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|candidate| candidate == &path) {
+        paths.push(path);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct ResumeRecord {
@@ -322,4 +425,95 @@ fn parse_string_field(fields: &HashMap<String, String>, key: &str) -> Option<Str
 
 fn parse_path_field(fields: &HashMap<String, String>, key: &str) -> Option<PathBuf> {
     hex_decode(fields.get(key)?).map(path_from_bytes)
+}
+
+pub(super) fn path_to_bytes(path: &Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        path.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_string_lossy().as_bytes().to_vec()
+    }
+}
+
+fn path_from_bytes(bytes: Vec<u8>) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(text.len() / 2);
+    for chunk in text.as_bytes().chunks_exact(2) {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
+        bytes.push((hi << 4) | lo);
+    }
+    Some(bytes)
+}
+
+pub(super) fn stable_hash_hex(bytes: &[u8]) -> String {
+    let mut first = Fnv64::new();
+    first.update(bytes);
+    let mut second = Fnv64::with_offset(0x8422_2325_cbf2_9ce4);
+    second.update(bytes);
+    format!("{:016x}{:016x}", first.finish(), second.finish())
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+struct Fnv64 {
+    state: u64,
+}
+
+impl Fnv64 {
+    fn new() -> Self {
+        Self::with_offset(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn with_offset(offset: u64) -> Self {
+        Self { state: offset }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.state ^= u64::from(*byte);
+            self.state = self.state.wrapping_mul(0x1000_0000_01b3);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.state
+    }
 }

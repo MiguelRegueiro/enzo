@@ -7,7 +7,7 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-use super::encoding::{hex_encode, path_to_bytes, stable_hash_hex};
+use super::saved_playback_state::{hex_encode, path_to_bytes, stable_hash_hex};
 
 pub(super) const FINGERPRINT_CHUNK_BYTES: u64 = 64 * 1024;
 const DURATION_TOLERANCE: Duration = Duration::from_secs(1);

@@ -5,10 +5,12 @@ use std::{
 };
 
 use super::{
-    identity::{MediaIdentity, record_name_for_path_key, resume_position},
-    model::{RestoredPlayback, ResumeAudioSelection, ResumePlaybackState, ResumeSubtitleSelection},
-    record::ResumeRecord,
-    store::{Durability, ResumeStore},
+    saved_media_identity::{MediaIdentity, record_name_for_path_key, resume_position},
+    saved_playback_state::{
+        RestoredPlayback, ResumeAudioSelection, ResumePlaybackState, ResumeRecord,
+        ResumeSubtitleSelection,
+    },
+    storage::{Durability, ResumeStore},
 };
 
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(30);

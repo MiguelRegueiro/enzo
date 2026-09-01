@@ -14,8 +14,10 @@ use std::{
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use super::{
-    identity::{MediaIdentity, legacy_record_name_for_remote_title, record_name_for_path_key},
-    record::ResumeRecord,
+    saved_media_identity::{
+        MediaIdentity, legacy_record_name_for_remote_title, record_name_for_path_key,
+    },
+    saved_playback_state::ResumeRecord,
 };
 
 pub(super) const MAX_RECORD_BYTES: u64 = 64 * 1024;

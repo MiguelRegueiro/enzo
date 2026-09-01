@@ -10,18 +10,19 @@ use std::{
 use std::os::unix::fs::PermissionsExt;
 
 use super::{
-    identity::{
+    saved_media_identity::{
         FINGERPRINT_CHUNK_BYTES, FileMetadata, MediaIdentity, duration_millis_close,
         file_fingerprint, path_key_for_media, record_name_for_path_key, resume_position,
         system_time_millis,
     },
-    model::{ResumeAudioSelection, ResumePlaybackState, ResumeSubtitleSelection},
-    record::ResumeRecord,
-    store::{
+    saved_playback_state::{
+        ResumeAudioSelection, ResumePlaybackState, ResumeRecord, ResumeSubtitleSelection,
+    },
+    storage::{
         Durability, LEGACY_INDEX_FILE, MAX_RENAME_CANDIDATES, ResumeStore, resume_state_home,
         temp_path_for,
     },
-    tracker::{MINIMUM_RESUME_POSITION, ResumeTracker, SaveMode},
+    watch_later::{MINIMUM_RESUME_POSITION, ResumeTracker, SaveMode},
 };
 
 use std::ops::Deref;
@@ -734,7 +735,7 @@ fn malformed_and_oversized_records_are_ignored() {
         .expect("malformed record should write");
     fs::write(
         store.record_path(oversized_name),
-        vec![b'x'; super::store::MAX_RECORD_BYTES as usize + 1],
+        vec![b'x'; super::storage::MAX_RECORD_BYTES as usize + 1],
     )
     .expect("oversized record should write");
 
