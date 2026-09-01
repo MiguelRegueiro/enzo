@@ -14,13 +14,11 @@ use crossterm::{
 use crate::{
     font::FontSystem,
     media::media_path_from_drop_text,
+    playback::{self, PlaybackOptions},
     terminal::{TerminalGuard, clear_screen_and_images},
 };
 
-use super::{
-    playback::{self, PlaybackOptions},
-    terminal_input::{DropCommand, read_drop_events},
-};
+use super::terminal_input::{DropCommand, read_drop_events};
 
 pub(super) fn run(
     sub_file: Option<&Path>,

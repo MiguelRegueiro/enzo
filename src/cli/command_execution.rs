@@ -1,18 +1,15 @@
-mod launcher;
-mod playback;
-mod playlist;
-mod terminal_input;
-
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::{
-    cli::Options,
-    font::FontSystem,
-    resume::ResumeTracker,
-    shutdown,
-    terminal::{TerminalGuard, enable_tmux_passthrough, inside_tmux, looks_like_kitty},
+    cli::Options, font::FontSystem, playback, resume::ResumeTracker, shutdown,
+    terminal::TerminalGuard,
+};
+
+use super::{
+    media_drop_launcher,
+    terminal_preflight::{prepare_tmux_passthrough, require_supported_terminal},
 };
 
 pub(crate) fn run(options: Options) -> Result<()> {
@@ -23,13 +20,8 @@ pub(crate) fn run(options: Options) -> Result<()> {
     }
     shutdown::install_signal_handlers().context("failed to install shutdown handlers")?;
     let font_system = FontSystem::discover();
-    if !options.force && !looks_like_kitty() {
-        bail!("Enzo requires Kitty; pass --force to bypass terminal detection");
-    }
-
-    if inside_tmux() {
-        enable_tmux_passthrough();
-    }
+    require_supported_terminal(options.force)?;
+    prepare_tmux_passthrough();
 
     let playback_options = playback::PlaybackOptions {
         resume_enabled: options.resume_enabled,
@@ -51,6 +43,6 @@ pub(crate) fn run(options: Options) -> Result<()> {
             &font_system,
         )
     } else {
-        launcher::run(options.sub_file.as_deref(), playback_options, &font_system)
+        media_drop_launcher::run(options.sub_file.as_deref(), playback_options, &font_system)
     }
 }

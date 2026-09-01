@@ -1,9 +1,10 @@
-mod app;
 mod cli;
 mod config;
 mod font;
 mod media;
 mod overlay;
+mod playback;
+mod playlist;
 mod resume;
 mod shutdown;
 mod subtitle;
@@ -22,7 +23,7 @@ fn main() {
 
 fn run() -> Result<()> {
     match cli::parse_args(env::args_os().skip(1))? {
-        cli::Action::Run(options) => app::run(options),
+        cli::Action::Run(options) => cli::run(options),
         cli::Action::Help => {
             print!("{}", cli::HELP);
             Ok(())

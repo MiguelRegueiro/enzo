@@ -8,16 +8,16 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
+    cli::read_input_events,
     font::FontSystem,
     media::{FrameStatus, VideoInfo},
+    playlist::{PlaylistControls, PlaylistStep},
     resume::ResumeTracker,
     shutdown,
     subtitle::{SubtitleRenderer, SubtitleTrack},
     terminal::clear_screen_and_images,
 };
 
-use super::super::playlist::{PlaylistControls, PlaylistStep};
-use super::super::terminal_input::read_input_events;
 #[cfg(test)]
 use super::metadata::{container_display_name, format_file_size};
 #[cfg(test)]
@@ -507,4 +507,5 @@ impl<W: Write> PlaybackSession<'_, W> {
 }
 
 #[cfg(test)]
+#[path = "tests/session.rs"]
 mod tests;

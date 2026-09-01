@@ -19,13 +19,13 @@ mod tracks;
 mod ui;
 mod view;
 
-pub(super) use startup::play;
+pub(crate) use startup::play;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PlaybackOptions {
-    pub(super) resume_enabled: bool,
-    pub(super) autoplay_next: bool,
-    pub(super) volume_max: u16,
-    pub(super) accent_color: [u8; 3],
-    pub(super) force_media_title: Option<std::sync::Arc<str>>,
+pub(crate) struct PlaybackOptions {
+    pub(crate) resume_enabled: bool,
+    pub(crate) autoplay_next: bool,
+    pub(crate) volume_max: u16,
+    pub(crate) accent_color: [u8; 3],
+    pub(crate) force_media_title: Option<std::sync::Arc<str>>,
 }

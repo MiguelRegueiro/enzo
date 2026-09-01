@@ -8,33 +8,33 @@ use std::{
 use crate::media::is_remote_url_text;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PlaylistStep {
+pub(crate) enum PlaylistStep {
     Previous,
     Next,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct PlaylistControls {
-    pub(super) previous_available: bool,
-    pub(super) next_available: bool,
+pub(crate) struct PlaylistControls {
+    pub(crate) previous_available: bool,
+    pub(crate) next_available: bool,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct PlaylistView {
-    pub(super) controls: PlaylistControls,
-    pub(super) labels: Arc<[Arc<str>]>,
-    pub(super) current: usize,
+pub(crate) struct PlaylistView {
+    pub(crate) controls: PlaylistControls,
+    pub(crate) labels: Arc<[Arc<str>]>,
+    pub(crate) current: usize,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Playlist {
+pub(crate) struct Playlist {
     entries: Vec<PathBuf>,
     labels: Arc<[Arc<str>]>,
     current: usize,
 }
 
 impl Playlist {
-    pub(super) fn from_opened_path(path: PathBuf) -> Self {
+    pub(crate) fn from_opened_path(path: PathBuf) -> Self {
         if is_remote_url_text(&path.as_os_str().to_string_lossy()) {
             return Self::single(path);
         }
@@ -81,18 +81,18 @@ impl Playlist {
         }
     }
 
-    pub(super) fn current(&self) -> &Path {
+    pub(crate) fn current(&self) -> &Path {
         &self.entries[self.current]
     }
 
-    pub(super) fn controls(&self) -> PlaylistControls {
+    pub(crate) fn controls(&self) -> PlaylistControls {
         PlaylistControls {
             previous_available: self.current > 0,
             next_available: self.current + 1 < self.entries.len(),
         }
     }
 
-    pub(super) fn view(&self) -> PlaylistView {
+    pub(crate) fn view(&self) -> PlaylistView {
         PlaylistView {
             controls: self.controls(),
             labels: Arc::clone(&self.labels),
@@ -100,7 +100,7 @@ impl Playlist {
         }
     }
 
-    pub(super) fn step(&mut self, step: PlaylistStep) -> Option<&Path> {
+    pub(crate) fn step(&mut self, step: PlaylistStep) -> Option<&Path> {
         match step {
             PlaylistStep::Previous if self.current > 0 => {
                 self.current -= 1;
@@ -114,7 +114,7 @@ impl Playlist {
         }
     }
 
-    pub(super) fn select(&mut self, index: usize) -> Option<&Path> {
+    pub(crate) fn select(&mut self, index: usize) -> Option<&Path> {
         if index >= self.entries.len() {
             return None;
         }
@@ -245,57 +245,5 @@ fn trim_leading_zeroes(bytes: &[u8]) -> &[u8] {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("enzo-playlist-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir(&dir).expect("temp dir should be created");
-        dir
-    }
-
-    #[test]
-    fn folder_playlist_uses_natural_video_order() {
-        let dir = test_dir("natural-order");
-        let ep1 = dir.join("Episode 1.mkv");
-        let ep2 = dir.join("Episode 2.mkv");
-        let ep10 = dir.join("Episode 10.mkv");
-        let ignored = dir.join("Episode 3.srt");
-        fs::write(&ep10, "").expect("video should be written");
-        fs::write(&ignored, "").expect("subtitle should be written");
-        fs::write(&ep1, "").expect("video should be written");
-        fs::write(&ep2, "").expect("video should be written");
-
-        let mut playlist = Playlist::from_opened_path(ep2.clone());
-
-        assert!(playlist.controls().previous_available);
-        assert!(playlist.controls().next_available);
-        assert_eq!(playlist.step(PlaylistStep::Previous), Some(ep1.as_path()));
-        assert_eq!(playlist.step(PlaylistStep::Next), Some(ep2.as_path()));
-        assert_eq!(playlist.step(PlaylistStep::Next), Some(ep10.as_path()));
-        assert_eq!(playlist.step(PlaylistStep::Next), None);
-
-        let view = playlist.view();
-        assert_eq!(view.current, 2);
-        assert_eq!(
-            view.labels.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
-            ["Episode 1.mkv", "Episode 2.mkv", "Episode 10.mkv"]
-        );
-        assert_eq!(playlist.select(0), Some(ep1.as_path()));
-        assert_eq!(playlist.select(3), None);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn remote_url_has_no_folder_controls() {
-        let playlist = Playlist::from_opened_path(PathBuf::from("https://example.com/video.mp4"));
-
-        assert_eq!(
-            playlist.current(),
-            Path::new("https://example.com/video.mp4")
-        );
-        assert_eq!(playlist.controls(), PlaylistControls::default());
-    }
-}
+#[path = "tests/media_playlist.rs"]
+mod tests;
