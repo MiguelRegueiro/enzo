@@ -259,6 +259,29 @@ fn loads_utf16le_external_subtitle_with_bom() {
 }
 
 #[test]
+fn loads_legacy_encoded_external_subtitle() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("enzo-legacy-subtitle-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir(&temp_dir).expect("temp dir should be created");
+    let subtitle = temp_dir.join("movie.srt");
+    fs::write(
+        &subtitle,
+        b"1\r\n00:00:01,000 --> 00:00:03,000\r\nMariah Carey. Beyonc\xe9.\r\n",
+    )
+    .expect("subtitle fixture should be written");
+
+    let track = SubtitleTrack::load(&subtitle).expect("legacy subtitle should load");
+
+    assert_eq!(
+        track.active_lines(Duration::from_secs(1)),
+        Some(vec![String::from("Mariah Carey. Beyonc\u{e9}.")])
+    );
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
 fn loads_embedded_srt_subtitle_when_ffmpeg_is_available() {
     if Command::new("ffmpeg").arg("-version").output().is_err() {
         return;

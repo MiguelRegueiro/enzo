@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 
 use super::{
     ass::{
@@ -400,7 +401,21 @@ fn decode_subtitle_text(bytes: &[u8]) -> Result<String> {
     if let Some(bytes) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         return decode_utf16_subtitle(bytes, false);
     }
-    String::from_utf8(bytes.to_vec()).context("subtitle file is not valid UTF-8")
+    if let Ok(text) = str::from_utf8(bytes) {
+        return Ok(text.to_owned());
+    }
+
+    decode_legacy_subtitle(bytes)
+}
+
+fn decode_legacy_subtitle(bytes: &[u8]) -> Result<String> {
+    let mut detector = EncodingDetector::new(Iso2022JpDetection::Allow);
+    detector.feed(bytes, true);
+    let encoding = detector.guess(None, Utf8Detection::Deny);
+    let text = encoding
+        .decode_without_bom_handling_and_without_replacement(bytes)
+        .with_context(|| format!("subtitle file is not valid {}", encoding.name()))?;
+    Ok(text.into_owned())
 }
 
 fn decode_utf16_subtitle(bytes: &[u8], little_endian: bool) -> Result<String> {
