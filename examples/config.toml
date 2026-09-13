@@ -12,3 +12,7 @@ autoplay_next = true
 # Overlay accent used for progress, selection markers, and scrollbars.
 # Hex colors must be quoted because # begins a TOML comment.
 accent_color = "#ef4444"
+
+# Last confirmed custom color, remembered even while a preset is active.
+# Options saves this automatically; it does not change the active accent.
+# custom_accent_color = "#123abc"

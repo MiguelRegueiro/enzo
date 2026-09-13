@@ -156,6 +156,10 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 action: "Toggle help",
             },
             HelpRow {
+                key: "o",
+                action: "Options",
+            },
+            HelpRow {
                 key: "Esc",
                 action: "Close",
             },

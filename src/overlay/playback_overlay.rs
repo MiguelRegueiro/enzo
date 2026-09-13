@@ -31,6 +31,30 @@ pub(crate) struct PlaybackOverlay {
 }
 
 impl PlaybackOverlay {
+    pub(crate) fn set_accent_color(&mut self, color: [u8; 3]) {
+        self.palette = OverlayPalette::new(color);
+    }
+
+    pub(crate) fn options_action(
+        &mut self,
+        context: OverlayHitContext,
+        state: &super::OptionsMenuState,
+        point: OverlayHitPoint,
+    ) -> Option<super::OptionsAction> {
+        super::options_overlay::options_action(
+            OverlayRenderContext {
+                width: context.width,
+                height: context.height,
+                scale_percent: context.scale_percent,
+                terminal_cols: context.terminal_cols,
+                terminal_rows: context.terminal_rows,
+            },
+            state,
+            point,
+            self.font.as_mut(),
+        )
+    }
+
     pub(crate) fn new(fonts: &FontSystem, accent_color: [u8; 3]) -> Self {
         let mut font = fonts
             .resolve_all(FontRole::Ui)

@@ -110,3 +110,41 @@ fn ctrl_c_maps_to_close_without_reserving_plain_c() {
         PlaybackCommand::None
     );
 }
+
+#[test]
+fn options_input_keeps_hex_keys_out_of_playback_commands() {
+    for ch in ['a', 'c', '9', '0', 'q', 'o', '#'] {
+        assert_eq!(
+            options_input(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+            Some(OptionsInput::Character(ch))
+        );
+    }
+    assert_eq!(
+        options_input(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Some(OptionsInput::Close)
+    );
+    assert_eq!(
+        options_input(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        Some(OptionsInput::Close)
+    );
+    assert_eq!(
+        options_input(&KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT)),
+        None
+    );
+}
+
+#[test]
+fn control_keys_map_to_hex_word_editing() {
+    for (key, expected) in [
+        (KeyCode::Left, OptionsInput::Home),
+        (KeyCode::Right, OptionsInput::End),
+        (KeyCode::Backspace, OptionsInput::DeleteToStart),
+        (KeyCode::Char('w'), OptionsInput::DeleteToStart),
+        (KeyCode::Delete, OptionsInput::DeleteToEnd),
+    ] {
+        assert_eq!(
+            options_input(&KeyEvent::new(key, KeyModifiers::CONTROL)),
+            Some(expected)
+        );
+    }
+}

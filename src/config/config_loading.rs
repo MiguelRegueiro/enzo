@@ -95,7 +95,7 @@ pub(crate) fn config_dir() -> Option<PathBuf> {
     config_home().map(|home| home.join("enzo"))
 }
 
-fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     config_dir().map(|directory| directory.join("config.toml"))
 }
 

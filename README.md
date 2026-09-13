@@ -92,6 +92,23 @@ accent_color = "#ef4444"
 
 `volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
 
+Press `o` during playback to open Options. Use Left/Right or the arrow buttons to
+cycle accent presets. Custom restores the last confirmed custom color, or shows
+an empty field with a `#RRGGBB` placeholder if none has been set. The optional
+`custom_accent_color` config entry remembers that value across preset changes
+and restarts; `accent_color` remains the active color. Both use `#RRGGBB` format.
+Remembered values leave the arrows free to cycle until you start editing.
+Left/Right keeps cycling until a hex digit is entered, then moves the caret;
+clearing all digits restores cycling. Home/End, Backspace, Delete, Ctrl+A, and
+Ctrl+Left/Right/Backspace/Delete are supported. Tab or Up/Down switches between
+the field and the preset selector. Enter confirms and closes the panel, saving
+a valid custom color. Valid custom input previews immediately; incomplete or
+empty input restores the last saved accent. Esc/Ctrl+C closes the panel and
+discards an unconfirmed edit. Presets apply and save immediately. Changes update
+only the accent settings in the active config file, including a path supplied with `--config`, preserving
+other settings and comments. Default removes the override. If saving fails, the
+panel reports the error without changing the saved color.
+
 <details>
 <summary><strong>Controls</strong></summary>
 
@@ -104,6 +121,7 @@ accent_color = "#ef4444"
 - `v` toggles subtitles
 - `i` shows media information; `I` pins or unpins it
 - `p` opens the playlist menu
+- `o` opens Options
 - Page Up / Page Down play the previous/next video in the same folder
 - `?` toggles help; Esc closes open panels
 - Left/right arrows seek by 5 seconds

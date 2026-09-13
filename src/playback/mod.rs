@@ -9,6 +9,7 @@ mod engine;
 mod interaction;
 mod layout;
 mod metadata;
+mod options;
 mod pointer;
 mod resume_selection;
 mod seek;
@@ -27,5 +28,7 @@ pub(crate) struct PlaybackOptions {
     pub(crate) autoplay_next: bool,
     pub(crate) volume_max: u16,
     pub(crate) accent_color: [u8; 3],
+    pub(crate) custom_accent_color: Option<[u8; 3]>,
+    pub(crate) config_path: Option<std::path::PathBuf>,
     pub(crate) force_media_title: Option<std::sync::Arc<str>>,
 }

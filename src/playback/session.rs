@@ -77,6 +77,7 @@ pub(super) enum PlaybackOutcome {
 }
 
 pub(super) struct PlaybackSessionResult {
+    pub(super) accent_color: [u8; 3],
     pub(super) outcome: PlaybackOutcome,
     pub(super) carryover: PlaybackCarryover,
 }
@@ -133,8 +134,19 @@ impl<W: Write> PlaybackSession<'_, W> {
             }
             session.poll_backends()?;
 
-            let input = read_input_events()?;
+            let input = read_input_events(session.ui.options.state.is_some())?;
             let input_at = Instant::now();
+            if let Some(event) = input.options_event {
+                let outcome = session.ui.options.input(event);
+                session
+                    .view
+                    .overlay
+                    .set_accent_color(session.ui.options.preview_color());
+                session.view.dirty = session.view.have_frame;
+                if let Some(outcome) = outcome {
+                    break outcome;
+                }
+            }
             session.poll_loaded_subtitles(input_at);
             session.note_mouse_activity(input.mouse_activity, input_at);
             session
@@ -171,8 +183,10 @@ impl<W: Write> PlaybackSession<'_, W> {
                 break PlaybackOutcome::Completed;
             }
         };
+        let accent_color = session.ui.options.color;
         let carryover = session.finish(playback_outcome)?;
         Ok(PlaybackSessionResult {
+            accent_color,
             outcome: playback_outcome,
             carryover,
         })
@@ -491,6 +505,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             volume_percent: self.engine.volume_percent,
             volume_max: self.engine.volume_max,
             media_info_pinned: self.ui.media_info.pinned(),
+            custom_accent_color: self.ui.options.custom_color,
         };
         let resume_result = if outcome.clears_resume() {
             self.resume.clear()

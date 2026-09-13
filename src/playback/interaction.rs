@@ -108,6 +108,19 @@ impl<W: Write> InteractionContext<'_, W> {
         command: PlaybackCommand,
         input_at: Instant,
     ) -> Result<Option<PlaybackOutcome>> {
+        if command == PlaybackCommand::ToggleOptions {
+            self.release_keyboard_seek_preview()?;
+            self.close_transient_ui();
+            self.ui.options.open();
+            self.view
+                .overlay
+                .set_accent_color(self.ui.options.preview_color());
+            self.view.dirty = self.view.have_frame;
+            return Ok(None);
+        }
+        if self.ui.options.state.is_some() {
+            return Ok(None);
+        }
         match command {
             PlaybackCommand::Quit => return Ok(Some(PlaybackOutcome::Quit)),
             PlaybackCommand::QuitWithoutSaving => {
@@ -301,7 +314,7 @@ impl<W: Write> InteractionContext<'_, W> {
             }
             PlaybackCommand::ConfirmPicker => self.confirm_open_picker(input_at)?,
             PlaybackCommand::PlaylistFirst | PlaybackCommand::PlaylistLast => {}
-            PlaybackCommand::None => {}
+            PlaybackCommand::None | PlaybackCommand::ToggleOptions => {}
         }
         Ok(None)
     }
@@ -331,6 +344,31 @@ impl<W: Write> InteractionContext<'_, W> {
         mouse_events: Vec<PlaybackMouse>,
         input_at: Instant,
     ) -> Result<Option<PlaybackOutcome>> {
+        if self.ui.options.state.is_some() {
+            let context = self.overlay_hit_context();
+            for mouse in mouse_events {
+                let action = match mouse {
+                    PlaybackMouse::ScrollUp => Some(crate::overlay::OptionsAction::Cycle(-1)),
+                    PlaybackMouse::ScrollDown => Some(crate::overlay::OptionsAction::Cycle(1)),
+                    PlaybackMouse::Down { column, row } => {
+                        mouse_canvas_position(column, row, self.view.canvas).and_then(|point| {
+                            self.ui.options.state.as_ref().and_then(|state| {
+                                self.view.overlay.options_action(context, state, point)
+                            })
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    self.ui.options.action(action);
+                    self.view
+                        .overlay
+                        .set_accent_color(self.ui.options.preview_color());
+                    self.view.dirty = self.view.have_frame;
+                }
+            }
+            return Ok(None);
+        }
         if self.ui.help_visible {
             for mouse in mouse_events {
                 match mouse {
