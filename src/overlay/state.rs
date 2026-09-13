@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Duration};
 
 #[derive(Clone)]
 pub(crate) struct OverlayState {
+    pub(crate) options: Option<super::OptionsMenuState>,
     pub(crate) position: Duration,
     pub(crate) duration: Option<Duration>,
     pub(crate) paused: bool,

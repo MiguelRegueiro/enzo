@@ -21,6 +21,7 @@ pub(crate) enum PlaybackCommand {
     ShowMediaInfo,
     ToggleMediaInfo,
     ToggleHelp,
+    ToggleOptions,
     CloseTransientUi,
     ConfirmPicker,
     PlaylistPrevious,
@@ -37,6 +38,59 @@ pub(crate) struct PlaybackInput {
     pub(crate) mouse_activity: bool,
     pub(crate) mouse_events: Vec<PlaybackMouse>,
     pub(crate) text: Option<String>,
+    pub(crate) options_event: Option<OptionsInput>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum OptionsInput {
+    Cycle(i32),
+    Focus,
+    Confirm,
+    Close,
+    Character(char),
+    Backspace,
+    Delete,
+    Home,
+    End,
+    SelectAll,
+    DeleteToStart,
+    DeleteToEnd,
+    Paste(String),
+}
+
+fn options_input(key: &KeyEvent) -> Option<OptionsInput> {
+    if playback_command_for_event(key) == PlaybackCommand::CloseTransientUi {
+        return Some(OptionsInput::Close);
+    }
+    if key.modifiers == KeyModifiers::CONTROL {
+        return match key.code {
+            KeyCode::Char('a') => Some(OptionsInput::SelectAll),
+            KeyCode::Left => Some(OptionsInput::Home),
+            KeyCode::Right => Some(OptionsInput::End),
+            // Some terminals encode Ctrl+Backspace as Ctrl+W.
+            KeyCode::Backspace | KeyCode::Char('w') => Some(OptionsInput::DeleteToStart),
+            KeyCode::Delete => Some(OptionsInput::DeleteToEnd),
+            _ => None,
+        };
+    }
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Left => Some(OptionsInput::Cycle(-1)),
+        KeyCode::Right => Some(OptionsInput::Cycle(1)),
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => Some(OptionsInput::Focus),
+        KeyCode::Enter => Some(OptionsInput::Confirm),
+        KeyCode::Backspace => Some(OptionsInput::Backspace),
+        KeyCode::Delete => Some(OptionsInput::Delete),
+        KeyCode::Home => Some(OptionsInput::Home),
+        KeyCode::End => Some(OptionsInput::End),
+        KeyCode::Char(ch) => Some(OptionsInput::Character(ch)),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +163,7 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
         KeyCode::Char('i') => PlaybackCommand::ShowMediaInfo,
         KeyCode::Char('I') => PlaybackCommand::ToggleMediaInfo,
         KeyCode::Char('?') => PlaybackCommand::ToggleHelp,
+        KeyCode::Char('o') => PlaybackCommand::ToggleOptions,
         KeyCode::Esc => PlaybackCommand::CloseTransientUi,
         KeyCode::Enter => PlaybackCommand::ConfirmPicker,
         KeyCode::PageUp => PlaybackCommand::PlaylistPrevious,
@@ -127,12 +182,13 @@ fn playback_command_for_event(key: &KeyEvent) -> PlaybackCommand {
     }
 }
 
-pub(crate) fn read_input_events() -> Result<PlaybackInput> {
+pub(crate) fn read_input_events(options_open: bool) -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
         mouse_activity: false,
         mouse_events: Vec::new(),
         text: None,
+        options_event: None,
     };
     let mut seek_seconds = 0_i32;
     let mut picker_direction = 0_i32;
@@ -148,7 +204,20 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
+                if options_open {
+                    if let Some(event) = options_input(&key) {
+                        input.options_event = Some(event);
+                        // Process each input before reading the next: opening/closing
+                        // an editor or menu changes who owns subsequent keys.
+                        break;
+                    }
+                    continue;
+                }
                 let command = playback_command_for_event(&key);
+                if command == PlaybackCommand::ToggleOptions {
+                    input.command = command;
+                    break;
+                }
                 if matches!(
                     command,
                     PlaybackCommand::Quit | PlaybackCommand::QuitWithoutSaving
@@ -207,9 +276,17 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                     }
                     _ => {}
                 }
+                if options_open && !matches!(mouse.kind, MouseEventKind::Moved) {
+                    break;
+                }
             }
             Event::Paste(text) => {
-                input.text = Some(text);
+                if options_open {
+                    input.options_event = Some(OptionsInput::Paste(text));
+                    break;
+                } else {
+                    input.text = Some(text);
+                }
             }
             _ => {}
         }

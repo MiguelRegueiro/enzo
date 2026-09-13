@@ -9,6 +9,7 @@ fn defaults_match_existing_playback_behavior() {
             resume: true,
             autoplay_next: true,
             accent_color: DEFAULT_ACCENT_COLOR,
+            custom_accent_color: None,
         }
     );
 }
@@ -34,6 +35,7 @@ fn config_rejects_invalid_values_and_unknown_keys() {
         "accent_color = \"#abcd\"\n",
         "accent_color = \"#gg0000\"\n",
         "accent_color = #ef4444\n",
+        "custom_accent_color = \"#invalid\"\n",
     ] {
         assert!(Config::from_str(contents).is_err(), "contents: {contents}");
     }

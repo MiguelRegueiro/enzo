@@ -58,6 +58,7 @@ fn config_values_supply_playback_defaults() {
             resume: false,
             autoplay_next: false,
             accent_color: [1, 2, 3],
+            custom_accent_color: Some([4, 5, 6]),
         },
     );
 
@@ -65,6 +66,7 @@ fn config_values_supply_playback_defaults() {
     assert!(!options.resume_enabled);
     assert!(!options.autoplay_next);
     assert_eq!(options.accent_color, [1, 2, 3]);
+    assert_eq!(options.custom_accent_color, Some([4, 5, 6]));
 }
 
 #[test]
@@ -80,6 +82,7 @@ fn command_line_values_override_config() {
             resume: false,
             autoplay_next: false,
             accent_color: [1, 2, 3],
+            custom_accent_color: None,
         },
     );
 
@@ -100,7 +103,10 @@ fn custom_config_path_is_forwarded_to_loader() {
     )
     .expect("custom config path should parse");
 
-    assert!(matches!(action, Action::Run(_)));
+    let Action::Run(options) = action else {
+        panic!("expected playback options")
+    };
+    assert_eq!(options.config_path.as_deref(), Some(path.as_path()));
 }
 
 #[test]

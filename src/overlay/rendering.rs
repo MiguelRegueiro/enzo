@@ -10,9 +10,10 @@ use super::{
     },
     geometry::{OverlayMetrics, fallback_text_scale, rounded_radius, text_size},
     help_overlay::draw_help_panel,
+    options_overlay::draw_options_menu,
     playlist_overlay::draw_playlist_menu,
     raster::{RoundedRect, fill_rounded_rect},
-    state::OverlayState,
+    state::{OverlayRenderContext, OverlayState},
     style::{OverlayPalette, PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
     text::draw_overlay_text,
     time_progress::{
@@ -36,6 +37,22 @@ pub(super) fn render_overlay_rgb(
     font: Option<&mut FontRenderer>,
 ) {
     if width == 0 || height == 0 || frame.len() < (width as usize * height as usize * 3) {
+        return;
+    }
+    if let Some(options) = state.options.as_ref() {
+        draw_options_menu(
+            font,
+            frame,
+            OverlayRenderContext {
+                width,
+                height,
+                terminal_cols,
+                terminal_rows,
+                scale_percent,
+            },
+            options,
+            acrylic,
+        );
         return;
     }
     if !state.visible

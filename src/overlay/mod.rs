@@ -5,6 +5,7 @@ mod buttons;
 mod click_targets;
 mod geometry;
 mod help_overlay;
+mod options_overlay;
 mod playback_overlay;
 mod playlist_overlay;
 mod raster;
@@ -15,6 +16,7 @@ mod text;
 mod time_progress;
 mod top_messages;
 
+pub(crate) use options_overlay::{HexInputState, OptionsAction, OptionsMenuState};
 pub(crate) use playback_overlay::PlaybackOverlay;
 pub(crate) use state::{
     AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext, OverlayHitPoint,

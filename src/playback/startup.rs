@@ -22,6 +22,7 @@ use super::{
     engine::PlaybackEngine,
     layout::terminal_target_and_canvas,
     metadata::file_info_summary,
+    options::OptionsMenu,
     resume_selection::{
         restore_subtitle_selection, resume_available, sync_resume_audio, sync_resume_subtitle,
     },
@@ -36,7 +37,7 @@ use super::{
 pub(crate) fn play(
     path: PathBuf,
     sub_file: Option<&Path>,
-    options: PlaybackOptions,
+    mut options: PlaybackOptions,
     font_system: &FontSystem,
 ) -> Result<()> {
     let mut playlist = Playlist::from_opened_path(path);
@@ -63,6 +64,7 @@ pub(crate) fn play(
             font_system,
         )?;
         carryover = result.carryover;
+        options.accent_color = result.accent_color;
         let Some(change) =
             next_playlist_change(result.outcome, playlist_controls, options.autoplay_next)
         else {
@@ -154,6 +156,11 @@ fn play_current(
             .take_error()
             .map(|_| PlaybackUi::status("RESUME STATE UNAVAILABLE", engine.started_at))
     };
+    let mut options_menu = OptionsMenu::new(options.accent_color, options.config_path.clone());
+    options_menu.custom_color = carryover
+        .custom_accent_color
+        .or(options_menu.custom_color)
+        .or(options.custom_accent_color);
     let ui = PlaybackUi::new(
         resolve_media_title(&path, force_media_title),
         media_info,
@@ -161,6 +168,7 @@ fn play_current(
         carryover.media_info_pinned,
         playlist.current,
         playlist.labels,
+        options_menu,
     );
     let seeking = SeekCoordinator::new(PendingSeek {
         video_generation: engine.video.seek_generation(),

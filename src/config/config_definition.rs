@@ -12,6 +12,7 @@ pub(crate) struct Config {
     pub(crate) resume: bool,
     pub(crate) autoplay_next: bool,
     pub(crate) accent_color: [u8; 3],
+    pub(crate) custom_accent_color: Option<[u8; 3]>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -21,6 +22,7 @@ struct ConfigFile {
     resume: Option<bool>,
     autoplay_next: Option<bool>,
     accent_color: Option<String>,
+    custom_accent_color: Option<String>,
 }
 
 impl Default for Config {
@@ -30,6 +32,7 @@ impl Default for Config {
             resume: true,
             autoplay_next: true,
             accent_color: DEFAULT_ACCENT_COLOR,
+            custom_accent_color: None,
         }
     }
 }
@@ -51,11 +54,16 @@ impl Config {
                 .map(parse_hex_color)
                 .transpose()?
                 .unwrap_or(DEFAULT_ACCENT_COLOR),
+            custom_accent_color: parsed
+                .custom_accent_color
+                .as_deref()
+                .map(parse_hex_color)
+                .transpose()?,
         })
     }
 }
 
-fn parse_hex_color(value: &str) -> Result<[u8; 3]> {
+pub(crate) fn parse_hex_color(value: &str) -> Result<[u8; 3]> {
     let bytes = value.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' {
         bail!("accent_color must use #RRGGBB format");

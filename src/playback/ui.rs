@@ -10,7 +10,9 @@ use crate::{
     video::VideoDecoder,
 };
 
-use super::{layout::CanvasFrame, subtitles::SubtitleCatalog, tracks::AudioCatalog};
+use super::{
+    layout::CanvasFrame, options::OptionsMenu, subtitles::SubtitleCatalog, tracks::AudioCatalog,
+};
 
 const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
@@ -77,6 +79,7 @@ impl MediaInfoOverlay {
 }
 
 pub(super) struct PlaybackUi {
+    pub(super) options: OptionsMenu,
     pub(super) playlist_menu_open: bool,
     pub(super) playlist_menu_offset: usize,
     pub(super) playlist_menu_focus: Option<usize>,
@@ -104,8 +107,10 @@ impl PlaybackUi {
         media_info_pinned: bool,
         playlist_current: usize,
         playlist_labels: Arc<[Arc<str>]>,
+        options: OptionsMenu,
     ) -> Self {
         Self {
+            options,
             playlist_menu_open: false,
             playlist_menu_offset: 0,
             playlist_menu_focus: None,
@@ -154,7 +159,7 @@ impl PlaybackUi {
         canvas: CanvasFrame,
         decoder: &VideoDecoder,
     ) -> OverlayState {
-        overlay_state(
+        let mut state = overlay_state(
             position,
             scrub_position,
             duration,
@@ -186,7 +191,9 @@ impl PlaybackUi {
                 .state(audio.selected(), canvas, decoder, paused, Instant::now()),
             self.help_visible,
             self.help_scroll_offset,
-        )
+        );
+        state.options = self.options.overlay_state();
+        state
     }
 }
 
@@ -219,6 +226,7 @@ pub(super) fn overlay_state(
 ) -> OverlayState {
     let now = Instant::now();
     OverlayState {
+        options: None,
         position: scrub_position.unwrap_or(position),
         duration,
         paused,
