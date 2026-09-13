@@ -25,7 +25,6 @@ struct HelpRow {
 
 #[derive(Clone, Copy)]
 enum HelpLine {
-    Title(&'static str),
     Section(&'static str),
     Row(HelpRow),
 }
@@ -274,20 +273,6 @@ fn draw_help_column(
             break;
         }
         match *line {
-            HelpLine::Title(title) => {
-                draw_overlay_text(
-                    font.as_deref_mut(),
-                    frame,
-                    width,
-                    height,
-                    column_x,
-                    y.saturating_add(geometry.key_pad_y),
-                    fallback_scale,
-                    title,
-                    TEXT_COLOR,
-                    248,
-                );
-            }
             HelpLine::Section(title) => {
                 draw_overlay_text(
                     font.as_deref_mut(),
@@ -561,7 +546,6 @@ fn help_geometry(
 fn help_columns(column_count: usize) -> Vec<Vec<HelpLine>> {
     let column_count = column_count.clamp(1, MAX_HELP_COLUMNS);
     let mut columns = vec![Vec::new(); column_count];
-    columns[0].push(HelpLine::Title("Active Controls"));
     for section in HELP_SECTIONS {
         let column = if column_count == 1 {
             0
@@ -626,7 +610,6 @@ fn help_column_content_widths(
             let heading_width = lines
                 .iter()
                 .filter_map(|line| match line {
-                    HelpLine::Title(title) => Some(*title),
                     HelpLine::Section(title) => Some(*title),
                     HelpLine::Row(_) => None,
                 })
@@ -637,7 +620,7 @@ fn help_column_content_widths(
                 .iter()
                 .filter_map(|line| match line {
                     HelpLine::Row(row) => Some(row),
-                    HelpLine::Title(_) | HelpLine::Section(_) => None,
+                    HelpLine::Section(_) => None,
                 })
                 .map(|row| {
                     bitmap_text_width(row.key, fallback_scale)

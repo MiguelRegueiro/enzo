@@ -73,15 +73,21 @@ fn help_does_not_sprawl_on_fullscreen_canvases() {
 }
 
 #[test]
-fn help_title_lives_in_the_first_content_column() {
+fn help_columns_start_with_aligned_section_titles() {
     let columns = help_columns(3);
 
     assert!(matches!(
         columns[0].first(),
-        Some(HelpLine::Title("Active Controls"))
+        Some(HelpLine::Section("Playback"))
     ));
-    assert!(!matches!(columns[1].first(), Some(HelpLine::Title(_))));
-    assert!(!matches!(columns[2].first(), Some(HelpLine::Title(_))));
+    assert!(matches!(
+        columns[1].first(),
+        Some(HelpLine::Section("Audio"))
+    ));
+    assert!(matches!(
+        columns[2].first(),
+        Some(HelpLine::Section("Info"))
+    ));
 }
 
 #[test]
