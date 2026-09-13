@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Frame-rate drops and delayed subtitle display when rendering or seeking with complex ASS tracks.
+- External subtitle files that use legacy character encodings instead of UTF-8.
 
 ## [1.1.0] - 2026-08-12
 
