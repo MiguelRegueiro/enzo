@@ -9,14 +9,14 @@ Everything in `internal.h` and `audio_output.h` is private to this directory.
 ## ABI contract
 
 `media.h` and `text_layout.h` are the canonical C interfaces.
-`src/media/media_ffi.rs` and `src/font/text_shaping.rs` are their exact Rust mirrors, so
-every change to an ABI function, type, constant, or ownership rule must update
-both sides in the same commit.
+`src/decoder_backend/backend_bindings.rs` and `src/font/text_shaping.rs` are
+their Rust counterparts, so every change to an ABI function, type, constant,
+or ownership rule must update both sides in the same commit.
 
-Rust code outside the `media` module must use safe wrappers instead of calling
-the raw FFI declarations directly. Before committing an ABI change, run the
-Rust tests, Clippy with warnings denied, the strict C compiler checks, and the
-sanitizer command below.
+Keep raw FFI calls confined to the dedicated native-boundary modules, which
+must expose safe wrappers to the rest of the Rust code. Before committing an
+ABI change, run the Rust tests, Clippy with warnings denied, the strict C
+compiler checks, and the sanitizer command below.
 
 ## Modules
 

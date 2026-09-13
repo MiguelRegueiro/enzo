@@ -5,7 +5,7 @@
  * The complete C ABI consumed by Rust.
  *
  * Keep implementation details out and keep declarations synchronized with
- * src/media/ffi.rs.
+ * src/decoder_backend/backend_bindings.rs.
  */
 
 #include <stddef.h>

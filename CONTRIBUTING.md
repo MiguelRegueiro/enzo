@@ -24,21 +24,29 @@ will use the expected toolchain and components automatically.
 
 ```text
 .
-├── .github/           # CI and release workflows
-├── assets/            # Logo and screenshots
-├── csrc/              # Native media, audio, subtitle, and text code
-├── packaging/         # Distribution packaging files
+├── .github/             # CI and release workflows
+├── assets/              # Logo and screenshots
+├── csrc/                # Native media, audio, subtitle, and text code
+├── packaging/           # Distribution packaging files
 ├── src/
-│   ├── app/           # Launcher, playback state, and interaction
-│   ├── media/         # Rust media and FFI layer
-│   ├── overlay/       # Playback interface and panels
-│   ├── resume/        # Resume data and track restoration
-│   ├── subtitle/      # Subtitle rendering
-│   ├── terminal/      # Terminal lifecycle and Kitty graphics
-│   └── main.rs        # Binary entrypoint
-├── build.rs           # Native build configuration
-├── CHANGELOG.md       # Release notes
-└── Cargo.toml         # Package manifest
+│   ├── audio/           # Audio playback and track discovery
+│   ├── cli/             # Argument parsing and terminal input
+│   ├── config/          # Configuration definitions and loading
+│   ├── decoder_backend/ # Native media bindings and shared helpers
+│   ├── font/            # Font discovery, rasterization, and text shaping
+│   ├── media_source/    # Media source parsing and validation
+│   ├── overlay/         # Playback interface, layout, and rendering
+│   ├── playback/        # Playback orchestration and interaction
+│   ├── playlist/        # Playlist state and navigation
+│   ├── resume/          # Saved playback state and restoration
+│   ├── runtime/         # Process lifecycle and command execution
+│   ├── subtitle/        # Subtitle loading, parsing, and rendering
+│   ├── terminal/        # Terminal lifecycle and Kitty graphics
+│   ├── video/           # Video decoding, storage, and timing
+│   └── main.rs          # Binary entrypoint
+├── build.rs             # Native build configuration
+├── CHANGELOG.md         # Release notes
+└── Cargo.toml           # Package manifest
 ```
 
 ## Development
