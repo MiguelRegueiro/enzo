@@ -98,3 +98,15 @@ fn playback_keys_map_to_commands() {
         PlaybackCommand::CloseTransientUi
     );
 }
+
+#[test]
+fn ctrl_c_maps_to_close_without_reserving_plain_c() {
+    assert_eq!(
+        playback_command_for_event(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL,)),
+        PlaybackCommand::CloseTransientUi
+    );
+    assert_eq!(
+        playback_command_for_event(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
+        PlaybackCommand::None
+    );
+}

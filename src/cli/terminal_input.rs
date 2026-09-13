@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 
 const INPUT_EVENTS_PER_TICK: usize = 64;
 
@@ -117,6 +119,14 @@ fn playback_command_for_key(key: &KeyCode) -> PlaybackCommand {
     }
 }
 
+fn playback_command_for_event(key: &KeyEvent) -> PlaybackCommand {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        PlaybackCommand::CloseTransientUi
+    } else {
+        playback_command_for_key(&key.code)
+    }
+}
+
 pub(crate) fn read_input_events() -> Result<PlaybackInput> {
     let mut input = PlaybackInput {
         command: PlaybackCommand::None,
@@ -138,7 +148,7 @@ pub(crate) fn read_input_events() -> Result<PlaybackInput> {
                 if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     continue;
                 }
-                let command = playback_command_for_key(&key.code);
+                let command = playback_command_for_event(&key);
                 if matches!(
                     command,
                     PlaybackCommand::Quit | PlaybackCommand::QuitWithoutSaving
