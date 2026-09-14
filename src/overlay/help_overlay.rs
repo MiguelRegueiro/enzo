@@ -160,7 +160,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 action: "Options",
             },
             HelpRow {
-                key: "Esc",
+                key: "Esc/Ctrl+C",
                 action: "Close",
             },
         ],
