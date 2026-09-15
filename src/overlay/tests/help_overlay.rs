@@ -86,28 +86,28 @@ fn help_columns_start_with_aligned_section_titles() {
     ));
     assert!(matches!(
         columns[2].first(),
-        Some(HelpLine::Section("Info"))
+        Some(HelpLine::Section("General"))
     ));
 }
 
 #[test]
-fn help_info_lives_in_third_column_when_available() {
+fn help_general_lives_in_third_column_when_available() {
     let columns = help_columns(3);
 
     assert!(
         columns[2]
             .iter()
-            .any(|line| matches!(line, HelpLine::Section("Info")))
+            .any(|line| matches!(line, HelpLine::Section("General")))
     );
     assert!(
         !columns[0]
             .iter()
-            .any(|line| matches!(line, HelpLine::Section("Info")))
+            .any(|line| matches!(line, HelpLine::Section("General")))
     );
     assert!(
         !columns[1]
             .iter()
-            .any(|line| matches!(line, HelpLine::Section("Info")))
+            .any(|line| matches!(line, HelpLine::Section("General")))
     );
 }
 
@@ -120,11 +120,11 @@ fn help_scrollbar_matches_picker_weight() {
 
 #[test]
 fn help_model_keeps_case_sensitive_bindings() {
-    let info = HELP_SECTIONS
+    let general = HELP_SECTIONS
         .iter()
-        .find(|section| section.title == "Info")
-        .expect("info section");
+        .find(|section| section.title == "General")
+        .expect("general section");
 
-    assert!(info.rows.iter().any(|row| row.key == "i"));
-    assert!(info.rows.iter().any(|row| row.key == "I"));
+    assert!(general.rows.iter().any(|row| row.key == "i"));
+    assert!(general.rows.iter().any(|row| row.key == "I"));
 }

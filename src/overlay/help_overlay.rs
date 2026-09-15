@@ -33,7 +33,7 @@ enum HelpLine {
 enum HelpColumn {
     Left,
     Right,
-    Info,
+    General,
 }
 
 #[derive(Clone, Copy)]
@@ -140,8 +140,8 @@ const HELP_SECTIONS: &[HelpSection] = &[
         ],
     },
     HelpSection {
-        title: "Info",
-        wide_column: HelpColumn::Info,
+        title: "General",
+        wide_column: HelpColumn::General,
         rows: &[
             HelpRow {
                 key: "i",
@@ -157,7 +157,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
             },
             HelpRow {
                 key: "o",
-                action: "Options",
+                action: "Options menu",
             },
             HelpRow {
                 key: "Esc/Ctrl+C",
@@ -555,14 +555,14 @@ fn help_columns(column_count: usize) -> Vec<Vec<HelpLine>> {
             0
         } else if column_count == 2 {
             match section.wide_column {
-                HelpColumn::Left | HelpColumn::Info => 0,
+                HelpColumn::Left | HelpColumn::General => 0,
                 HelpColumn::Right => 1,
             }
         } else {
             match section.wide_column {
                 HelpColumn::Left => 0,
                 HelpColumn::Right => 1,
-                HelpColumn::Info => 2,
+                HelpColumn::General => 2,
             }
         };
         columns[column].push(HelpLine::Section(section.title));
