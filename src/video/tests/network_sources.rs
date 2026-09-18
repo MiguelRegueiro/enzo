@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -133,6 +133,72 @@ fn serve_request(stream: &mut TcpStream, routes: &Routes) {
         let _ = stream
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     }
+}
+
+fn referrer_protected_server(
+    expected_referrer: String,
+    content_type: String,
+    body: Vec<u8>,
+) -> TestHttpServer {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test HTTP listener should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("test HTTP listener should become nonblocking");
+    let address = listener
+        .local_addr()
+        .expect("test HTTP listener should have an address");
+    let stopping = Arc::new(AtomicBool::new(false));
+    let thread_stopping = Arc::clone(&stopping);
+    let thread = thread::spawn(move || {
+        while !thread_stopping.load(Ordering::Acquire) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 1024];
+                    while request.len() < 16 * 1024
+                        && !request.windows(4).any(|part| part == b"\r\n\r\n")
+                    {
+                        match stream.read(&mut buffer) {
+                            Ok(0) | Err(_) => break,
+                            Ok(read) => request.extend_from_slice(&buffer[..read]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&request);
+                    let accepted = request.lines().any(|line| {
+                        line.eq_ignore_ascii_case(&format!("Referer: {expected_referrer}"))
+                    });
+                    let response = if accepted {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                    } else {
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .to_string()
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                    if accepted {
+                        let _ = stream.write_all(&body);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    TestHttpServer {
+        address,
+        stopping,
+        thread: Some(thread),
+    }
+}
+
+fn referrer_environment_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn request_path(target: &str) -> Option<&str> {
@@ -266,6 +332,37 @@ fn remote_hls_allows_cross_origin_nonstandard_segments() {
     assert!(pts >= Duration::from_millis(5_950));
     decoder.stop().expect("video decoder should stop");
 
+    let _ = std::fs::remove_file(segment_path);
+}
+
+#[test]
+fn remote_input_forwards_http_referrer() {
+    let Some((segment_path, segment)) = generated_mpeg_ts("remote-referrer", 1) else {
+        return;
+    };
+    let expected_referrer = "https://embed.example/".to_string();
+    let server =
+        referrer_protected_server(expected_referrer.clone(), "video/mp2t".to_string(), segment);
+
+    let _environment = referrer_environment_lock()
+        .lock()
+        .expect("referrer environment lock should not be poisoned");
+    let previous = std::env::var_os("ENZO_HTTP_REFERER");
+    // SAFETY: the lock serializes this test's environment mutation. Other
+    // network tests tolerate an extra Referer header.
+    unsafe { std::env::set_var("ENZO_HTTP_REFERER", &expected_referrer) };
+    let result = probe_video(Path::new(&server.url("/video.ts")));
+    // SAFETY: restores the process environment before the test completes.
+    unsafe {
+        if let Some(previous) = previous {
+            std::env::set_var("ENZO_HTTP_REFERER", previous);
+        } else {
+            std::env::remove_var("ENZO_HTTP_REFERER");
+        }
+    }
+
+    let info = result.expect("referrer-protected stream should open");
+    assert_eq!((info.width, info.height), (16, 16));
     let _ = std::fs::remove_file(segment_path);
 }
 

@@ -7,6 +7,7 @@
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 #include <libavutil/time.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ENZO_IO_TIMEOUT_US (60LL * AV_TIME_BASE)
@@ -27,10 +28,26 @@ enum EnzoInterruptReason {
 struct EnzoInput {
     AVFormatContext *format;
     enum EnzoInputOrigin origin;
+    char *referer;
     const int *stop_flag;
     int64_t deadline_us;
     int interrupt_reason;
 };
+
+static int enzo_referrer_is_safe(const char *referer) {
+    return referer != NULL &&
+        strpbrk(referer, "\r\n") == NULL;
+}
+
+static int enzo_set_referrer_option(
+    AVDictionary **options,
+    const EnzoInput *input
+) {
+    if (input->origin != ENZO_INPUT_NETWORK || input->referer == NULL) {
+        return 0;
+    }
+    return av_dict_set(options, "referer", input->referer, 0);
+}
 
 static const char *enzo_protocol_whitelist(const EnzoInput *input) {
     /*
@@ -166,6 +183,9 @@ static int enzo_io_open(
         );
     }
     if (ret >= 0) {
+        ret = enzo_set_referrer_option(open_options, input);
+    }
+    if (ret >= 0) {
         ret = av_dict_set_int(
             open_options,
             "timeout",
@@ -230,9 +250,18 @@ int enzo_input_open(
         av_free(input);
         return ret;
     }
+    const char *referer = getenv("ENZO_HTTP_REFERER");
+    if (input->origin == ENZO_INPUT_NETWORK && enzo_referrer_is_safe(referer)) {
+        input->referer = av_strdup(referer);
+        if (input->referer == NULL) {
+            av_free(input);
+            return AVERROR(ENOMEM);
+        }
+    }
 
     input->format = avformat_alloc_context();
     if (input->format == NULL) {
+        av_freep(&input->referer);
         av_free(input);
         return AVERROR(ENOMEM);
     }
@@ -253,6 +282,9 @@ int enzo_input_open(
     if (ret >= 0) {
         // Allow HLS media segments served with nonstandard filename extensions.
         ret = av_dict_set(&options, "extension_picky", "0", 0);
+    }
+    if (ret >= 0) {
+        ret = enzo_set_referrer_option(&options, input);
     }
     if (ret >= 0) {
         enzo_input_begin_io(input, stop_flag);
@@ -356,5 +388,6 @@ void enzo_input_close(EnzoInput **input) {
     } else {
         avformat_close_input(&(*input)->format);
     }
+    av_freep(&(*input)->referer);
     av_freep(input);
 }
