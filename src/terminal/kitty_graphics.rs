@@ -26,6 +26,8 @@ pub(crate) const KITTY_IMAGE_IDS: [u32; 2] = [KITTY_IMAGE_ID, KITTY_IMAGE_ID + 1
 pub(crate) const KITTY_PLACEMENT_ID: u32 = 1;
 const KITTY_RAW_CHUNK_BYTES: usize = 3 * 4096 / 4;
 const SHARED_MEMORY_CREATE_ATTEMPTS: usize = 16;
+// Darwin limits POSIX shared-memory names to 31 bytes including the leading slash.
+const SHARED_MEMORY_NAME_MAX_BYTES: usize = 31;
 static SHARED_MEMORY_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -229,11 +231,7 @@ impl SharedMemoryFrame {
     fn create(frame: &[u8]) -> io::Result<Self> {
         for _ in 0..SHARED_MEMORY_CREATE_ATTEMPTS {
             let serial = SHARED_MEMORY_SERIAL.fetch_add(1, Ordering::Relaxed);
-            let name = CString::new(format!(
-                "/enzo-tty-graphics-protocol-{}-{serial}",
-                std::process::id()
-            ))
-            .expect("shared memory name must not contain NUL bytes");
+            let name = shared_memory_name(std::process::id(), serial);
             let fd = unsafe {
                 libc::shm_open(
                     name.as_ptr(),
@@ -269,6 +267,14 @@ impl SharedMemoryFrame {
     fn relinquish(&mut self) {
         self.owned = false;
     }
+}
+
+fn shared_memory_name(process_id: u32, serial: u64) -> CString {
+    // Hex keeps the name below Darwin's 31-byte limit even at the largest
+    // practical process ID and serial number, while preserving uniqueness.
+    let name = format!("/e{process_id:x}-{serial:x}");
+    debug_assert!(name.len() <= SHARED_MEMORY_NAME_MAX_BYTES);
+    CString::new(name).expect("shared memory name must not contain NUL bytes")
 }
 
 impl Drop for SharedMemoryFrame {

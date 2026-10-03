@@ -27,6 +27,7 @@ struct EncryptedHlsFixture {
 struct TestHttpServer {
     address: SocketAddr,
     stopping: Arc<AtomicBool>,
+    requests: Arc<Mutex<Vec<String>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -41,10 +42,12 @@ impl TestHttpServer {
             .expect("test HTTP listener should have an address");
         let stopping = Arc::new(AtomicBool::new(false));
         let thread_stopping = Arc::clone(&stopping);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_requests = Arc::clone(&requests);
         let thread = thread::spawn(move || {
             while !thread_stopping.load(Ordering::Acquire) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => serve_request(&mut stream, &routes),
+                    Ok((mut stream, _)) => serve_request(&mut stream, &routes, &thread_requests),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(2));
                     }
@@ -55,12 +58,20 @@ impl TestHttpServer {
         Self {
             address,
             stopping,
+            requests,
             thread: Some(thread),
         }
     }
 
     fn url(&self, path: &str) -> String {
         format!("http://{}{path}", self.address)
+    }
+
+    fn requests(&self) -> Vec<String> {
+        self.requests
+            .lock()
+            .expect("request log should not poison")
+            .clone()
     }
 }
 
@@ -95,6 +106,7 @@ impl StallingHttpServer {
         Self(TestHttpServer {
             address,
             stopping,
+            requests: Arc::new(Mutex::new(Vec::new())),
             thread: Some(thread),
         })
     }
@@ -104,7 +116,7 @@ impl StallingHttpServer {
     }
 }
 
-fn serve_request(stream: &mut TcpStream, routes: &Routes) {
+fn serve_request(stream: &mut TcpStream, routes: &Routes, requests: &Mutex<Vec<String>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut request = Vec::new();
     let mut buffer = [0_u8; 1024];
@@ -121,6 +133,10 @@ fn serve_request(stream: &mut TcpStream, routes: &Routes) {
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(request_path)
         .unwrap_or("/");
+    requests
+        .lock()
+        .expect("request log should not poison")
+        .push(target.to_owned());
 
     if let Some((content_type, body)) = routes.get(target) {
         let header = format!(
@@ -192,6 +208,7 @@ fn referrer_protected_server(
     TestHttpServer {
         address,
         stopping,
+        requests: Arc::new(Mutex::new(Vec::new())),
         thread: Some(thread),
     }
 }
@@ -304,7 +321,13 @@ fn remote_hls_allows_cross_origin_nonstandard_segments() {
     )]));
 
     let info = probe_video(Path::new(&playlist_server.url("/index.m3u8")))
-        .expect("cross-origin HLS segment should be allowed");
+        .unwrap_or_else(|error| {
+            panic!(
+                "cross-origin HLS segment should be allowed: {error}; playlist requests: {:?}; segment requests: {:?}",
+                playlist_server.requests(),
+                segment_server.requests(),
+            )
+        });
     assert_eq!((info.width, info.height), (16, 16));
     assert!(info.seekable, "finite HLS media should be seekable");
 
@@ -386,8 +409,12 @@ fn remote_live_hls_is_not_seekable() {
         ),
     ]));
 
-    let info =
-        probe_video(Path::new(&server.url("/index.m3u8"))).expect("live HLS media should open");
+    let info = probe_video(Path::new(&server.url("/index.m3u8"))).unwrap_or_else(|error| {
+        panic!(
+            "live HLS media should open: {error}; requests: {:?}",
+            server.requests(),
+        )
+    });
     assert!(!info.seekable, "live HLS media should not be seekable");
 
     let _ = std::fs::remove_file(segment_path);

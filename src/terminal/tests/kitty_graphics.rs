@@ -3,6 +3,12 @@ use std::io::Read;
 use super::*;
 
 #[test]
+fn shared_memory_name_fits_darwin_limit() {
+    let name = shared_memory_name(u32::MAX, u64::MAX);
+    assert!(name.to_bytes().len() <= SHARED_MEMORY_NAME_MAX_BYTES);
+}
+
+#[test]
 fn kitty_direct_frame_sequence_transmits_rgb_at_requested_area() {
     let frame = [0, 0, 0, 255, 255, 255];
     let area = ImageArea {
