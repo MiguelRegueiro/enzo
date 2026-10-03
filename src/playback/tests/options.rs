@@ -519,3 +519,19 @@ fn playback_controls_autohide_saves_presets_never_and_custom_seconds() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn autohide_custom_editor_keeps_quit_shortcuts_available() {
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, None);
+    menu.open();
+    menu.input(OptionsInput::Navigate(-1));
+    menu.input(OptionsInput::Cycle(-1));
+    assert_eq!(
+        menu.input(OptionsInput::Character('q')),
+        Some(PlaybackOutcome::Quit)
+    );
+    assert_eq!(
+        menu.input(OptionsInput::Character('Q')),
+        Some(PlaybackOutcome::QuitWithoutSaving)
+    );
+}
