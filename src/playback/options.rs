@@ -149,7 +149,17 @@ impl OptionsMenu {
         }
         if self.selected_setting == OptionsSetting::PlaybackControlsAutohide {
             match input {
-                OptionsInput::Character('q') => return Some(PlaybackOutcome::Quit),
+                OptionsInput::Character('q') => {
+                    if let Some(seconds) = state
+                        .seconds_editor
+                        .as_ref()
+                        .and_then(|editor| editor.text.parse::<u16>().ok())
+                        .filter(|seconds| (1..=9_999).contains(seconds))
+                    {
+                        self.set_playback_controls_autohide(seconds);
+                    }
+                    return Some(PlaybackOutcome::Quit);
+                }
                 OptionsInput::Character('Q') => return Some(PlaybackOutcome::QuitWithoutSaving),
                 _ => {}
             }

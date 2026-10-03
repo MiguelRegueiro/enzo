@@ -522,16 +522,26 @@ fn playback_controls_autohide_saves_presets_never_and_custom_seconds() {
 
 #[test]
 fn autohide_custom_editor_keeps_quit_shortcuts_available() {
-    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, None);
+    let root = test_dir("autohide-quit");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
     menu.open();
     menu.input(OptionsInput::Navigate(-1));
     menu.input(OptionsInput::Cycle(-1));
+    menu.input(OptionsInput::Paste("17".into()));
     assert_eq!(
         menu.input(OptionsInput::Character('q')),
         Some(PlaybackOutcome::Quit)
     );
     assert_eq!(
+        Config::load(Some(&path))
+            .unwrap()
+            .playback_controls_autohide,
+        17
+    );
+    assert_eq!(
         menu.input(OptionsInput::Character('Q')),
         Some(PlaybackOutcome::QuitWithoutSaving)
     );
+    std::fs::remove_dir_all(root).unwrap();
 }
