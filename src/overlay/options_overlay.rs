@@ -9,7 +9,7 @@ use super::{
         Circle, RoundedRect, fill_circle, fill_rounded_rect, fill_solid_rect, stroke_rounded_rect,
     },
     state::{HitboxRect, OverlayHitPoint, OverlayRenderContext},
-    style::{PANEL_COLOR, TEXT_COLOR, TRACK_COLOR},
+    style::{PANEL_COLOR, SHADOW_COLOR, TEXT_COLOR, TRACK_COLOR},
     text::{draw_overlay_text, fit_overlay_text, overlay_text_width},
 };
 
@@ -310,6 +310,19 @@ fn value_track(geometry: &OptionsGeometry, row_index: u32) -> HitboxRect {
     }
 }
 
+const SLIDER_HANDLE_RADIUS: f64 = 6.0;
+const SLIDER_HANDLE_EDGE_INSET: u32 = 3;
+const SLIDER_HANDLE_SHADOW_RADIUS: f64 = 7.0;
+const SLIDER_HANDLE_SHADOW_ALPHA: u8 = 72;
+
+fn slider_handle_x(track: HitboxRect, value: u8, maximum: u8) -> u32 {
+    let width = track.right.saturating_sub(track.left);
+    let inset = SLIDER_HANDLE_EDGE_INSET.min(width / 2);
+    let left = track.left.saturating_add(inset);
+    let right = track.right.saturating_sub(inset);
+    left + right.saturating_sub(left) * u32::from(value) / u32::from(maximum.max(1))
+}
+
 fn rounded(rect: HitboxRect) -> RoundedRect {
     RoundedRect {
         x: f64::from(rect.left),
@@ -531,7 +544,6 @@ pub(super) fn draw_options_menu(
             }
             let track = value_track(&geometry, index as u32);
             const SLIDER_HEIGHT: u32 = 5;
-            const SLIDER_HANDLE_RADIUS: f64 = 6.0;
             let track_y = y + geometry.text_height.saturating_sub(SLIDER_HEIGHT) / 2;
             fill_rounded_rect(
                 frame,
@@ -547,8 +559,7 @@ pub(super) fn draw_options_menu(
                 TRACK_COLOR,
                 180,
             );
-            let filled =
-                track.left + track.right.saturating_sub(track.left) * u32::from(value) / maximum;
+            let filled = slider_handle_x(track, value, maximum);
             let slider_focused = matches!(
                 (index, state.selected_setting),
                 (4, OptionsSetting::PanelOpacity) | (6, OptionsSetting::BackgroundBlur)
@@ -572,6 +583,18 @@ pub(super) fn draw_options_menu(
                 if slider_focused { 248 } else { 72 },
             );
             if slider_focused {
+                fill_circle(
+                    frame,
+                    width,
+                    height,
+                    Circle {
+                        x: f64::from(filled),
+                        y: f64::from(track_y) + f64::from(SLIDER_HEIGHT) / 2.0 + 0.75,
+                        radius: SLIDER_HANDLE_SHADOW_RADIUS,
+                    },
+                    SHADOW_COLOR,
+                    SLIDER_HANDLE_SHADOW_ALPHA,
+                );
                 fill_circle(
                     frame,
                     width,

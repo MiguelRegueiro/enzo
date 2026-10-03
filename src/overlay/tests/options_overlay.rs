@@ -142,6 +142,18 @@ fn custom_editor_focus_matches_the_control_height() {
 }
 
 #[test]
+fn slider_knobs_stay_inside_the_track_endpoints() {
+    let track = HitboxRect {
+        left: 20,
+        right: 120,
+        top: 0,
+        bottom: 5,
+    };
+    assert_eq!(slider_handle_x(track, 0, 100), 23);
+    assert_eq!(slider_handle_x(track, 100, 100), 117);
+}
+
+#[test]
 fn panel_sizes_to_content_and_stays_bounded_on_small_canvases() {
     for (width, height) in [(1, 1), (120, 80), (320, 180), (1920, 1080)] {
         let context = context(width, height);
