@@ -140,6 +140,20 @@ fn normal_quit_and_close_save_valid_custom_color_drafts() {
 }
 
 #[test]
+fn options_toggle_closes_from_every_setting() {
+    for steps in 0..4 {
+        let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, None);
+        menu.open();
+        menu.input(OptionsInput::Navigate(steps));
+        assert_eq!(menu.input(OptionsInput::Character('o')), None);
+        assert!(
+            menu.state.is_none(),
+            "options remained open after {steps} moves"
+        );
+    }
+}
+
+#[test]
 fn remembered_custom_survives_reopening_presets_and_cancelled_drafts() {
     let root = test_dir("remember-custom");
     let mut menu = OptionsMenu::new([0x12, 0x34, 0x56], Some(root.join("config.toml")));

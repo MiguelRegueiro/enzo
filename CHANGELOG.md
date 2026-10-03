@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - XDG desktop file chooser for selecting one video from the empty launcher screen.
 
+### Fixed
+
+- Recover interrupted HTTP(S) streams with short, bounded retries instead of stalling playback.
+- Make `o` consistently close the Options panel from every setting.
+
 ## [1.2.0] - 2026-10-03
 
 ### Added

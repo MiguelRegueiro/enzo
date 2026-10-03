@@ -11,6 +11,7 @@
 #include <string.h>
 
 #define ENZO_IO_TIMEOUT_US (60LL * AV_TIME_BASE)
+#define ENZO_NETWORK_RECONNECT_DELAY_MAX_SECONDS 2
 #define ENZO_NETWORK_PROTOCOLS "http,https,tcp,tls,httpproxy,data,crypto"
 #define ENZO_LOCAL_PROTOCOLS "file," ENZO_NETWORK_PROTOCOLS
 
@@ -47,6 +48,32 @@ static int enzo_set_referrer_option(
         return 0;
     }
     return av_dict_set(options, "referer", input->referer, 0);
+}
+
+static int enzo_set_network_reconnect_options(
+    AVDictionary **options,
+    const EnzoInput *input
+) {
+    if (input->origin != ENZO_INPUT_NETWORK) {
+        return 0;
+    }
+
+    int ret = av_dict_set(options, "reconnect", "1", 0);
+    if (ret >= 0) {
+        ret = av_dict_set(options, "reconnect_streamed", "1", 0);
+    }
+    if (ret >= 0) {
+        ret = av_dict_set(options, "reconnect_on_network_error", "1", 0);
+    }
+    if (ret >= 0) {
+        ret = av_dict_set_int(
+            options,
+            "reconnect_delay_max",
+            ENZO_NETWORK_RECONNECT_DELAY_MAX_SECONDS,
+            0
+        );
+    }
+    return ret;
 }
 
 static const char *enzo_protocol_whitelist(const EnzoInput *input) {
@@ -186,6 +213,9 @@ static int enzo_io_open(
         ret = enzo_set_referrer_option(open_options, input);
     }
     if (ret >= 0) {
+        ret = enzo_set_network_reconnect_options(open_options, input);
+    }
+    if (ret >= 0) {
         ret = av_dict_set_int(
             open_options,
             "timeout",
@@ -285,6 +315,9 @@ int enzo_input_open(
     }
     if (ret >= 0) {
         ret = enzo_set_referrer_option(&options, input);
+    }
+    if (ret >= 0) {
+        ret = enzo_set_network_reconnect_options(&options, input);
     }
     if (ret >= 0) {
         enzo_input_begin_io(input, stop_flag);
