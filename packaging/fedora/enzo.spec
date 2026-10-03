@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.1.0
+%global fallback_version 1.2.0
 %global fallback_release 1
 
 Name:           enzo
@@ -58,6 +58,9 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Oct 03 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.2.0-1
+- Add persistent configuration, visual options, custom overlay accents, and playback controls auto-hide
+
 * Wed Aug 12 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.1.0-1
 - Add folder playlists and improve HLS playback, remote media handling, and portable Linux releases
 
