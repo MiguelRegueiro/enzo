@@ -102,6 +102,31 @@ fn clicking_hex_field_places_caret_at_measured_character() {
 }
 
 #[test]
+fn custom_seconds_editor_aligns_with_hex_editor_arrow_gap() {
+    let context = context(1280, 720);
+    let mut state = state();
+    state.name = "Custom";
+    state.editor = Some(HexInputState {
+        text: "#123456".into(),
+        cursor: 7,
+        selected: false,
+        focused: false,
+    });
+    state.seconds_editor = Some(SecondsInputState {
+        text: "1".into(),
+        selected: false,
+        focused: false,
+    });
+    let geometry = geometry(context, &state, &mut None);
+    let hex = geometry.editor_rect(state.name, &mut None);
+    let seconds = geometry.seconds_editor_rect(&mut None);
+    assert_eq!(
+        geometry.arrow(2, 1).left - hex.right,
+        geometry.arrow(8, 1).left - seconds.right
+    );
+}
+
+#[test]
 fn panel_sizes_to_content_and_stays_bounded_on_small_canvases() {
     for (width, height) in [(1, 1), (120, 80), (320, 180), (1920, 1080)] {
         let context = context(width, height);

@@ -139,6 +139,25 @@ impl OptionsGeometry {
             ..row
         }
     }
+
+    fn seconds_editor_rect(&self, font: &mut Option<&mut FontRenderer>) -> HitboxRect {
+        let right = self.arrow(8, 1).left.saturating_sub(self.pad / 2);
+        let left = right
+            .saturating_sub(overlay_text_width(font, "9999s", self.scale) + self.pad * 2)
+            .max(
+                self.arrow(8, -1)
+                    .right
+                    .saturating_add(self.pad * 2)
+                    .saturating_add(overlay_text_width(font, "Custom", self.scale))
+                    .saturating_add(self.pad),
+            );
+        HitboxRect {
+            left,
+            right,
+            top: self.arrow(8, -1).top,
+            bottom: self.arrow(8, -1).bottom,
+        }
+    }
 }
 
 fn geometry(
@@ -438,25 +457,7 @@ pub(super) fn draw_options_menu(
             }
             if index == 8 {
                 if let Some(editor) = &state.seconds_editor {
-                    let field_left = right
-                        .saturating_sub(
-                            overlay_text_width(&mut font, "9999s", geometry.scale)
-                                + geometry.pad * 2,
-                        )
-                        .max(
-                            x.saturating_add(overlay_text_width(
-                                &mut font,
-                                "Custom",
-                                geometry.scale,
-                            ))
-                            .saturating_add(geometry.pad),
-                        );
-                    let field = HitboxRect {
-                        left: field_left,
-                        right,
-                        top: geometry.arrow(8, -1).top,
-                        bottom: geometry.arrow(8, -1).bottom,
-                    };
+                    let field = geometry.seconds_editor_rect(&mut font);
                     fill_rounded_rect(frame, width, height, rounded(field), TRACK_COLOR, 60);
                     if state.selected_setting == OptionsSetting::PlaybackControlsAutohide {
                         stroke_rounded_rect(
