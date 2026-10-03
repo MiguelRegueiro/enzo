@@ -91,6 +91,8 @@ struct OptionsGeometry {
     scale: u32,
 }
 
+const SELECTED_FIELD_STROKE_WIDTH: f64 = 1.5;
+
 impl OptionsGeometry {
     fn row(&self, index: u32) -> HitboxRect {
         let top = self.panel.top + self.pad + index * self.pitch;
@@ -156,6 +158,39 @@ impl OptionsGeometry {
             right,
             top: self.arrow(8, -1).top,
             bottom: self.arrow(8, -1).bottom,
+        }
+    }
+
+    fn focus_rect(&self, setting: OptionsSetting) -> HitboxRect {
+        let selected_row = match setting {
+            OptionsSetting::AccentColor => 1,
+            OptionsSetting::PanelOpacity => 3,
+            OptionsSetting::BackgroundBlur => 5,
+            OptionsSetting::PlaybackControlsAutohide => 7,
+        };
+        let control_index = selected_row + 1;
+        let control = self.row(control_index);
+        let compact = matches!(
+            setting,
+            OptionsSetting::AccentColor | OptionsSetting::PlaybackControlsAutohide
+        );
+        let arrow = self.arrow(control_index, -1);
+        HitboxRect {
+            left: arrow.right.saturating_add(self.pad / 2),
+            right: self
+                .arrow(control_index, 1)
+                .left
+                .saturating_sub(self.pad / 2),
+            top: if compact {
+                arrow.top
+            } else {
+                control.top.saturating_add(self.pad / 4)
+            },
+            bottom: if compact {
+                arrow.bottom
+            } else {
+                control.bottom.saturating_sub(self.pad / 4)
+            },
         }
     }
 }
@@ -335,25 +370,7 @@ pub(super) fn draw_options_menu(
     if let Some(error) = &state.error {
         rows.push(error);
     }
-    let selected_row = match state.selected_setting {
-        OptionsSetting::AccentColor => 1,
-        OptionsSetting::PanelOpacity => 3,
-        OptionsSetting::BackgroundBlur => 5,
-        OptionsSetting::PlaybackControlsAutohide => 7,
-    };
-    let control = geometry.row(selected_row + 1);
-    let focus = HitboxRect {
-        left: geometry
-            .arrow(selected_row + 1, -1)
-            .right
-            .saturating_add(geometry.pad / 2),
-        right: geometry
-            .arrow(selected_row + 1, 1)
-            .left
-            .saturating_sub(geometry.pad / 2),
-        top: control.top.saturating_add(geometry.pad / 4),
-        bottom: control.bottom.saturating_sub(geometry.pad / 4),
-    };
+    let focus = geometry.focus_rect(state.selected_setting);
     fill_rounded_rect(frame, width, height, rounded(focus), TEXT_COLOR, 32);
     for (index, text) in rows.into_iter().enumerate() {
         let row = geometry.row(index as u32);
@@ -465,7 +482,7 @@ pub(super) fn draw_options_menu(
                             width,
                             height,
                             rounded(field),
-                            1.0,
+                            SELECTED_FIELD_STROKE_WIDTH,
                             state.color,
                             220,
                         );
@@ -589,7 +606,7 @@ pub(super) fn draw_options_menu(
                     width,
                     height,
                     rounded(background),
-                    1.0,
+                    SELECTED_FIELD_STROKE_WIDTH,
                     state.color,
                     220,
                 );

@@ -127,6 +127,21 @@ fn custom_seconds_editor_aligns_with_hex_editor_arrow_gap() {
 }
 
 #[test]
+fn custom_editor_focus_matches_the_control_height() {
+    let context = context(1280, 720);
+    let state = state();
+    let geometry = geometry(context, &state, &mut None);
+    for (setting, row) in [
+        (OptionsSetting::AccentColor, 2),
+        (OptionsSetting::PlaybackControlsAutohide, 8),
+    ] {
+        let focus = geometry.focus_rect(setting);
+        let arrow = geometry.arrow(row, -1);
+        assert_eq!((focus.top, focus.bottom), (arrow.top, arrow.bottom));
+    }
+}
+
+#[test]
 fn panel_sizes_to_content_and_stays_bounded_on_small_canvases() {
     for (width, height) in [(1, 1), (120, 80), (320, 180), (1920, 1080)] {
         let context = context(width, height);
