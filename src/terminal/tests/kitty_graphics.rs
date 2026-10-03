@@ -8,6 +8,17 @@ fn shared_memory_name_fits_darwin_limit() {
     assert!(name.to_bytes().len() <= SHARED_MEMORY_NAME_MAX_BYTES);
 }
 
+fn shared_memory_frame_or_skip(frame: &[u8]) -> Option<SharedMemoryFrame> {
+    match SharedMemoryFrame::create(frame) {
+        Ok(frame) => Some(frame),
+        // GitHub's macOS VMs have no POSIX shared-memory device. The runtime
+        // falls back to direct Kitty transfer in this case.
+        #[cfg(target_os = "macos")]
+        Err(error) if error.raw_os_error() == Some(libc::ENXIO) => None,
+        Err(error) => panic!("shared memory frame should be created: {error}"),
+    }
+}
+
 #[test]
 fn kitty_direct_frame_sequence_transmits_rgb_at_requested_area() {
     let frame = [0, 0, 0, 255, 255, 255];
@@ -74,8 +85,9 @@ fn kitty_direct_frame_sequence_chunks_large_frames() {
 #[test]
 fn kitty_shared_memory_sequence_transmits_only_the_object_name() {
     let frame = [0, 1, 2, 3, 4, 5];
-    let shared_frame =
-        SharedMemoryFrame::create(&frame).expect("shared memory frame should be created");
+    let Some(shared_frame) = shared_memory_frame_or_skip(&frame) else {
+        return;
+    };
     let placement = KittyFramePlacement {
         image_id: 7,
         placement_id: 9,
@@ -107,8 +119,9 @@ fn kitty_shared_memory_sequence_transmits_only_the_object_name() {
 #[test]
 fn shared_memory_frame_contains_the_frame_and_cleans_up_while_owned() {
     let frame = [0, 1, 2, 3, 4, 5];
-    let shared_frame =
-        SharedMemoryFrame::create(&frame).expect("shared memory frame should be created");
+    let Some(shared_frame) = shared_memory_frame_or_skip(&frame) else {
+        return;
+    };
     let name = shared_frame.name().to_owned();
     let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
     assert!(fd >= 0, "shared memory frame should be reopenable");

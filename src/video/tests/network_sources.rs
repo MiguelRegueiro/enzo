@@ -127,7 +127,9 @@ fn serve_request(stream: &mut TcpStream, routes: &Routes, requests: &Mutex<Vec<S
         }
     }
     let request = String::from_utf8_lossy(&request);
-    let request_line = request.lines().next().unwrap_or_default();
+    let Some(request_line) = request.lines().next() else {
+        return;
+    };
     let target = request
         .lines()
         .next()
