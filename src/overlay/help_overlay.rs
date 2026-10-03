@@ -53,6 +53,9 @@ struct HelpGeometry {
 }
 
 const MAX_HELP_COLUMNS: usize = 3;
+const MIN_WIDE_SINGLE_COLUMN_PANEL_WIDTH: u32 = 350;
+const MIN_TWO_COLUMN_PANEL_WIDTH: u32 = 430;
+const MIN_THREE_COLUMN_PANEL_WIDTH: u32 = 620;
 
 const HELP_SECTIONS: &[HelpSection] = &[
     HelpSection {
@@ -448,25 +451,9 @@ fn help_geometry(
     } else {
         key_pad_x.saturating_mul(3) / 2
     };
-    let two_column_width = help_panel_width_for_columns(
-        2,
-        fallback_scale,
-        key_pad_x,
-        pad_x,
-        wide_column_gap,
-        scrollbar_width,
-    );
-    let three_column_width = help_panel_width_for_columns(
-        3,
-        fallback_scale,
-        key_pad_x,
-        pad_x,
-        wide_column_gap,
-        scrollbar_width,
-    );
-    let column_count = if width >= 960 && height >= 150 && three_column_width <= max_panel_width {
+    let column_count = if max_panel_width >= MIN_THREE_COLUMN_PANEL_WIDTH {
         3
-    } else if width >= 720 && height >= 150 && two_column_width <= max_panel_width {
+    } else if max_panel_width >= MIN_TWO_COLUMN_PANEL_WIDTH {
         2
     } else {
         1
@@ -493,7 +480,18 @@ fn help_geometry(
         column_gap,
         reserved_scrollbar,
     );
-    let panel_width = natural_width.min(max_panel_width).max(1);
+    let preferred_width = match column_count {
+        1 if max_panel_width >= MIN_WIDE_SINGLE_COLUMN_PANEL_WIDTH => {
+            max_panel_width.saturating_mul(2) / 3
+        }
+        1 => natural_width,
+        2 => MIN_TWO_COLUMN_PANEL_WIDTH,
+        _ => MIN_THREE_COLUMN_PANEL_WIDTH,
+    };
+    let panel_width = natural_width
+        .max(preferred_width)
+        .min(max_panel_width)
+        .max(1);
     let inner_width = panel_width
         .saturating_sub(pad_x.saturating_mul(2))
         .saturating_sub(reserved_scrollbar)
@@ -504,7 +502,23 @@ fn help_geometry(
         let natural_widths = help_column_content_widths(column_count, fallback_scale, key_pad_x);
         let natural_total = natural_widths.iter().sum::<u32>().max(1);
         if natural_total <= available {
-            natural_widths
+            let extra = available.saturating_sub(natural_total);
+            let mut widths = [0; MAX_HELP_COLUMNS];
+            let mut assigned = 0_u32;
+            for (index, width) in widths
+                .iter_mut()
+                .enumerate()
+                .take(column_count.saturating_sub(1))
+            {
+                let expanded = natural_widths[index].saturating_add(
+                    (u64::from(extra) * u64::from(natural_widths[index]) / u64::from(natural_total))
+                        as u32,
+                );
+                *width = expanded;
+                assigned = assigned.saturating_add(expanded);
+            }
+            widths[column_count - 1] = available.saturating_sub(assigned);
+            widths
         } else {
             let mut widths = [0; MAX_HELP_COLUMNS];
             let even_width = available / column_count as u32;

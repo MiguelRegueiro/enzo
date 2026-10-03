@@ -9,6 +9,14 @@ fn help_uses_one_column_on_narrow_canvases() {
 }
 
 #[test]
+fn help_keeps_one_column_at_compact_phone_widths() {
+    let geometry = help_geometry(400, 1000, 12, 14, 1);
+
+    assert_eq!(geometry.column_count, 1);
+    assert!(geometry.panel.width as u32 >= 240);
+}
+
+#[test]
 fn help_uses_three_columns_when_space_allows() {
     let geometry = help_geometry(1280, 720, 18, 22, 2);
 
@@ -27,32 +35,51 @@ fn help_uses_three_columns_when_space_allows() {
 }
 
 #[test]
-fn help_uses_two_columns_on_medium_canvases() {
+fn help_uses_three_columns_before_fullscreen_sizes() {
     let geometry = help_geometry(800, 720, 18, 22, 2);
 
-    assert_eq!(geometry.column_count, 2);
+    assert_eq!(geometry.column_count, 3);
     assert!(
-        geometry.panel.width as u32 <= 520,
+        geometry.panel.width as u32 <= 750,
         "panel width was {}",
         geometry.panel.width as u32
     );
     assert!(geometry.column_widths[0] >= 260);
     assert!(geometry.column_widths[1] >= 200);
+    assert!(geometry.column_widths[2] >= 150);
     assert_eq!(help_scroll_limit(800, 720, 100, None), 0);
 }
 
 #[test]
-fn help_stacks_columns_when_two_columns_would_truncate() {
+fn help_uses_two_columns_when_their_content_fits() {
     let geometry = help_geometry(640, 360, 18, 22, 2);
 
-    assert_eq!(geometry.column_count, 1);
-    assert!(
-        geometry.panel.width as u32 <= 290,
-        "panel width was {}",
-        geometry.panel.width as u32
-    );
-    assert!(geometry.column_widths[0] >= 240);
+    assert_eq!(geometry.column_count, 2);
+    assert!(geometry.column_widths[0] >= 260);
+    assert!(geometry.column_widths[1] >= 200);
     assert!(help_scroll_limit(640, 360, 100, None) > 0);
+}
+
+#[test]
+fn help_uses_two_columns_on_medium_widths() {
+    let geometry = help_geometry(560, 1000, 18, 22, 2);
+
+    assert_eq!(geometry.column_count, 2);
+}
+
+#[test]
+fn help_widens_one_column_before_two_columns_fit() {
+    let geometry = help_geometry(440, 1000, 12, 14, 1);
+
+    assert_eq!(geometry.column_count, 1);
+    assert!(geometry.panel.width as u32 >= 270);
+}
+
+#[test]
+fn help_uses_three_columns_on_wide_canvases() {
+    let geometry = help_geometry(760, 1000, 18, 22, 2);
+
+    assert_eq!(geometry.column_count, 3);
 }
 
 #[test]

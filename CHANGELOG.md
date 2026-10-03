@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Selecting a video from the playlist now starts playback immediately.
+- Improve the Help overlay layout across narrow and medium terminal widths.
 
 ### Fixed
 
