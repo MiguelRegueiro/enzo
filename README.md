@@ -55,7 +55,7 @@ cargo install enzo
 
 ## Run from source
 
-Install Rust 1.96+ and the native development headers for the libraries above, then run:
+Install Rust 1.98.1+ and the native development headers for the libraries above, then run:
 
 ```sh
 cargo run --release
