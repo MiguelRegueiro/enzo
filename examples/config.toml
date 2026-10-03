@@ -26,3 +26,7 @@ playback_controls_autohide = 2
 # Last confirmed custom color, remembered even while a preset is active.
 # Options saves this automatically; it does not change the active accent.
 # custom_accent_color = "#123abc"
+
+# Last confirmed custom auto-hide duration, remembered while a preset is active.
+# Options saves this automatically; it does not change the active duration.
+# custom_playback_controls_autohide = 42

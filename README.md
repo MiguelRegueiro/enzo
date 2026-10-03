@@ -97,36 +97,9 @@ Enzo reads `config.toml` from the platform config directory:
 
 Use `enzo --config FILE` to load a custom path instead. Command-line options override values from the config file.
 
-```toml
-volume_max = 200
-resume = true
-autoplay_next = true
-accent_color = "#ef4444"
-panel_opacity = 70
-background_blur = 12
-playback_controls_autohide = 2
-```
+See [`examples/config.toml`](examples/config.toml) for every setting and its defaults.
 
-`volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. `panel_opacity` controls the acrylic tint from 0 to 100 and defaults to 70. `background_blur` controls the acrylic blur radius from 0 to 24 pixels and defaults to 12. `playback_controls_autohide` controls only the bottom playback controls, accepts 0 (Never) or 1–9999 seconds, and defaults to 2. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
-
-Press `o` during playback to open Options. Use Up/Down to select Accent color or
-Panel opacity, Background blur, or Playback controls auto-hide; use Left/Right or the arrow buttons to change the selected value.
-Panel opacity adjusts in 5% steps, Background blur in 2px steps, and both save immediately. Custom restores the last confirmed custom color, or shows
-an empty field with a `#RRGGBB` placeholder if none has been set. The optional
-`custom_accent_color` config entry remembers that value across preset changes
-and restarts; `accent_color` remains the active color. Both use `#RRGGBB` format.
-Playback controls auto-hide offers 2s, 4s, 8s, Never, and Custom. Custom accepts whole seconds from 1 to 9999; Enter saves and closes the panel, while Esc cancels. Its last valid custom value is remembered across preset changes and restarts. Enter also closes the panel after selecting any other setting.
-Remembered values leave the arrows free to cycle until you start editing.
-Left/Right keeps cycling until a hex digit is entered, then moves the caret;
-clearing all digits restores cycling. Home/End, Backspace, Delete, Ctrl+A, and
-Ctrl+Left/Right/Backspace/Delete are supported. Tab or Up/Down switches between
-the field and the preset selector. Enter confirms and closes the panel, saving
-a valid custom color. Valid custom input previews immediately; incomplete or
-empty input restores the last saved accent. Esc/Ctrl+C closes the panel and
-discards an unconfirmed edit. Presets apply and save immediately. Changes update
-only the accent settings in the active config file, including a path supplied with `--config`, preserving
-other settings and comments. Default removes the override. If saving fails, the
-panel reports the error without changing the saved color.
+Press `o` during playback to open Options. Changes save to the active config file; custom accent colors and auto-hide durations are remembered.
 
 <details>
 <summary><strong>Controls</strong></summary>
