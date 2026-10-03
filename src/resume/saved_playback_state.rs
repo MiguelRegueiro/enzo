@@ -468,7 +468,7 @@ fn hex_decode(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut bytes = Vec::with_capacity(text.len() / 2);
-    for chunk in text.as_bytes().chunks_exact(2) {
+    for chunk in text.as_bytes().as_chunks::<2>().0 {
         let hi = hex_nibble(chunk[0])?;
         let lo = hex_nibble(chunk[1])?;
         bytes.push((hi << 4) | lo);

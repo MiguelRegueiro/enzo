@@ -103,7 +103,7 @@ pub(crate) fn parse_hex_color(value: &str) -> Result<[u8; 3]> {
         bail!("accent_color must use #RRGGBB format");
     }
     let mut color = [0_u8; 3];
-    for (component, pair) in color.iter_mut().zip(bytes[1..].chunks_exact(2)) {
+    for (component, pair) in color.iter_mut().zip(bytes[1..].as_chunks::<2>().0) {
         let Some(high) = hex_digit(pair[0]) else {
             bail!("accent_color must use #RRGGBB format");
         };

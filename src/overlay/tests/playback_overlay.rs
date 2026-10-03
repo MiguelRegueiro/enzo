@@ -179,7 +179,9 @@ fn rendered_overlay_changes_bottom_pixels_only() {
     assert_eq!(&frame[..before_top.len()], before_top.as_slice());
     assert!(
         frame
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .any(|pixel| pixel[0] > 200 && pixel[1] < 100 && pixel[2] < 100)
     );
 
@@ -536,7 +538,9 @@ fn help_overlay_renders_without_title_or_bottom_controls() {
 
     assert!(
         frame
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .any(|pixel| pixel[0] > 120 && pixel[1] < 90 && pixel[2] < 90)
     );
 
@@ -633,7 +637,9 @@ fn playlist_menu_renders_centered_without_bottom_controls() {
     );
     assert!(
         frame
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .any(|pixel| pixel[0] > 180 && pixel[1] < 100 && pixel[2] < 100)
     );
 }
