@@ -431,6 +431,163 @@ jobs:
         shell: bash
         run: echo "${CRATE_NAME} ${RELEASE_VERSION} is already published on crates.io"
 
+  update-aur:
+    name: Publish AUR package (${{ matrix.package.name }})
+    needs:
+      - validate
+      - publish-crates
+    runs-on: ubuntu-latest
+    environment: release
+    permissions: {}
+    container:
+      image: archlinux:base-devel
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - name: enzo
+            repo: ssh://aur@aur.archlinux.org/enzo.git
+            dir: aur-enzo
+          - name: enzo-bin
+            repo: ssh://aur@aur.archlinux.org/enzo-bin.git
+            dir: aur-enzo-bin
+
+    steps:
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          pacman -Syu --noconfirm --needed \
+            git \
+            openssh \
+            pacman-contrib
+          useradd -m builder
+
+      - name: Configure AUR SSH key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${AUR_SSH_PRIVATE_KEY:-}" ]]; then
+            echo "AUR_SSH_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          known_hosts="$(mktemp)"
+          ssh-keyscan -H aur.archlinux.org > "${known_hosts}"
+          if [[ ! -s "${known_hosts}" ]]; then
+            echo "Failed to fetch AUR SSH host keys" >&2
+            exit 1
+          fi
+          mv "${known_hosts}" ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+          {
+            echo "Host aur.archlinux.org"
+            echo "    HostName aur.archlinux.org"
+            echo "    User aur"
+            echo "    IdentityFile ${HOME}/.ssh/aur"
+            echo "    IdentitiesOnly yes"
+            echo "    UserKnownHostsFile ${HOME}/.ssh/known_hosts"
+            echo "    StrictHostKeyChecking yes"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Clone AUR package repository
+        env:
+          AUR_REPO: ${{ matrix.package.repo }}
+          AUR_DIR: ${{ matrix.package.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_SSH_COMMAND="ssh -F ${HOME}/.ssh/config"
+          git clone "${AUR_REPO}" "${AUR_DIR}"
+          chown -R builder:builder "${AUR_DIR}"
+
+      - name: Update PKGBUILD and .SRCINFO
+        env:
+          AUR_DIR: ${{ matrix.package.dir }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runuser -u builder -- env \
+            AUR_DIR="${AUR_DIR}" \
+            RELEASE_VERSION="${RELEASE_VERSION}" \
+            bash <<'BASH'
+            set -euo pipefail
+            cd "${AUR_DIR}"
+
+            current_pkgver="$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)"
+            current_pkgrel="$(sed -n 's/^pkgrel=//p' PKGBUILD | head -n1)"
+            if [[ -z "${current_pkgver}" || -z "${current_pkgrel}" ]]; then
+              echo "Failed to read pkgver/pkgrel from ${AUR_DIR}/PKGBUILD" >&2
+              exit 1
+            fi
+            if [[ ! "${current_pkgrel}" =~ ^[0-9]+$ ]]; then
+              echo "Unsupported non-numeric pkgrel '${current_pkgrel}' in ${AUR_DIR}/PKGBUILD" >&2
+              exit 1
+            fi
+
+            same_version=false
+            target_pkgrel=1
+            if [[ "${current_pkgver}" == "${RELEASE_VERSION}" ]]; then
+              same_version=true
+              target_pkgrel="${current_pkgrel}"
+            fi
+
+            update_pkgbuild() {
+              local pkgrel="$1"
+              sed -i "s/^pkgver=.*/pkgver=${RELEASE_VERSION}/" PKGBUILD
+              sed -i "s/^pkgrel=.*/pkgrel=${pkgrel}/" PKGBUILD
+              sed -i "s/^sha256sums=.*/sha256sums=('SKIP')/" PKGBUILD
+
+              for attempt in {1..12}; do
+                if updpkgsums; then
+                  break
+                fi
+                if [[ "${attempt}" -eq 12 ]]; then
+                  echo "Failed to generate AUR checksum after 12 attempts" >&2
+                  exit 1
+                fi
+                sleep 10
+              done
+              makepkg --printsrcinfo > .SRCINFO
+            }
+
+            update_pkgbuild "${target_pkgrel}"
+            if [[ "${same_version}" == "true" ]] && ! git diff --quiet -- PKGBUILD .SRCINFO; then
+              update_pkgbuild "$((current_pkgrel + 1))"
+            fi
+          BASH
+
+      - name: Commit and push AUR update
+        working-directory: ${{ matrix.package.dir }}
+        env:
+          AUR_PACKAGE: ${{ matrix.package.name }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "${PWD}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR package is already up to date"
+            exit 0
+          fi
+          git commit -m "Update ${AUR_PACKAGE} to ${RELEASE_VERSION}"
+          export GIT_SSH_COMMAND="ssh -F ${HOME}/.ssh/config"
+          git push
+
   update-copr:
     name: Publish COPR package
     needs:
