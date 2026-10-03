@@ -22,6 +22,20 @@ Terminal video player with a graphical interface.
 
 ## Installation
 
+### Arch Linux
+
+Install from the AUR with your preferred helper:
+
+```bash
+paru -S enzo
+```
+
+For the prebuilt portable-release package instead:
+
+```bash
+paru -S enzo-bin
+```
+
 ### Fedora
 
 Enable the COPR repository and install with `dnf`:
