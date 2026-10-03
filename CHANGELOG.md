@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- XDG desktop file chooser for selecting one video from the empty launcher screen.
+
 ## [1.2.0] - 2026-10-03
 
 ### Added

@@ -18,7 +18,10 @@ use crate::{
     terminal::{TerminalGuard, clear_screen_and_images},
 };
 
-use super::terminal_input::{DropCommand, read_drop_events};
+use super::{
+    portal_file_chooser::choose_file,
+    terminal_input::{DropCommand, read_drop_events},
+};
 
 pub(crate) fn run(
     sub_file: Option<&Path>,
@@ -41,6 +44,22 @@ pub(crate) fn run(
         }
         if input.command == DropCommand::Quit {
             return Ok(());
+        }
+        if input.command == DropCommand::ChooseFile {
+            match choose_file() {
+                Ok(Some(text)) => match media_path_from_drop_text(&text) {
+                    Ok(path) => {
+                        clear_screen_and_images(&mut out)?;
+                        out.flush()?;
+                        drop(out);
+                        return playback::play(path, sub_file, playback_options, font_system);
+                    }
+                    Err(error) => status = Some(error.to_string()),
+                },
+                Ok(None) => status = None,
+                Err(error) => status = Some(error.to_string()),
+            }
+            continue;
         }
         let Some(text) = input.text else {
             continue;
@@ -71,7 +90,13 @@ fn draw(out: &mut impl Write, status: Option<&str>) -> io::Result<()> {
         "Drop files or URLs to play",
         true,
     )?;
-    write_centered(out, cols, rows.saturating_div(2), "q to quit", false)?;
+    write_centered(
+        out,
+        cols,
+        rows.saturating_div(2),
+        "Enter to choose a file \u{00b7} q to quit",
+        false,
+    )?;
     if let Some(status) = status.filter(|status| !status.is_empty()) {
         write_centered(
             out,

@@ -15,6 +15,15 @@ fn non_seek_keys_have_no_seek_duration() {
 }
 
 #[test]
+fn launcher_enter_chooses_a_file() {
+    assert_eq!(
+        drop_command_for_key(&KeyCode::Enter),
+        DropCommand::ChooseFile
+    );
+    assert_eq!(drop_command_for_key(&KeyCode::Char('q')), DropCommand::Quit);
+}
+
+#[test]
 fn only_vertical_arrows_drive_picker_navigation() {
     assert_eq!(picker_direction_for_key(&KeyCode::Up), Some(-1));
     assert_eq!(picker_direction_for_key(&KeyCode::Down), Some(1));

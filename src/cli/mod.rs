@@ -1,5 +1,6 @@
 mod argument_parsing;
 mod media_drop_launcher;
+mod portal_file_chooser;
 mod terminal_input;
 
 pub(crate) use argument_parsing::{Action, HELP, Options, VERSION, parse_args};

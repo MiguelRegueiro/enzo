@@ -122,7 +122,16 @@ pub(crate) struct DropInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DropCommand {
     None,
+    ChooseFile,
     Quit,
+}
+
+fn drop_command_for_key(key: &KeyCode) -> DropCommand {
+    match key {
+        KeyCode::Enter => DropCommand::ChooseFile,
+        KeyCode::Char('q') => DropCommand::Quit,
+        _ => DropCommand::None,
+    }
 }
 
 fn seek_seconds_for_key(key: &KeyCode) -> Option<i32> {
@@ -324,9 +333,12 @@ pub(crate) fn read_drop_events() -> Result<DropInput> {
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     // Ignore key releases/repeats in the launcher.
-                } else if matches!(key.code, KeyCode::Char('q')) {
-                    input.command = DropCommand::Quit;
-                    return Ok(input);
+                } else {
+                    let command = drop_command_for_key(&key.code);
+                    if command != DropCommand::None {
+                        input.command = command;
+                        return Ok(input);
+                    }
                 }
             }
             Event::Paste(text) => {
