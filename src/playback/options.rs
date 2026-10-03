@@ -125,7 +125,32 @@ impl OptionsMenu {
             self.state = None;
             return None;
         }
+        if matches!(input, OptionsInput::Character('q' | 'o'))
+            && self.selected_setting == OptionsSetting::AccentColor
+        {
+            if let Some(color) = state
+                .editor
+                .as_ref()
+                .and_then(|editor| parse_hex_color(&editor.text).ok())
+            {
+                self.apply(CUSTOM, Some(color));
+            }
+            if matches!(input, OptionsInput::Character('q')) {
+                return Some(PlaybackOutcome::Quit);
+            }
+            self.state = None;
+            return None;
+        }
         if let OptionsInput::Navigate(direction) = input {
+            if self.selected_setting == OptionsSetting::PlaybackControlsAutohide
+                && let Some(seconds) = state
+                    .seconds_editor
+                    .as_ref()
+                    .and_then(|editor| editor.text.parse::<u16>().ok())
+                    .filter(|seconds| (1..=9_999).contains(seconds))
+            {
+                self.set_playback_controls_autohide(seconds);
+            }
             self.selected_setting = self.selected_setting.navigate(direction);
             self.open();
             return None;
@@ -258,7 +283,6 @@ impl OptionsMenu {
             }
         }
         match input {
-            OptionsInput::Character('o') => self.state = None,
             OptionsInput::Character('q') => return Some(PlaybackOutcome::Quit),
             OptionsInput::Character('Q') => return Some(PlaybackOutcome::QuitWithoutSaving),
             OptionsInput::Cycle(direction)

@@ -36,6 +36,7 @@ pub(super) struct PlaybackView<W: Write> {
 }
 
 impl<W: Write> PlaybackView<W> {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         mut output: W,
         target: TargetFrame,

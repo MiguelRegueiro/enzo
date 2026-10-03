@@ -50,7 +50,7 @@ impl OptionsSetting {
             Self::BackgroundBlur => 2,
             Self::PlaybackControlsAutohide => 3,
         };
-        SETTINGS[(index as i32 + direction).rem_euclid(SETTINGS.len() as i32) as usize]
+        SETTINGS[(index + direction).rem_euclid(SETTINGS.len() as i32) as usize]
     }
 }
 

@@ -85,11 +85,14 @@ fn background_blur_is_adjusted_and_saved_from_its_selected_row() {
 }
 
 #[test]
-fn editing_owns_keys_and_paste_and_cancel_does_not_apply() {
+fn closing_with_escape_discards_custom_color_draft() {
     let mut menu = OptionsMenu::new([1, 2, 3], None);
     menu.open();
     menu.input(OptionsInput::Paste("#abcdef".into()));
-    assert_eq!(menu.input(OptionsInput::Character('q')), None);
+    assert_eq!(
+        menu.input(OptionsInput::Character('q')),
+        Some(PlaybackOutcome::Quit)
+    );
     assert_eq!(
         menu.state
             .as_ref()
@@ -99,8 +102,6 @@ fn editing_owns_keys_and_paste_and_cancel_does_not_apply() {
             .map(|editor| editor.text.as_str()),
         Some("#abcdef")
     );
-    menu.input(OptionsInput::Paste("/tmp/subtitle.srt".into()));
-    assert!(menu.state.as_ref().unwrap().error.is_some());
     menu.input(OptionsInput::Close);
     assert!(menu.state.is_none());
     assert_eq!(menu.color, [1, 2, 3]);
@@ -109,6 +110,33 @@ fn editing_owns_keys_and_paste_and_cancel_does_not_apply() {
         menu.input(OptionsInput::Character('q')),
         Some(PlaybackOutcome::Quit)
     );
+}
+
+#[test]
+fn normal_quit_and_close_save_valid_custom_color_drafts() {
+    let root = test_dir("custom-color-close");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
+    menu.open();
+    menu.input(OptionsInput::Cycle(-1));
+    menu.input(OptionsInput::Paste("123abc".into()));
+    assert_eq!(menu.input(OptionsInput::Character('o')), None);
+    assert_eq!(
+        Config::load(Some(&path)).unwrap().accent_color,
+        [0x12, 0x3a, 0xbc]
+    );
+
+    menu.open();
+    menu.input(OptionsInput::Paste("abcdef".into()));
+    assert_eq!(
+        menu.input(OptionsInput::Character('q')),
+        Some(PlaybackOutcome::Quit)
+    );
+    assert_eq!(
+        Config::load(Some(&path)).unwrap().accent_color,
+        [0xab, 0xcd, 0xef]
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -542,6 +570,28 @@ fn autohide_custom_editor_keeps_quit_shortcuts_available() {
     assert_eq!(
         menu.input(OptionsInput::Character('Q')),
         Some(PlaybackOutcome::QuitWithoutSaving)
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn navigating_away_saves_a_valid_custom_autohide_draft() {
+    let root = test_dir("autohide-navigate");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
+    menu.open();
+    menu.input(OptionsInput::Navigate(-1));
+    menu.input(OptionsInput::Cycle(-1));
+    menu.input(OptionsInput::Paste("42".into()));
+    menu.input(OptionsInput::Navigate(1));
+
+    assert_eq!(menu.selected_setting, OptionsSetting::AccentColor);
+    assert_eq!(menu.playback_controls_autohide, 42);
+    assert_eq!(
+        Config::load(Some(&path))
+            .unwrap()
+            .playback_controls_autohide,
+        42
     );
     std::fs::remove_dir_all(root).unwrap();
 }

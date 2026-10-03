@@ -13,6 +13,7 @@ pub(super) struct AcrylicScratch {
     horizontal: Vec<u8>,
     blurred: Vec<u8>,
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn fill_acrylic_rounded_rect(
     frame: &mut [u8],
     width: u32,

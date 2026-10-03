@@ -101,6 +101,7 @@ pub(super) struct PlaybackUi {
 }
 
 impl PlaybackUi {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         media_title: Arc<str>,
         media_info: MediaInfo,
