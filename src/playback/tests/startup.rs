@@ -48,6 +48,18 @@ fn manual_playlist_switch_ignores_autoplay_policy() {
 }
 
 #[test]
+fn choosing_a_file_is_not_a_playlist_navigation() {
+    assert_eq!(
+        next_playlist_change(
+            PlaybackOutcome::OpenFile("/other/videos/Episode 1.mkv".into()),
+            PlaylistControls::default(),
+            true,
+        ),
+        None
+    );
+}
+
+#[test]
 fn forced_media_title_only_applies_to_the_initial_playlist_entry() {
     let initial = Path::new("/videos/Episode 1.mkv");
     let sibling = Path::new("/videos/Episode 2.mkv");

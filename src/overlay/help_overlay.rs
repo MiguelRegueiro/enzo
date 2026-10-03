@@ -76,6 +76,10 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 action: "Playlist menu",
             },
             HelpRow {
+                key: "Enter",
+                action: "Choose file",
+            },
+            HelpRow {
                 key: "q",
                 action: "Quit",
             },

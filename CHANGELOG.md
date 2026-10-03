@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - XDG desktop file chooser for selecting one video from the empty launcher screen.
+- Press `Enter` during playback to choose another video without having to quit and reopen Enzo.
 
 ### Fixed
 

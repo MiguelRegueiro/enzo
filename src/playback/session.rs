@@ -66,7 +66,7 @@ pub(super) struct PlaybackSession<'fonts, W: Write> {
     resize: ResizeTracker,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum PlaybackOutcome {
     Quit,
     QuitWithoutSaving,
@@ -74,6 +74,7 @@ pub(super) enum PlaybackOutcome {
     Interrupted,
     Switch(PlaylistStep),
     SelectPlaylistEntry(usize),
+    OpenFile(PathBuf),
 }
 
 pub(super) struct PlaybackSessionResult {
@@ -86,12 +87,12 @@ pub(super) struct PlaybackSessionResult {
 }
 
 impl PlaybackOutcome {
-    fn clears_resume(self) -> bool {
-        self == Self::Completed
+    fn clears_resume(&self) -> bool {
+        matches!(self, Self::Completed)
     }
 
-    fn skips_resume_save(self) -> bool {
-        self == Self::QuitWithoutSaving
+    fn skips_resume_save(&self) -> bool {
+        matches!(self, Self::QuitWithoutSaving)
     }
 }
 
@@ -201,7 +202,7 @@ impl<W: Write> PlaybackSession<'_, W> {
         let panel_opacity = session.ui.options.panel_opacity;
         let background_blur = session.ui.options.background_blur;
         let playback_controls_autohide = session.ui.options.playback_controls_autohide;
-        let carryover = session.finish(playback_outcome)?;
+        let carryover = session.finish(&playback_outcome)?;
         Ok(PlaybackSessionResult {
             accent_color,
             panel_opacity,
@@ -518,7 +519,7 @@ impl<W: Write> PlaybackSession<'_, W> {
         Ok(())
     }
 
-    fn finish(mut self, outcome: PlaybackOutcome) -> Result<PlaybackCarryover> {
+    fn finish(mut self, outcome: &PlaybackOutcome) -> Result<PlaybackCarryover> {
         let carryover = PlaybackCarryover {
             paused: self.engine.paused,
             muted: self.engine.muted,

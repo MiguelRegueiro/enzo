@@ -5,4 +5,5 @@ mod terminal_input;
 
 pub(crate) use argument_parsing::{Action, HELP, Options, VERSION, parse_args};
 pub(crate) use media_drop_launcher::run as run_media_drop_launcher;
+pub(crate) use portal_file_chooser::choose_file;
 pub(crate) use terminal_input::{OptionsInput, PlaybackCommand, PlaybackMouse, read_input_events};

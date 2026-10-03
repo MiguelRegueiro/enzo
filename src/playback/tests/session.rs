@@ -11,6 +11,7 @@ fn only_completed_playback_clears_resume_state() {
     assert!(!PlaybackOutcome::Interrupted.clears_resume());
     assert!(!PlaybackOutcome::Switch(PlaylistStep::Next).clears_resume());
     assert!(!PlaybackOutcome::SelectPlaylistEntry(3).clears_resume());
+    assert!(!PlaybackOutcome::OpenFile("video.mkv".into()).clears_resume());
 }
 
 #[test]
@@ -21,6 +22,7 @@ fn only_explicit_no_save_quit_skips_resume_save() {
     assert!(!PlaybackOutcome::Interrupted.skips_resume_save());
     assert!(!PlaybackOutcome::Switch(PlaylistStep::Next).skips_resume_save());
     assert!(!PlaybackOutcome::SelectPlaylistEntry(3).skips_resume_save());
+    assert!(!PlaybackOutcome::OpenFile("video.mkv".into()).skips_resume_save());
 }
 
 #[test]

@@ -7,8 +7,9 @@ use std::{
 use anyhow::Result;
 
 use crate::{
-    cli::{PlaybackCommand, PlaybackMouse},
+    cli::{PlaybackCommand, PlaybackMouse, choose_file},
     font::FontSystem,
+    media_source::media_path_from_drop_text,
     overlay::{
         AudioPickerAction, OverlayHitContext, PlaylistMenuAction, SubtitlePickerAction,
         TransportControlAction,
@@ -312,10 +313,53 @@ impl<W: Write> InteractionContext<'_, W> {
                 self.seeking.scrub_position = Some(seek_target);
                 self.seeking.keyboard_commit_at = Some(input_at + KEYBOARD_SEEK_COMMIT_AFTER);
             }
+            PlaybackCommand::ConfirmPicker
+                if !self.ui.audio_picker_open && !self.ui.subtitle_picker_open =>
+            {
+                return self.choose_file(input_at);
+            }
             PlaybackCommand::ConfirmPicker => self.confirm_open_picker(input_at)?,
             PlaybackCommand::PlaylistFirst | PlaybackCommand::PlaylistLast => {}
             PlaybackCommand::None | PlaybackCommand::ToggleOptions => {}
         }
+        Ok(None)
+    }
+
+    fn choose_file(&mut self, input_at: Instant) -> Result<Option<PlaybackOutcome>> {
+        self.release_keyboard_seek_preview()?;
+        let was_paused = self.engine.paused;
+        if !was_paused {
+            self.toggle_pause(input_at);
+        }
+
+        match choose_file() {
+            Ok(Some(text)) => match media_path_from_drop_text(&text) {
+                Ok(path) => {
+                    if !was_paused {
+                        self.toggle_pause(Instant::now());
+                    }
+                    return Ok(Some(PlaybackOutcome::OpenFile(path)));
+                }
+                Err(error) => {
+                    self.ui.status_message = Some(PlaybackUi::status(
+                        format!("FILE OPEN FAILED: {error}"),
+                        Instant::now(),
+                    ));
+                }
+            },
+            Ok(None) => {}
+            Err(error) => {
+                self.ui.status_message = Some(PlaybackUi::status(
+                    format!("FILE CHOOSER FAILED: {error}"),
+                    Instant::now(),
+                ));
+            }
+        }
+
+        if !was_paused {
+            self.toggle_pause(Instant::now());
+        }
+        self.view.dirty = self.view.have_frame;
         Ok(None)
     }
 

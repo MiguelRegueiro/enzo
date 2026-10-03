@@ -68,9 +68,14 @@ pub(crate) fn play(
         options.panel_opacity = result.panel_opacity;
         options.background_blur = result.background_blur;
         options.playback_controls_autohide = result.playback_controls_autohide;
-        let Some(change) =
-            next_playlist_change(result.outcome, playlist_controls, options.autoplay_next)
-        else {
+        let change = match result.outcome {
+            super::session::PlaybackOutcome::OpenFile(path) => {
+                playlist = Playlist::from_opened_path(path);
+                continue;
+            }
+            outcome => next_playlist_change(outcome, playlist_controls, options.autoplay_next),
+        };
+        let Some(change) = change else {
             return Ok(());
         };
         let changed = match change {
