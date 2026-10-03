@@ -67,6 +67,7 @@ pub(crate) fn play(
         options.accent_color = result.accent_color;
         options.panel_opacity = result.panel_opacity;
         options.background_blur = result.background_blur;
+        options.playback_controls_autohide = result.playback_controls_autohide;
         let Some(change) =
             next_playlist_change(result.outcome, playlist_controls, options.autoplay_next)
         else {
@@ -164,6 +165,7 @@ fn play_current(
         options.accent_color,
         options.panel_opacity,
         options.background_blur,
+        options.playback_controls_autohide,
         options.config_path.clone(),
     );
     options_menu.custom_color = carryover
@@ -178,6 +180,7 @@ fn play_current(
         playlist.current,
         playlist.labels,
         options_menu,
+        options.playback_controls_autohide,
     );
     let seeking = SeekCoordinator::new(PendingSeek {
         video_generation: engine.video.seek_generation(),

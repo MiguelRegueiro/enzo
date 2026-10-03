@@ -34,6 +34,7 @@ pub(super) fn execute(options: Options) -> Result<()> {
         custom_accent_color: options.custom_accent_color,
         panel_opacity: options.panel_opacity,
         background_blur: options.background_blur,
+        playback_controls_autohide: options.playback_controls_autohide,
         config_path: options.config_path,
         force_media_title: options
             .force_media_title

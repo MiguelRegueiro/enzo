@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::Config;
 
 fn test_dir(label: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
@@ -67,7 +68,7 @@ fn background_blur_is_adjusted_and_saved_from_its_selected_row() {
     let path = root.join("config.toml");
     let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
     menu.open();
-    menu.input(OptionsInput::Navigate(-1));
+    menu.input(OptionsInput::Navigate(-2));
     menu.input(OptionsInput::Cycle(1));
     assert_eq!(menu.background_blur, 14);
     assert_eq!(
@@ -471,6 +472,50 @@ fn empty_custom_keeps_cycling_until_a_digit_is_typed() {
     assert_eq!(
         menu.state.as_ref().unwrap().editor.as_ref().unwrap().text,
         "#"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn playback_controls_autohide_saves_presets_never_and_custom_seconds() {
+    let root = test_dir("autohide");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
+    menu.open();
+    menu.input(OptionsInput::Navigate(-1));
+    assert_eq!(
+        menu.selected_setting,
+        OptionsSetting::PlaybackControlsAutohide
+    );
+    menu.input(OptionsInput::Cycle(-2));
+    assert_eq!(menu.playback_controls_autohide, 0);
+    assert_eq!(
+        Config::load(Some(&path))
+            .unwrap()
+            .playback_controls_autohide,
+        0
+    );
+
+    menu.input(OptionsInput::Cycle(1));
+    let editor = menu
+        .state
+        .as_ref()
+        .unwrap()
+        .seconds_editor
+        .as_ref()
+        .unwrap();
+    assert!(editor.text.is_empty());
+    for digit in ['9', '9', '9', '9', '9'] {
+        menu.input(OptionsInput::Character(digit));
+    }
+    menu.input(OptionsInput::Confirm);
+    assert_eq!(menu.playback_controls_autohide, 9999);
+    assert!(menu.state.is_none());
+    assert_eq!(
+        Config::load(Some(&path))
+            .unwrap()
+            .playback_controls_autohide,
+        9999
     );
     std::fs::remove_dir_all(root).unwrap();
 }

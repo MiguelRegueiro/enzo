@@ -90,16 +90,18 @@ autoplay_next = true
 accent_color = "#ef4444"
 panel_opacity = 70
 background_blur = 12
+playback_controls_autohide = 2
 ```
 
-`volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. `panel_opacity` controls the acrylic tint from 0 to 100 and defaults to 70. `background_blur` controls the acrylic blur radius from 0 to 24 pixels and defaults to 12. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
+`volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. `panel_opacity` controls the acrylic tint from 0 to 100 and defaults to 70. `background_blur` controls the acrylic blur radius from 0 to 24 pixels and defaults to 12. `playback_controls_autohide` controls only the bottom playback controls, accepts 0 (Never) or 1–9999 seconds, and defaults to 2. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
 
 Press `o` during playback to open Options. Use Up/Down to select Accent color or
-Panel opacity, or Background blur; use Left/Right or the arrow buttons to change the selected value.
+Panel opacity, Background blur, or Playback controls auto-hide; use Left/Right or the arrow buttons to change the selected value.
 Panel opacity adjusts in 5% steps, Background blur in 2px steps, and both save immediately. Custom restores the last confirmed custom color, or shows
 an empty field with a `#RRGGBB` placeholder if none has been set. The optional
 `custom_accent_color` config entry remembers that value across preset changes
 and restarts; `accent_color` remains the active color. Both use `#RRGGBB` format.
+Playback controls auto-hide offers 2s, 4s, 8s, Never, and Custom. Custom accepts whole seconds from 1 to 9999; Enter saves and closes the panel, while Esc cancels. Enter also closes the panel after selecting any other setting.
 Remembered values leave the arrows free to cycle until you start editing.
 Left/Right keeps cycling until a hex digit is entered, then moves the caret;
 clearing all digits restores cycling. Home/End, Backspace, Delete, Ctrl+A, and

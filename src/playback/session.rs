@@ -80,6 +80,7 @@ pub(super) struct PlaybackSessionResult {
     pub(super) accent_color: [u8; 3],
     pub(super) panel_opacity: u8,
     pub(super) background_blur: u8,
+    pub(super) playback_controls_autohide: u16,
     pub(super) outcome: PlaybackOutcome,
     pub(super) carryover: PlaybackCarryover,
 }
@@ -152,6 +153,9 @@ impl<W: Write> PlaybackSession<'_, W> {
                     .view
                     .overlay
                     .set_background_blur(session.ui.options.background_blur);
+                session.ui.playback_controls_autohide =
+                    session.ui.options.playback_controls_autohide;
+                session.ui.show_overlay(input_at);
                 session.view.dirty = session.view.have_frame;
                 if let Some(outcome) = outcome {
                     break outcome;
@@ -196,11 +200,13 @@ impl<W: Write> PlaybackSession<'_, W> {
         let accent_color = session.ui.options.color;
         let panel_opacity = session.ui.options.panel_opacity;
         let background_blur = session.ui.options.background_blur;
+        let playback_controls_autohide = session.ui.options.playback_controls_autohide;
         let carryover = session.finish(playback_outcome)?;
         Ok(PlaybackSessionResult {
             accent_color,
             panel_opacity,
             background_blur,
+            playback_controls_autohide,
             outcome: playback_outcome,
             carryover,
         })

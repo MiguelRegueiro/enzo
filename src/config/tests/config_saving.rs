@@ -73,6 +73,27 @@ fn saving_panel_opacity_preserves_comments_and_other_settings() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn saving_playback_controls_autohide_preserves_comments() {
+    let root = std::env::temp_dir().join(format!("enzo-autohide-save-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("config.toml");
+    std::fs::write(&path, "# keep\nplayback_controls_autohide = 2 # controls\n").unwrap();
+
+    save_playback_controls_autohide(&path, 0).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# keep\nplayback_controls_autohide = 0 # controls\n"
+    );
+    assert_eq!(
+        Config::load(Some(&path))
+            .unwrap()
+            .playback_controls_autohide,
+        0
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn saves_through_symlinks_without_replacing_them() {

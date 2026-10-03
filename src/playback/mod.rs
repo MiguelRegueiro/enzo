@@ -31,6 +31,7 @@ pub(crate) struct PlaybackOptions {
     pub(crate) custom_accent_color: Option<[u8; 3]>,
     pub(crate) panel_opacity: u8,
     pub(crate) background_blur: u8,
+    pub(crate) playback_controls_autohide: u16,
     pub(crate) config_path: Option<std::path::PathBuf>,
     pub(crate) force_media_title: Option<std::sync::Arc<str>>,
 }

@@ -12,6 +12,7 @@ fn defaults_match_existing_playback_behavior() {
             custom_accent_color: None,
             panel_opacity: DEFAULT_PANEL_OPACITY,
             background_blur: DEFAULT_BACKGROUND_BLUR,
+            playback_controls_autohide: DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE,
         }
     );
 }
@@ -40,6 +41,7 @@ fn config_rejects_invalid_values_and_unknown_keys() {
         "custom_accent_color = \"#invalid\"\n",
         "panel_opacity = 101\n",
         "background_blur = 25\n",
+        "playback_controls_autohide = 10000\n",
     ] {
         assert!(Config::from_str(contents).is_err(), "contents: {contents}");
     }

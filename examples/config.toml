@@ -19,6 +19,10 @@ panel_opacity = 70
 # Radius of the acrylic background blur, from 0 to 24 pixels.
 background_blur = 12
 
+# Seconds before the bottom playback controls hide (0 keeps them visible).
+# Options offers 2s, 4s, 8s, Never, and Custom (1 to 9999 seconds).
+playback_controls_autohide = 2
+
 # Last confirmed custom color, remembered even while a preset is active.
 # Options saves this automatically; it does not change the active accent.
 # custom_accent_color = "#123abc"

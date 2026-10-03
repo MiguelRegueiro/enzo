@@ -16,7 +16,10 @@ mod text;
 mod time_progress;
 mod top_messages;
 
-pub(crate) use options_overlay::{HexInputState, OptionsAction, OptionsMenuState, OptionsSetting};
+pub(crate) use options_overlay::{
+    HexInputState, OptionsAction, OptionsMenuState, OptionsSetting, SecondsInputState,
+    autohide_choice,
+};
 pub(crate) use playback_overlay::PlaybackOverlay;
 pub(crate) use state::{
     AudioPickerAction, HitboxRect, MediaInfo, MediaInfoState, OverlayHitContext, OverlayHitPoint,

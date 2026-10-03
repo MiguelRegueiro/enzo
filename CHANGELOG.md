@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom `#RRGGBB` overlay accent colors.
 - Options panel (`o`) with accent presets, custom hex colors, and automatic configuration saving.
 - Adjustable acrylic tint opacity and background blur controls in Options, with persistent configuration.
+- Persistent playback-controls auto-hide option with 2s, 4s, 8s, Never, and custom 1–9999 second choices, including keyboard and mouse controls with immediate configuration saving.
 
 ### Fixed
 

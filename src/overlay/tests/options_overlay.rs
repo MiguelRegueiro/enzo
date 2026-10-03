@@ -20,6 +20,8 @@ fn state() -> OptionsMenuState {
         selected_setting: OptionsSetting::AccentColor,
         panel_opacity: 70,
         background_blur: 12,
+        playback_controls_autohide: 2,
+        seconds_editor: None,
         error: None,
     }
 }
@@ -117,10 +119,10 @@ fn panel_sizes_to_content_and_stays_bounded_on_small_canvases() {
             12,
             &mut AcrylicScratch::default(),
         );
-        if height >= 180 {
+        if height >= 200 {
             assert_eq!(
                 geometry.panel.bottom - geometry.panel.top,
-                geometry.pitch * 7 + geometry.pad * 2
+                geometry.pitch * 9 + geometry.pad * 2
             );
         }
     }

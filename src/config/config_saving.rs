@@ -37,6 +37,12 @@ pub(crate) fn save_background_blur(path: &Path, blur: u8) -> Result<()> {
     save_config(path, |document| set_u8(document, "background_blur", blur))
 }
 
+pub(crate) fn save_playback_controls_autohide(path: &Path, seconds: u16) -> Result<()> {
+    save_config(path, |document| {
+        set_u16(document, "playback_controls_autohide", seconds)
+    })
+}
+
 fn save_config(path: &Path, edit: impl FnOnce(&mut DocumentMut)) -> Result<()> {
     // Follow existing symlinks so saving never replaces a user's config link.
     let path = match fs::symlink_metadata(path) {
@@ -114,6 +120,16 @@ fn set_color(document: &mut DocumentMut, key: &str, [r, g, b]: [u8; 3]) {
 }
 
 fn set_u8(document: &mut DocumentMut, key: &str, number: u8) {
+    if let Some(existing) = document.get_mut(key).and_then(|item| item.as_value_mut()) {
+        let decor = existing.decor().clone();
+        *existing = Value::from(i64::from(number));
+        *existing.decor_mut() = decor;
+    } else {
+        document[key] = value(i64::from(number));
+    }
+}
+
+fn set_u16(document: &mut DocumentMut, key: &str, number: u16) {
     if let Some(existing) = document.get_mut(key).and_then(|item| item.as_value_mut()) {
         let decor = existing.decor().clone();
         *existing = Value::from(i64::from(number));

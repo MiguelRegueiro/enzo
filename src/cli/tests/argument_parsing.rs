@@ -61,6 +61,7 @@ fn config_values_supply_playback_defaults() {
             custom_accent_color: Some([4, 5, 6]),
             panel_opacity: 60,
             background_blur: 12,
+            playback_controls_autohide: 4,
         },
     );
 
@@ -87,6 +88,7 @@ fn command_line_values_override_config() {
             custom_accent_color: None,
             panel_opacity: 60,
             background_blur: 12,
+            playback_controls_autohide: 4,
         },
     );
 

@@ -6,9 +6,9 @@ use crate::{
     cli::OptionsInput,
     config::{
         DEFAULT_ACCENT_COLOR, MAX_BACKGROUND_BLUR, parse_hex_color, save_accent_color,
-        save_background_blur, save_panel_opacity,
+        save_background_blur, save_panel_opacity, save_playback_controls_autohide,
     },
-    overlay::{HexInputState, OptionsAction, OptionsMenuState, OptionsSetting},
+    overlay::{HexInputState, OptionsAction, OptionsMenuState, OptionsSetting, SecondsInputState},
 };
 
 use super::session::PlaybackOutcome;
@@ -29,6 +29,7 @@ pub(super) struct OptionsMenu {
     pub(super) custom_color: Option<[u8; 3]>,
     pub(super) panel_opacity: u8,
     pub(super) background_blur: u8,
+    pub(super) playback_controls_autohide: u16,
     path: Option<PathBuf>,
     selected: usize,
     selected_setting: OptionsSetting,
@@ -41,6 +42,7 @@ impl OptionsMenu {
             color,
             crate::config::DEFAULT_PANEL_OPACITY,
             crate::config::DEFAULT_BACKGROUND_BLUR,
+            crate::config::DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE,
             path,
         )
     }
@@ -49,6 +51,7 @@ impl OptionsMenu {
         color: [u8; 3],
         panel_opacity: u8,
         background_blur: u8,
+        playback_controls_autohide: u16,
         path: Option<PathBuf>,
     ) -> Self {
         let selected = ACCENTS
@@ -63,6 +66,7 @@ impl OptionsMenu {
             custom_color: (selected == CUSTOM).then_some(color),
             panel_opacity,
             background_blur,
+            playback_controls_autohide,
             selected_setting: OptionsSetting::AccentColor,
         }
     }
@@ -82,6 +86,13 @@ impl OptionsMenu {
             selected_setting: self.selected_setting,
             panel_opacity: self.panel_opacity,
             background_blur: self.background_blur,
+            playback_controls_autohide: self.playback_controls_autohide,
+            seconds_editor: (crate::overlay::autohide_choice(self.playback_controls_autohide) == 4)
+                .then(|| SecondsInputState {
+                    text: self.playback_controls_autohide.to_string(),
+                    focused: self.selected_setting == OptionsSetting::PlaybackControlsAutohide,
+                    selected: false,
+                }),
             editor: (self.selected == CUSTOM).then(|| HexInputState {
                 cursor: text.len(),
                 text,
@@ -136,6 +147,58 @@ impl OptionsMenu {
             }
             return None;
         }
+        if self.selected_setting == OptionsSetting::PlaybackControlsAutohide {
+            if matches!(input, OptionsInput::Confirm) {
+                let Some(editor) = state.seconds_editor.as_ref() else {
+                    self.state = None;
+                    return None;
+                };
+                match editor.text.parse::<u16>() {
+                    Ok(seconds @ 1..=9_999) => {
+                        if self.set_playback_controls_autohide(seconds) {
+                            self.state = None;
+                        }
+                    }
+                    _ => state.error = Some("Use whole seconds from 1 to 9999".into()),
+                }
+                return None;
+            }
+            if let Some(editor) = state.seconds_editor.as_mut() {
+                match input {
+                    OptionsInput::Character(ch) if ch.is_ascii_digit() => {
+                        if editor.selected {
+                            editor.text.clear();
+                            editor.selected = false;
+                        }
+                        if editor.text.len() < 4 {
+                            editor.text.push(ch);
+                        }
+                        state.error = None;
+                    }
+                    OptionsInput::Paste(text) => {
+                        let text = text.trim();
+                        if text.chars().all(|ch| ch.is_ascii_digit()) {
+                            editor.text = text.chars().take(4).collect();
+                            editor.selected = false;
+                            state.error = None;
+                        }
+                    }
+                    OptionsInput::Backspace | OptionsInput::Delete => {
+                        if editor.selected {
+                            editor.text.clear();
+                            editor.selected = false;
+                        } else {
+                            editor.text.pop();
+                        }
+                        state.error = None;
+                    }
+                    OptionsInput::SelectAll => editor.selected = true,
+                    OptionsInput::Cycle(direction) => self.cycle_autohide(direction),
+                    _ => {}
+                }
+                return None;
+            }
+        }
         if self.selected_setting == OptionsSetting::AccentColor
             && let Some(editor) = state.editor.as_mut()
         {
@@ -189,6 +252,7 @@ impl OptionsMenu {
                 self.cycle(direction)
             }
             OptionsInput::Cycle(direction) => self.adjust_selected_setting(direction),
+            OptionsInput::Confirm => self.state = None,
             _ => {}
         }
         None
@@ -214,6 +278,21 @@ impl OptionsMenu {
             OptionsAction::SetOpacity(opacity) => self.set_opacity(opacity),
             OptionsAction::AdjustBlur(direction) => self.adjust_blur(direction),
             OptionsAction::SetBlur(blur) => self.set_blur(blur),
+            OptionsAction::CycleAutohide(direction) => self.cycle_autohide(direction),
+            OptionsAction::SecondsCursor => {
+                self.selected_setting = OptionsSetting::PlaybackControlsAutohide;
+                if let Some(editor) = self
+                    .state
+                    .as_mut()
+                    .and_then(|state| state.seconds_editor.as_mut())
+                {
+                    editor.focused = true;
+                    editor.selected = true;
+                }
+                if let Some(state) = self.state.as_mut() {
+                    state.selected_setting = OptionsSetting::PlaybackControlsAutohide;
+                }
+            }
             OptionsAction::Cursor(cursor) => {
                 self.selected_setting = OptionsSetting::AccentColor;
                 if let Some(editor) = self.state.as_mut().and_then(|state| state.editor.as_mut()) {
@@ -277,6 +356,7 @@ impl OptionsMenu {
             OptionsSetting::AccentColor => self.cycle(direction),
             OptionsSetting::PanelOpacity => self.adjust_opacity(direction),
             OptionsSetting::BackgroundBlur => self.adjust_blur(direction),
+            OptionsSetting::PlaybackControlsAutohide => self.cycle_autohide(direction),
         }
     }
 
@@ -319,6 +399,59 @@ impl OptionsMenu {
         self.background_blur = blur;
         self.selected_setting = OptionsSetting::BackgroundBlur;
         self.open();
+    }
+
+    fn cycle_autohide(&mut self, direction: i32) {
+        let choice = crate::overlay::autohide_choice(self.playback_controls_autohide);
+        self.set_autohide_choice((choice as i32 + direction).rem_euclid(5) as usize);
+    }
+
+    fn set_autohide_choice(&mut self, choice: usize) {
+        self.selected_setting = OptionsSetting::PlaybackControlsAutohide;
+        match choice.min(4) {
+            0 => {
+                self.set_playback_controls_autohide(2);
+            }
+            1 => {
+                self.set_playback_controls_autohide(4);
+            }
+            2 => {
+                self.set_playback_controls_autohide(8);
+            }
+            3 => {
+                self.set_playback_controls_autohide(0);
+            }
+            _ => {
+                if self.playback_controls_autohide != 0
+                    && !matches!(self.playback_controls_autohide, 2 | 4 | 8)
+                {
+                    self.open();
+                } else if let Some(state) = self.state.as_mut() {
+                    state.seconds_editor = Some(SecondsInputState {
+                        text: String::new(),
+                        focused: true,
+                        selected: true,
+                    });
+                }
+            }
+        }
+    }
+
+    fn set_playback_controls_autohide(&mut self, seconds: u16) -> bool {
+        let result = self
+            .path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("config directory is unavailable"))
+            .and_then(|path| save_playback_controls_autohide(path, seconds));
+        if let Err(error) = result {
+            if let Some(state) = self.state.as_mut() {
+                state.error = Some(format!("Not saved: {error:#}"));
+            }
+            return false;
+        }
+        self.playback_controls_autohide = seconds;
+        self.open();
+        true
     }
 }
 

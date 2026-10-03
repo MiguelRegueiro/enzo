@@ -7,6 +7,8 @@ pub(crate) const DEFAULT_ACCENT_COLOR: [u8; 3] = [239, 68, 68];
 pub(crate) const DEFAULT_PANEL_OPACITY: u8 = 70;
 pub(crate) const DEFAULT_BACKGROUND_BLUR: u8 = 12;
 pub(crate) const MAX_BACKGROUND_BLUR: u8 = 24;
+pub(crate) const DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE: u16 = 2;
+pub(crate) const MAX_PLAYBACK_CONTROLS_AUTOHIDE: u16 = 9_999;
 const DEFAULT_VOLUME_MAX: u16 = MIN_VOLUME_MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +20,8 @@ pub(crate) struct Config {
     pub(crate) custom_accent_color: Option<[u8; 3]>,
     pub(crate) panel_opacity: u8,
     pub(crate) background_blur: u8,
+    /// Seconds; zero keeps playback controls visible until another action closes them.
+    pub(crate) playback_controls_autohide: u16,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -30,6 +34,7 @@ struct ConfigFile {
     custom_accent_color: Option<String>,
     panel_opacity: Option<u8>,
     background_blur: Option<u8>,
+    playback_controls_autohide: Option<u16>,
 }
 
 impl Default for Config {
@@ -42,6 +47,7 @@ impl Default for Config {
             custom_accent_color: None,
             panel_opacity: DEFAULT_PANEL_OPACITY,
             background_blur: DEFAULT_BACKGROUND_BLUR,
+            playback_controls_autohide: DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE,
         }
     }
 }
@@ -61,6 +67,14 @@ impl Config {
         if background_blur > MAX_BACKGROUND_BLUR {
             bail!("background_blur must be between 0 and {MAX_BACKGROUND_BLUR}");
         }
+        let playback_controls_autohide = parsed
+            .playback_controls_autohide
+            .unwrap_or(DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE);
+        if playback_controls_autohide > MAX_PLAYBACK_CONTROLS_AUTOHIDE {
+            bail!(
+                "playback_controls_autohide must be between 0 and {MAX_PLAYBACK_CONTROLS_AUTOHIDE}"
+            );
+        }
         Ok(Self {
             volume_max,
             resume: parsed.resume.unwrap_or(true),
@@ -78,6 +92,7 @@ impl Config {
                 .transpose()?,
             panel_opacity,
             background_blur,
+            playback_controls_autohide,
         })
     }
 }

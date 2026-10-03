@@ -14,7 +14,6 @@ use super::{
     layout::CanvasFrame, options::OptionsMenu, subtitles::SubtitleCatalog, tracks::AudioCatalog,
 };
 
-const OVERLAY_VISIBLE_FOR: Duration = Duration::from_secs(2);
 const STATUS_VISIBLE_FOR: Duration = Duration::from_secs(2);
 pub(super) const MEDIA_INFO_VISIBLE_FOR: Duration = Duration::from_secs(4);
 
@@ -94,9 +93,11 @@ pub(super) struct PlaybackUi {
     pub(super) help_visible: bool,
     pub(super) help_scroll_offset: usize,
     pub(super) overlay_visible_until: Option<Instant>,
+    overlay_pinned_visible: bool,
     pub(super) status_message: Option<StatusMessage>,
     pub(super) media_info: MediaInfoOverlay,
     media_title: Arc<str>,
+    pub(super) playback_controls_autohide: u16,
 }
 
 impl PlaybackUi {
@@ -108,6 +109,7 @@ impl PlaybackUi {
         playlist_current: usize,
         playlist_labels: Arc<[Arc<str>]>,
         options: OptionsMenu,
+        playback_controls_autohide: u16,
     ) -> Self {
         Self {
             options,
@@ -125,9 +127,11 @@ impl PlaybackUi {
             help_visible: false,
             help_scroll_offset: 0,
             overlay_visible_until: None,
+            overlay_pinned_visible: false,
             status_message,
             media_info: MediaInfoOverlay::new(media_info, media_info_pinned),
             media_title,
+            playback_controls_autohide,
         }
     }
 
@@ -139,11 +143,14 @@ impl PlaybackUi {
     }
 
     pub(super) fn show_overlay(&mut self, now: Instant) {
-        self.overlay_visible_until = Some(now + OVERLAY_VISIBLE_FOR);
+        self.overlay_pinned_visible = self.playback_controls_autohide == 0;
+        self.overlay_visible_until = (!self.overlay_pinned_visible)
+            .then(|| now + Duration::from_secs(u64::from(self.playback_controls_autohide)));
     }
 
     pub(super) fn overlay_visible(&self, paused: bool, scrubbing: bool, now: Instant) -> bool {
-        overlay_visible(paused, scrubbing, self.overlay_visible_until, now)
+        self.overlay_pinned_visible
+            || overlay_visible(paused, scrubbing, self.overlay_visible_until, now)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -192,6 +199,7 @@ impl PlaybackUi {
             self.help_visible,
             self.help_scroll_offset,
         );
+        state.visible |= self.overlay_pinned_visible;
         state.options = self.options.overlay_state();
         state
     }
