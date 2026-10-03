@@ -127,6 +127,7 @@ fn serve_request(stream: &mut TcpStream, routes: &Routes, requests: &Mutex<Vec<S
         }
     }
     let request = String::from_utf8_lossy(&request);
+    let request_line = request.lines().next().unwrap_or_default();
     let target = request
         .lines()
         .next()
@@ -136,7 +137,7 @@ fn serve_request(stream: &mut TcpStream, routes: &Routes, requests: &Mutex<Vec<S
     requests
         .lock()
         .expect("request log should not poison")
-        .push(target.to_owned());
+        .push(request_line.to_owned());
 
     if let Some((content_type, body)) = routes.get(target) {
         let header = format!(

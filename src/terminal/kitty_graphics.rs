@@ -2,7 +2,7 @@ use std::{
     ffi::{CStr, CString},
     fs::File,
     io::{self, Write},
-    os::fd::FromRawFd,
+    os::fd::{FromRawFd, RawFd},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -235,7 +235,7 @@ impl SharedMemoryFrame {
             let fd = unsafe {
                 libc::shm_open(
                     name.as_ptr(),
-                    libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_CLOEXEC,
+                    libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
                     0o600,
                 )
             };
@@ -243,6 +243,13 @@ impl SharedMemoryFrame {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::AlreadyExists {
                     continue;
+                }
+                return Err(error);
+            }
+            if let Err(error) = set_close_on_exec(fd) {
+                unsafe {
+                    libc::close(fd);
+                    libc::shm_unlink(name.as_ptr());
                 }
                 return Err(error);
             }
@@ -275,6 +282,13 @@ fn shared_memory_name(process_id: u32, serial: u64) -> CString {
     let name = format!("/e{process_id:x}-{serial:x}");
     debug_assert!(name.len() <= SHARED_MEMORY_NAME_MAX_BYTES);
     CString::new(name).expect("shared memory name must not contain NUL bytes")
+}
+
+fn set_close_on_exec(fd: RawFd) -> io::Result<()> {
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 impl Drop for SharedMemoryFrame {

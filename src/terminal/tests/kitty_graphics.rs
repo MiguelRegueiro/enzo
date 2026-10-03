@@ -110,7 +110,7 @@ fn shared_memory_frame_contains_the_frame_and_cleans_up_while_owned() {
     let shared_frame =
         SharedMemoryFrame::create(&frame).expect("shared memory frame should be created");
     let name = shared_frame.name().to_owned();
-    let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC, 0) };
+    let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
     assert!(fd >= 0, "shared memory frame should be reopenable");
     let mut file = unsafe { File::from_raw_fd(fd) };
     let mut stored_frame = Vec::new();
@@ -120,7 +120,7 @@ fn shared_memory_frame_contains_the_frame_and_cleans_up_while_owned() {
 
     drop(shared_frame);
 
-    let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC, 0) };
+    let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
     assert_eq!(fd, -1, "owned shared memory frame should be unlinked");
 }
 
