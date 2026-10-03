@@ -52,6 +52,7 @@ pub(crate) struct Options {
     pub(crate) panel_opacity: u8,
     pub(crate) background_blur: u8,
     pub(crate) playback_controls_autohide: u16,
+    pub(crate) custom_playback_controls_autohide: Option<u16>,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) clear_resume: bool,
 }
@@ -184,6 +185,7 @@ fn parse_args_with_config_loader(
         panel_opacity: config.panel_opacity,
         background_blur: config.background_blur,
         playback_controls_autohide: config.playback_controls_autohide,
+        custom_playback_controls_autohide: config.custom_playback_controls_autohide,
         config_path: config_file.or_else(crate::config::config_path),
         clear_resume,
     }))

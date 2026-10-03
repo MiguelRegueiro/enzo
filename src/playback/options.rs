@@ -30,6 +30,7 @@ pub(super) struct OptionsMenu {
     pub(super) panel_opacity: u8,
     pub(super) background_blur: u8,
     pub(super) playback_controls_autohide: u16,
+    pub(super) custom_playback_controls_autohide: Option<u16>,
     path: Option<PathBuf>,
     selected: usize,
     selected_setting: OptionsSetting,
@@ -43,6 +44,7 @@ impl OptionsMenu {
             crate::config::DEFAULT_PANEL_OPACITY,
             crate::config::DEFAULT_BACKGROUND_BLUR,
             crate::config::DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE,
+            None,
             path,
         )
     }
@@ -52,6 +54,7 @@ impl OptionsMenu {
         panel_opacity: u8,
         background_blur: u8,
         playback_controls_autohide: u16,
+        custom_playback_controls_autohide: Option<u16>,
         path: Option<PathBuf>,
     ) -> Self {
         let selected = ACCENTS
@@ -67,6 +70,9 @@ impl OptionsMenu {
             panel_opacity,
             background_blur,
             playback_controls_autohide,
+            custom_playback_controls_autohide: custom_playback_controls_autohide.or_else(|| {
+                is_custom_autohide(playback_controls_autohide).then_some(playback_controls_autohide)
+            }),
             selected_setting: OptionsSetting::AccentColor,
         }
     }
@@ -483,16 +489,15 @@ impl OptionsMenu {
                 self.set_playback_controls_autohide(0);
             }
             _ => {
-                if self.playback_controls_autohide != 0
-                    && !matches!(self.playback_controls_autohide, 2 | 4 | 8)
-                {
-                    self.open();
-                } else if let Some(state) = self.state.as_mut() {
+                if let Some(state) = self.state.as_mut() {
                     state.seconds_editor = Some(SecondsInputState {
-                        text: String::new(),
+                        text: self
+                            .custom_playback_controls_autohide
+                            .map_or_else(String::new, |seconds| seconds.to_string()),
                         focused: true,
                         selected: true,
                     });
+                    state.error = None;
                 }
             }
         }
@@ -503,7 +508,15 @@ impl OptionsMenu {
             .path
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("config directory is unavailable"))
-            .and_then(|path| save_playback_controls_autohide(path, seconds));
+            .and_then(|path| {
+                save_playback_controls_autohide(
+                    path,
+                    seconds,
+                    is_custom_autohide(seconds)
+                        .then_some(seconds)
+                        .or(self.custom_playback_controls_autohide),
+                )
+            });
         if let Err(error) = result {
             if let Some(state) = self.state.as_mut() {
                 state.error = Some(format!("Not saved: {error:#}"));
@@ -511,9 +524,16 @@ impl OptionsMenu {
             return false;
         }
         self.playback_controls_autohide = seconds;
+        if is_custom_autohide(seconds) {
+            self.custom_playback_controls_autohide = Some(seconds);
+        }
         self.open();
         true
     }
+}
+
+fn is_custom_autohide(seconds: u16) -> bool {
+    seconds != 0 && !matches!(seconds, 2 | 4 | 8)
 }
 
 fn edit_hex(editor: &mut HexInputState, input: OptionsInput) {

@@ -531,6 +531,7 @@ impl<W: Write> PlaybackSession<'_, W> {
             volume_max: self.engine.volume_max,
             media_info_pinned: self.ui.media_info.pinned(),
             custom_accent_color: self.ui.options.custom_color,
+            custom_playback_controls_autohide: self.ui.options.custom_playback_controls_autohide,
         };
         let resume_result = if outcome.clears_resume() {
             self.resume.clear()

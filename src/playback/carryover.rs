@@ -6,6 +6,7 @@ pub(super) struct PlaybackCarryover {
     pub(super) volume_max: u16,
     pub(super) media_info_pinned: bool,
     pub(super) custom_accent_color: Option<[u8; 3]>,
+    pub(super) custom_playback_controls_autohide: Option<u16>,
 }
 
 impl PlaybackCarryover {
@@ -17,6 +18,7 @@ impl PlaybackCarryover {
             volume_max,
             media_info_pinned: false,
             custom_accent_color: None,
+            custom_playback_controls_autohide: None,
         }
     }
 }

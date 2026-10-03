@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Recover interrupted HTTP(S) streams with short, bounded retries instead of stalling playback.
 - Make `o` consistently close the Options panel from every setting.
+- Remember the last valid custom playback-controls auto-hide duration when switching between presets and across restarts.
 
 ## [1.2.0] - 2026-10-03
 

@@ -37,9 +37,16 @@ pub(crate) fn save_background_blur(path: &Path, blur: u8) -> Result<()> {
     save_config(path, |document| set_u8(document, "background_blur", blur))
 }
 
-pub(crate) fn save_playback_controls_autohide(path: &Path, seconds: u16) -> Result<()> {
+pub(crate) fn save_playback_controls_autohide(
+    path: &Path,
+    seconds: u16,
+    custom_seconds: Option<u16>,
+) -> Result<()> {
     save_config(path, |document| {
-        set_u16(document, "playback_controls_autohide", seconds)
+        set_u16(document, "playback_controls_autohide", seconds);
+        if let Some(seconds) = custom_seconds {
+            set_u16(document, "custom_playback_controls_autohide", seconds);
+        }
     })
 }
 

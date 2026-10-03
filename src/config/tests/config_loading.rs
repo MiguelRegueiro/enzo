@@ -33,6 +33,7 @@ fn explicit_config_path_is_loaded() {
             panel_opacity: Config::default().panel_opacity,
             background_blur: Config::default().background_blur,
             playback_controls_autohide: Config::default().playback_controls_autohide,
+            custom_playback_controls_autohide: None,
         }
     );
     fs::remove_dir_all(root).expect("config directory should be removed");

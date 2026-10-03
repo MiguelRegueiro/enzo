@@ -22,6 +22,8 @@ pub(crate) struct Config {
     pub(crate) background_blur: u8,
     /// Seconds; zero keeps playback controls visible until another action closes them.
     pub(crate) playback_controls_autohide: u16,
+    /// Last valid custom auto-hide duration, independent of the active preset.
+    pub(crate) custom_playback_controls_autohide: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -35,6 +37,7 @@ struct ConfigFile {
     panel_opacity: Option<u8>,
     background_blur: Option<u8>,
     playback_controls_autohide: Option<u16>,
+    custom_playback_controls_autohide: Option<u16>,
 }
 
 impl Default for Config {
@@ -48,6 +51,7 @@ impl Default for Config {
             panel_opacity: DEFAULT_PANEL_OPACITY,
             background_blur: DEFAULT_BACKGROUND_BLUR,
             playback_controls_autohide: DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE,
+            custom_playback_controls_autohide: None,
         }
     }
 }
@@ -75,6 +79,14 @@ impl Config {
                 "playback_controls_autohide must be between 0 and {MAX_PLAYBACK_CONTROLS_AUTOHIDE}"
             );
         }
+        let custom_playback_controls_autohide = parsed.custom_playback_controls_autohide;
+        if custom_playback_controls_autohide
+            .is_some_and(|seconds| !(1..=MAX_PLAYBACK_CONTROLS_AUTOHIDE).contains(&seconds))
+        {
+            bail!(
+                "custom_playback_controls_autohide must be between 1 and {MAX_PLAYBACK_CONTROLS_AUTOHIDE}"
+            );
+        }
         Ok(Self {
             volume_max,
             resume: parsed.resume.unwrap_or(true),
@@ -93,6 +105,7 @@ impl Config {
             panel_opacity,
             background_blur,
             playback_controls_autohide,
+            custom_playback_controls_autohide,
         })
     }
 }

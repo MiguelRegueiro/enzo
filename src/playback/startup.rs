@@ -171,12 +171,17 @@ fn play_current(
         options.panel_opacity,
         options.background_blur,
         options.playback_controls_autohide,
+        options.custom_playback_controls_autohide,
         options.config_path.clone(),
     );
     options_menu.custom_color = carryover
         .custom_accent_color
         .or(options_menu.custom_color)
         .or(options.custom_accent_color);
+    options_menu.custom_playback_controls_autohide = carryover
+        .custom_playback_controls_autohide
+        .or(options_menu.custom_playback_controls_autohide)
+        .or(options.custom_playback_controls_autohide);
     let ui = PlaybackUi::new(
         resolve_media_title(&path, force_media_title),
         media_info,

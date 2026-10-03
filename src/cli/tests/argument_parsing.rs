@@ -62,6 +62,7 @@ fn config_values_supply_playback_defaults() {
             panel_opacity: 60,
             background_blur: 12,
             playback_controls_autohide: 4,
+            custom_playback_controls_autohide: Some(17),
         },
     );
 
@@ -70,6 +71,7 @@ fn config_values_supply_playback_defaults() {
     assert!(!options.autoplay_next);
     assert_eq!(options.accent_color, [1, 2, 3]);
     assert_eq!(options.custom_accent_color, Some([4, 5, 6]));
+    assert_eq!(options.custom_playback_controls_autohide, Some(17));
 }
 
 #[test]
@@ -89,6 +91,7 @@ fn command_line_values_override_config() {
             panel_opacity: 60,
             background_blur: 12,
             playback_controls_autohide: 4,
+            custom_playback_controls_autohide: None,
         },
     );
 

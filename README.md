@@ -115,7 +115,7 @@ Panel opacity adjusts in 5% steps, Background blur in 2px steps, and both save i
 an empty field with a `#RRGGBB` placeholder if none has been set. The optional
 `custom_accent_color` config entry remembers that value across preset changes
 and restarts; `accent_color` remains the active color. Both use `#RRGGBB` format.
-Playback controls auto-hide offers 2s, 4s, 8s, Never, and Custom. Custom accepts whole seconds from 1 to 9999; Enter saves and closes the panel, while Esc cancels. Enter also closes the panel after selecting any other setting.
+Playback controls auto-hide offers 2s, 4s, 8s, Never, and Custom. Custom accepts whole seconds from 1 to 9999; Enter saves and closes the panel, while Esc cancels. Its last valid custom value is remembered across preset changes and restarts. Enter also closes the panel after selecting any other setting.
 Remembered values leave the arrows free to cycle until you start editing.
 Left/Right keeps cycling until a hex digit is entered, then moves the caret;
 clearing all digits restores cycling. Home/End, Backspace, Delete, Ctrl+A, and

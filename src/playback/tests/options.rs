@@ -609,3 +609,41 @@ fn navigating_away_saves_a_valid_custom_autohide_draft() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn remembered_custom_autohide_survives_presets_and_restart() {
+    let root = test_dir("remembered-autohide");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
+    menu.open();
+    menu.input(OptionsInput::Navigate(-1));
+    menu.input(OptionsInput::Cycle(-1));
+    menu.input(OptionsInput::Paste("42".into()));
+    menu.input(OptionsInput::Confirm);
+
+    menu.open();
+    menu.input(OptionsInput::Cycle(-1));
+    assert_eq!(menu.playback_controls_autohide, 0);
+    menu.input(OptionsInput::Cycle(1));
+    assert_eq!(
+        menu.state
+            .as_ref()
+            .and_then(|state| state.seconds_editor.as_ref())
+            .map(|editor| editor.text.as_str()),
+        Some("42")
+    );
+
+    let config = Config::load(Some(&path)).unwrap();
+    assert_eq!(config.playback_controls_autohide, 0);
+    assert_eq!(config.custom_playback_controls_autohide, Some(42));
+    let restarted = OptionsMenu::with_appearance(
+        DEFAULT_ACCENT_COLOR,
+        crate::config::DEFAULT_PANEL_OPACITY,
+        crate::config::DEFAULT_BACKGROUND_BLUR,
+        config.playback_controls_autohide,
+        config.custom_playback_controls_autohide,
+        Some(path),
+    );
+    assert_eq!(restarted.custom_playback_controls_autohide, Some(42));
+    std::fs::remove_dir_all(root).unwrap();
+}

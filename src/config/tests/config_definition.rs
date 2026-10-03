@@ -13,6 +13,7 @@ fn defaults_match_existing_playback_behavior() {
             panel_opacity: DEFAULT_PANEL_OPACITY,
             background_blur: DEFAULT_BACKGROUND_BLUR,
             playback_controls_autohide: DEFAULT_PLAYBACK_CONTROLS_AUTOHIDE,
+            custom_playback_controls_autohide: None,
         }
     );
 }
@@ -42,6 +43,8 @@ fn config_rejects_invalid_values_and_unknown_keys() {
         "panel_opacity = 101\n",
         "background_blur = 25\n",
         "playback_controls_autohide = 10000\n",
+        "custom_playback_controls_autohide = 0\n",
+        "custom_playback_controls_autohide = 10000\n",
     ] {
         assert!(Config::from_str(contents).is_err(), "contents: {contents}");
     }

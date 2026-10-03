@@ -35,6 +35,7 @@ pub(super) fn execute(options: Options) -> Result<()> {
         panel_opacity: options.panel_opacity,
         background_blur: options.background_blur,
         playback_controls_autohide: options.playback_controls_autohide,
+        custom_playback_controls_autohide: options.custom_playback_controls_autohide,
         config_path: options.config_path,
         force_media_title: options
             .force_media_title

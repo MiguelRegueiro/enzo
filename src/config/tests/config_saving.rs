@@ -80,17 +80,23 @@ fn saving_playback_controls_autohide_preserves_comments() {
     let path = root.join("config.toml");
     std::fs::write(&path, "# keep\nplayback_controls_autohide = 2 # controls\n").unwrap();
 
-    save_playback_controls_autohide(&path, 0).unwrap();
+    save_playback_controls_autohide(&path, 0, Some(42)).unwrap();
 
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "# keep\nplayback_controls_autohide = 0 # controls\n"
+        "# keep\nplayback_controls_autohide = 0 # controls\ncustom_playback_controls_autohide = 42\n"
     );
     assert_eq!(
         Config::load(Some(&path))
             .unwrap()
             .playback_controls_autohide,
         0
+    );
+    assert_eq!(
+        Config::load(Some(&path))
+            .unwrap()
+            .custom_playback_controls_autohide,
+        Some(42)
     );
 }
 
