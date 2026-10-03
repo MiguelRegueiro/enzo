@@ -338,7 +338,8 @@ pub(super) fn draw_track_picker(
             radius: f64::from(radius),
         },
         PANEL_COLOR,
-        188,
+        palette.panel_alpha,
+        palette.blur_radius,
         acrylic,
     );
 

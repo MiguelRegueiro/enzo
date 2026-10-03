@@ -17,6 +17,9 @@ fn state() -> OptionsMenuState {
         count: 7,
         color: [68, 80, 239],
         editor: None,
+        selected_setting: OptionsSetting::AccentColor,
+        panel_opacity: 70,
+        background_blur: 12,
         error: None,
     }
 }
@@ -40,7 +43,7 @@ fn only_arrow_buttons_cycle_presets() {
     let state = state();
     let geometry = geometry(context, &state, &mut None);
     for direction in [-1, 1] {
-        let button = geometry.arrow(direction);
+        let button = geometry.arrow(2, direction);
         assert_eq!(
             options_action(
                 context,
@@ -48,7 +51,7 @@ fn only_arrow_buttons_cycle_presets() {
                 point(button.left + 1, button.top + 1),
                 None
             ),
-            Some(OptionsAction::Cycle(direction))
+            Some(OptionsAction::CycleAccent(direction))
         );
     }
     let row = geometry.row(2);
@@ -65,7 +68,7 @@ fn only_arrow_buttons_cycle_presets() {
         options_action(
             context,
             &state,
-            point(geometry.arrow(-1).right + 1, row.top + 1),
+            point(geometry.arrow(2, -1).right + 1, row.top + 1),
             None
         ),
         None
@@ -110,12 +113,14 @@ fn panel_sizes_to_content_and_stays_bounded_on_small_canvases() {
             &mut frame,
             context,
             &state,
+            178,
+            12,
             &mut AcrylicScratch::default(),
         );
         if height >= 180 {
             assert_eq!(
                 geometry.panel.bottom - geometry.panel.top,
-                geometry.pitch * 3 + geometry.pad * 2
+                geometry.pitch * 7 + geometry.pad * 2
             );
         }
     }

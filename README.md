@@ -88,12 +88,15 @@ volume_max = 200
 resume = true
 autoplay_next = true
 accent_color = "#ef4444"
+panel_opacity = 70
+background_blur = 12
 ```
 
-`volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
+`volume_max` accepts values from 100 to 1000. `accent_color` accepts a quoted `#RRGGBB` hexadecimal color and defaults to `#ef4444`. `panel_opacity` controls the acrylic tint from 0 to 100 and defaults to 70. `background_blur` controls the acrylic blur radius from 0 to 24 pixels and defaults to 12. Invalid configuration is reported and Enzo falls back to its built-in defaults. See [`examples/config.toml`](examples/config.toml) for an annotated file.
 
-Press `o` during playback to open Options. Use Left/Right or the arrow buttons to
-cycle accent presets. Custom restores the last confirmed custom color, or shows
+Press `o` during playback to open Options. Use Up/Down to select Accent color or
+Panel opacity, or Background blur; use Left/Right or the arrow buttons to change the selected value.
+Panel opacity adjusts in 5% steps, Background blur in 2px steps, and both save immediately. Custom restores the last confirmed custom color, or shows
 an empty field with a `#RRGGBB` placeholder if none has been set. The optional
 `custom_accent_color` config entry remembers that value across preset changes
 and restarts; `accent_color` remains the active color. Both use `#RRGGBB` format.

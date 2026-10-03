@@ -44,7 +44,7 @@ pub(crate) struct PlaybackInput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum OptionsInput {
     Cycle(i32),
-    Focus,
+    Navigate(i32),
     Confirm,
     Close,
     Character(char),
@@ -82,7 +82,8 @@ fn options_input(key: &KeyEvent) -> Option<OptionsInput> {
     match key.code {
         KeyCode::Left => Some(OptionsInput::Cycle(-1)),
         KeyCode::Right => Some(OptionsInput::Cycle(1)),
-        KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => Some(OptionsInput::Focus),
+        KeyCode::Up | KeyCode::BackTab => Some(OptionsInput::Navigate(-1)),
+        KeyCode::Down | KeyCode::Tab => Some(OptionsInput::Navigate(1)),
         KeyCode::Enter => Some(OptionsInput::Confirm),
         KeyCode::Backspace => Some(OptionsInput::Backspace),
         KeyCode::Delete => Some(OptionsInput::Delete),

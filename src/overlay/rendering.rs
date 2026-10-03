@@ -51,6 +51,8 @@ pub(super) fn render_overlay_rgb(
                 scale_percent,
             },
             options,
+            palette.panel_alpha,
+            palette.blur_radius,
             acrylic,
         );
         return;
@@ -102,6 +104,8 @@ pub(super) fn render_overlay_rgb(
             text_height,
             title,
             0,
+            palette.panel_alpha,
+            palette.blur_radius,
             acrylic,
         );
     }
@@ -117,6 +121,8 @@ pub(super) fn render_overlay_rgb(
             text_height,
             message,
             u32::from(title_visible),
+            palette.panel_alpha,
+            palette.blur_radius,
             acrylic,
         );
     }
@@ -132,6 +138,8 @@ pub(super) fn render_overlay_rgb(
             text_height,
             info,
             u32::from(title_visible) + u32::from(state.status_message.is_some()),
+            palette.panel_alpha,
+            palette.blur_radius,
             acrylic,
         );
     }
@@ -181,7 +189,16 @@ pub(super) fn render_overlay_rgb(
         height: f64::from(metrics.panel_height),
         radius: f64::from(panel_radius),
     };
-    fill_acrylic_rounded_rect(frame, width, height, panel_rect, PANEL_COLOR, 188, acrylic);
+    fill_acrylic_rounded_rect(
+        frame,
+        width,
+        height,
+        panel_rect,
+        PANEL_COLOR,
+        palette.panel_alpha,
+        palette.blur_radius,
+        acrylic,
+    );
 
     let bar_radius = rounded_radius(
         metrics.bar_width,

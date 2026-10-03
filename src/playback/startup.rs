@@ -65,6 +65,8 @@ pub(crate) fn play(
         )?;
         carryover = result.carryover;
         options.accent_color = result.accent_color;
+        options.panel_opacity = result.panel_opacity;
+        options.background_blur = result.background_blur;
         let Some(change) =
             next_playlist_change(result.outcome, playlist_controls, options.autoplay_next)
         else {
@@ -145,6 +147,8 @@ fn play_current(
         font_system,
         subtitles.active().and_then(SubtitleTrack::language),
         options.accent_color,
+        options.panel_opacity,
+        options.background_blur,
     )?;
     let status_message = if restored_external_subtitle_missing {
         Some(PlaybackUi::status(
@@ -156,7 +160,12 @@ fn play_current(
             .take_error()
             .map(|_| PlaybackUi::status("RESUME STATE UNAVAILABLE", engine.started_at))
     };
-    let mut options_menu = OptionsMenu::new(options.accent_color, options.config_path.clone());
+    let mut options_menu = OptionsMenu::with_appearance(
+        options.accent_color,
+        options.panel_opacity,
+        options.background_blur,
+        options.config_path.clone(),
+    );
     options_menu.custom_color = carryover
         .custom_accent_color
         .or(options_menu.custom_color)

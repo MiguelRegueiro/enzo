@@ -54,6 +54,25 @@ fn saves_to_custom_path_and_preserves_subsequent_external_edits() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn saving_panel_opacity_preserves_comments_and_other_settings() {
+    let root = std::env::temp_dir().join(format!("enzo-opacity-save-{}", std::process::id()));
+    let path = root.join("config.toml");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        &path,
+        "# keep\nvolume_max = 300 # loud\npanel_opacity = 60 # glass\n",
+    )
+    .unwrap();
+    save_panel_opacity(&path, 75).unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "# keep\nvolume_max = 300 # loud\npanel_opacity = 75 # glass\n"
+    );
+    assert_eq!(Config::load(Some(&path)).unwrap().panel_opacity, 75);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn saves_through_symlinks_without_replacing_them() {

@@ -32,6 +32,8 @@ pub(super) fn execute(options: Options) -> Result<()> {
         volume_max: options.volume_max,
         accent_color: options.accent_color,
         custom_accent_color: options.custom_accent_color,
+        panel_opacity: options.panel_opacity,
+        background_blur: options.background_blur,
         config_path: options.config_path,
         force_media_title: options
             .force_media_title

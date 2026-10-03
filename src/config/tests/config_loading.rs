@@ -30,6 +30,8 @@ fn explicit_config_path_is_loaded() {
             autoplay_next: false,
             accent_color: [0x10, 0x20, 0x30],
             custom_accent_color: None,
+            panel_opacity: Config::default().panel_opacity,
+            background_blur: Config::default().background_blur,
         }
     );
     fs::remove_dir_all(root).expect("config directory should be removed");

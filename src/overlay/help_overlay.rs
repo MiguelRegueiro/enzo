@@ -192,7 +192,8 @@ pub(super) fn draw_help_panel(
         height,
         geometry.panel,
         PANEL_COLOR,
-        224,
+        palette.panel_alpha,
+        palette.blur_radius,
         acrylic,
     );
     let mut column_x = geometry.panel.x as u32 + geometry.pad_x;

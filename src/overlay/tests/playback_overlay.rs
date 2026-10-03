@@ -241,7 +241,7 @@ fn configured_accent_colors_the_progress_bar() {
             help_scroll_offset: 0,
             options: None,
         },
-        OverlayPalette::new([0, 255, 32]),
+        OverlayPalette::new([0, 255, 32], 70, 12),
         &mut scratch,
         &mut acrylic,
         None,

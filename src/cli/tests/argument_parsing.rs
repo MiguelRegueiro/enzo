@@ -59,6 +59,8 @@ fn config_values_supply_playback_defaults() {
             autoplay_next: false,
             accent_color: [1, 2, 3],
             custom_accent_color: Some([4, 5, 6]),
+            panel_opacity: 60,
+            background_blur: 12,
         },
     );
 
@@ -83,6 +85,8 @@ fn command_line_values_override_config() {
             autoplay_next: false,
             accent_color: [1, 2, 3],
             custom_accent_color: None,
+            panel_opacity: 60,
+            background_blur: 12,
         },
     );
 

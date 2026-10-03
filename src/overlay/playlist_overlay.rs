@@ -72,7 +72,8 @@ pub(super) fn draw_playlist_menu(
             )),
         },
         PANEL_COLOR,
-        224,
+        palette.panel_alpha,
+        palette.blur_radius,
         acrylic,
     );
 

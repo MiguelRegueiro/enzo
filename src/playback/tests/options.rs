@@ -37,6 +37,53 @@ fn preset_changes_are_saved_immediately_and_close_keeps_them() {
 }
 
 #[test]
+fn panel_opacity_is_adjusted_and_saved_from_its_selected_row() {
+    let root = test_dir("opacity");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
+    menu.open();
+    menu.input(OptionsInput::Navigate(1));
+    menu.input(OptionsInput::Cycle(1));
+    assert_eq!(menu.panel_opacity, 75);
+    assert_eq!(
+        menu.overlay_state().unwrap().selected_setting,
+        OptionsSetting::PanelOpacity
+    );
+    assert_eq!(
+        crate::config::Config::load(Some(&path))
+            .unwrap()
+            .panel_opacity,
+        75
+    );
+    menu.input(OptionsInput::Navigate(-1));
+    menu.input(OptionsInput::Cycle(1));
+    assert_eq!(menu.color, ACCENTS[1].1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn background_blur_is_adjusted_and_saved_from_its_selected_row() {
+    let root = test_dir("blur");
+    let path = root.join("config.toml");
+    let mut menu = OptionsMenu::new(DEFAULT_ACCENT_COLOR, Some(path.clone()));
+    menu.open();
+    menu.input(OptionsInput::Navigate(-1));
+    menu.input(OptionsInput::Cycle(1));
+    assert_eq!(menu.background_blur, 14);
+    assert_eq!(
+        menu.overlay_state().unwrap().selected_setting,
+        OptionsSetting::BackgroundBlur
+    );
+    assert_eq!(
+        crate::config::Config::load(Some(&path))
+            .unwrap()
+            .background_blur,
+        14
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn editing_owns_keys_and_paste_and_cancel_does_not_apply() {
     let mut menu = OptionsMenu::new([1, 2, 3], None);
     menu.open();
@@ -354,15 +401,13 @@ fn word_deletion_preserves_the_other_side_of_the_caret_and_hash() {
 }
 
 #[test]
-fn confirming_custom_validates_even_when_selector_has_focus() {
+fn confirming_custom_validates_before_saving() {
     let mut menu = OptionsMenu::new([1, 2, 3], None);
     menu.open();
     menu.input(OptionsInput::SelectAll);
     menu.input(OptionsInput::Character('a'));
-    menu.input(OptionsInput::Focus);
     menu.input(OptionsInput::Confirm);
     assert!(menu.state.as_ref().unwrap().error.is_some());
-    menu.input(OptionsInput::Focus);
     menu.input(OptionsInput::Paste("ef4444".into()));
     menu.input(OptionsInput::Confirm);
     assert!(

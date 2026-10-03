@@ -4,8 +4,11 @@ use std::path::PathBuf;
 
 use crate::{
     cli::OptionsInput,
-    config::{DEFAULT_ACCENT_COLOR, parse_hex_color, save_accent_color},
-    overlay::{HexInputState, OptionsAction, OptionsMenuState},
+    config::{
+        DEFAULT_ACCENT_COLOR, MAX_BACKGROUND_BLUR, parse_hex_color, save_accent_color,
+        save_background_blur, save_panel_opacity,
+    },
+    overlay::{HexInputState, OptionsAction, OptionsMenuState, OptionsSetting},
 };
 
 use super::session::PlaybackOutcome;
@@ -24,12 +27,30 @@ pub(super) struct OptionsMenu {
     pub(super) state: Option<OptionsMenuState>,
     pub(super) color: [u8; 3],
     pub(super) custom_color: Option<[u8; 3]>,
+    pub(super) panel_opacity: u8,
+    pub(super) background_blur: u8,
     path: Option<PathBuf>,
     selected: usize,
+    selected_setting: OptionsSetting,
 }
 
 impl OptionsMenu {
+    #[cfg(test)]
     pub(super) fn new(color: [u8; 3], path: Option<PathBuf>) -> Self {
+        Self::with_appearance(
+            color,
+            crate::config::DEFAULT_PANEL_OPACITY,
+            crate::config::DEFAULT_BACKGROUND_BLUR,
+            path,
+        )
+    }
+
+    pub(super) fn with_appearance(
+        color: [u8; 3],
+        panel_opacity: u8,
+        background_blur: u8,
+        path: Option<PathBuf>,
+    ) -> Self {
         let selected = ACCENTS
             .iter()
             .position(|(_, preset)| *preset == color)
@@ -40,6 +61,9 @@ impl OptionsMenu {
             path,
             selected,
             custom_color: (selected == CUSTOM).then_some(color),
+            panel_opacity,
+            background_blur,
+            selected_setting: OptionsSetting::AccentColor,
         }
     }
 
@@ -55,6 +79,9 @@ impl OptionsMenu {
                 .get(self.selected)
                 .map_or("Custom", |(name, _)| name),
             color: self.color,
+            selected_setting: self.selected_setting,
+            panel_opacity: self.panel_opacity,
+            background_blur: self.background_blur,
             editor: (self.selected == CUSTOM).then(|| HexInputState {
                 cursor: text.len(),
                 text,
@@ -87,7 +114,14 @@ impl OptionsMenu {
             self.state = None;
             return None;
         }
-        if matches!(input, OptionsInput::Confirm) {
+        if let OptionsInput::Navigate(direction) = input {
+            self.selected_setting = self.selected_setting.navigate(direction);
+            self.open();
+            return None;
+        }
+        if matches!(input, OptionsInput::Confirm)
+            && self.selected_setting == OptionsSetting::AccentColor
+        {
             if let Some(editor) = state.editor.as_ref().filter(|editor| editor.text.len() > 1) {
                 match parse_hex_color(&editor.text) {
                     Ok(color) => {
@@ -102,11 +136,9 @@ impl OptionsMenu {
             }
             return None;
         }
-        if let Some(editor) = state.editor.as_mut() {
-            if matches!(input, OptionsInput::Focus) {
-                editor.focused = !editor.focused;
-                return None;
-            }
+        if self.selected_setting == OptionsSetting::AccentColor
+            && let Some(editor) = state.editor.as_mut()
+        {
             if matches!(&input, OptionsInput::Character(ch) if ch.is_ascii_hexdigit() || *ch == '#')
                 || matches!(
                     input,
@@ -151,7 +183,12 @@ impl OptionsMenu {
             OptionsInput::Character('o') => self.state = None,
             OptionsInput::Character('q') => return Some(PlaybackOutcome::Quit),
             OptionsInput::Character('Q') => return Some(PlaybackOutcome::QuitWithoutSaving),
-            OptionsInput::Cycle(direction) => self.cycle(direction),
+            OptionsInput::Cycle(direction)
+                if self.selected_setting == OptionsSetting::AccentColor =>
+            {
+                self.cycle(direction)
+            }
+            OptionsInput::Cycle(direction) => self.adjust_selected_setting(direction),
             _ => {}
         }
         None
@@ -163,8 +200,22 @@ impl OptionsMenu {
         }
         match action {
             OptionsAction::Close => self.state = None,
-            OptionsAction::Cycle(direction) => self.cycle(direction),
+            OptionsAction::Cycle(direction)
+                if self.selected_setting == OptionsSetting::AccentColor =>
+            {
+                self.cycle(direction)
+            }
+            OptionsAction::Cycle(direction) => self.adjust_selected_setting(direction),
+            OptionsAction::CycleAccent(direction) => {
+                self.selected_setting = OptionsSetting::AccentColor;
+                self.cycle(direction);
+            }
+            OptionsAction::AdjustOpacity(direction) => self.adjust_opacity(direction),
+            OptionsAction::SetOpacity(opacity) => self.set_opacity(opacity),
+            OptionsAction::AdjustBlur(direction) => self.adjust_blur(direction),
+            OptionsAction::SetBlur(blur) => self.set_blur(blur),
             OptionsAction::Cursor(cursor) => {
+                self.selected_setting = OptionsSetting::AccentColor;
                 if let Some(editor) = self.state.as_mut().and_then(|state| state.editor.as_mut()) {
                     editor.focused = true;
                     editor.selected = false;
@@ -214,6 +265,60 @@ impl OptionsMenu {
             self.open();
         }
         true
+    }
+
+    fn adjust_opacity(&mut self, direction: i32) {
+        let opacity = (i32::from(self.panel_opacity) + direction * 5).clamp(0, 100) as u8;
+        self.set_opacity(opacity);
+    }
+
+    fn adjust_selected_setting(&mut self, direction: i32) {
+        match self.selected_setting {
+            OptionsSetting::AccentColor => self.cycle(direction),
+            OptionsSetting::PanelOpacity => self.adjust_opacity(direction),
+            OptionsSetting::BackgroundBlur => self.adjust_blur(direction),
+        }
+    }
+
+    fn set_opacity(&mut self, opacity: u8) {
+        let result = self
+            .path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("config directory is unavailable"))
+            .and_then(|path| save_panel_opacity(path, opacity));
+        if let Err(error) = result {
+            if let Some(state) = self.state.as_mut() {
+                state.error = Some(format!("Not saved: {error:#}"));
+            }
+            return;
+        }
+        self.panel_opacity = opacity;
+        self.selected_setting = OptionsSetting::PanelOpacity;
+        self.open();
+    }
+
+    fn adjust_blur(&mut self, direction: i32) {
+        let blur = (i32::from(self.background_blur) + direction * 2)
+            .clamp(0, i32::from(MAX_BACKGROUND_BLUR)) as u8;
+        self.set_blur(blur);
+    }
+
+    fn set_blur(&mut self, blur: u8) {
+        let blur = blur.min(MAX_BACKGROUND_BLUR) & !1;
+        let result = self
+            .path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("config directory is unavailable"))
+            .and_then(|path| save_background_blur(path, blur));
+        if let Err(error) = result {
+            if let Some(state) = self.state.as_mut() {
+                state.error = Some(format!("Not saved: {error:#}"));
+            }
+            return;
+        }
+        self.background_blur = blur;
+        self.selected_setting = OptionsSetting::BackgroundBlur;
+        self.open();
     }
 }
 

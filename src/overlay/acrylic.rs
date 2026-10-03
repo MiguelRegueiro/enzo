@@ -4,6 +4,7 @@ use super::raster::{
     RoundedRect, blend_pixel, fill_rounded_rect, rgb_offset, rounded_rect_coverage,
 };
 
+#[cfg(test)]
 const ACRYLIC_BLUR_RADIUS: u32 = 12;
 
 #[derive(Default)]
@@ -19,6 +20,7 @@ pub(super) fn fill_acrylic_rounded_rect(
     rect: RoundedRect,
     color: [u8; 3],
     alpha: u8,
+    blur_radius: u32,
     scratch: &mut AcrylicScratch,
 ) {
     if !blur_rounded_rect_impl(
@@ -26,7 +28,7 @@ pub(super) fn fill_acrylic_rounded_rect(
         width,
         height,
         rect,
-        ACRYLIC_BLUR_RADIUS,
+        blur_radius,
         Some((color, alpha)),
         scratch,
     ) {

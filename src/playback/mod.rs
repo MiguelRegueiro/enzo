@@ -29,6 +29,8 @@ pub(crate) struct PlaybackOptions {
     pub(crate) volume_max: u16,
     pub(crate) accent_color: [u8; 3],
     pub(crate) custom_accent_color: Option<[u8; 3]>,
+    pub(crate) panel_opacity: u8,
+    pub(crate) background_blur: u8,
     pub(crate) config_path: Option<std::path::PathBuf>,
     pub(crate) force_media_title: Option<std::sync::Arc<str>>,
 }

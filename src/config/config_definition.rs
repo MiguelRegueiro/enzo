@@ -4,6 +4,9 @@ use serde::Deserialize;
 pub(crate) const MIN_VOLUME_MAX: u16 = 100;
 pub(crate) const MAX_VOLUME_MAX: u16 = 1000;
 pub(crate) const DEFAULT_ACCENT_COLOR: [u8; 3] = [239, 68, 68];
+pub(crate) const DEFAULT_PANEL_OPACITY: u8 = 70;
+pub(crate) const DEFAULT_BACKGROUND_BLUR: u8 = 12;
+pub(crate) const MAX_BACKGROUND_BLUR: u8 = 24;
 const DEFAULT_VOLUME_MAX: u16 = MIN_VOLUME_MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -13,6 +16,8 @@ pub(crate) struct Config {
     pub(crate) autoplay_next: bool,
     pub(crate) accent_color: [u8; 3],
     pub(crate) custom_accent_color: Option<[u8; 3]>,
+    pub(crate) panel_opacity: u8,
+    pub(crate) background_blur: u8,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -23,6 +28,8 @@ struct ConfigFile {
     autoplay_next: Option<bool>,
     accent_color: Option<String>,
     custom_accent_color: Option<String>,
+    panel_opacity: Option<u8>,
+    background_blur: Option<u8>,
 }
 
 impl Default for Config {
@@ -33,6 +40,8 @@ impl Default for Config {
             autoplay_next: true,
             accent_color: DEFAULT_ACCENT_COLOR,
             custom_accent_color: None,
+            panel_opacity: DEFAULT_PANEL_OPACITY,
+            background_blur: DEFAULT_BACKGROUND_BLUR,
         }
     }
 }
@@ -43,6 +52,14 @@ impl Config {
         let volume_max = parsed.volume_max.unwrap_or(DEFAULT_VOLUME_MAX);
         if !(MIN_VOLUME_MAX..=MAX_VOLUME_MAX).contains(&volume_max) {
             bail!("volume_max must be between {MIN_VOLUME_MAX} and {MAX_VOLUME_MAX}");
+        }
+        let panel_opacity = parsed.panel_opacity.unwrap_or(DEFAULT_PANEL_OPACITY);
+        if panel_opacity > 100 {
+            bail!("panel_opacity must be between 0 and 100");
+        }
+        let background_blur = parsed.background_blur.unwrap_or(DEFAULT_BACKGROUND_BLUR);
+        if background_blur > MAX_BACKGROUND_BLUR {
+            bail!("background_blur must be between 0 and {MAX_BACKGROUND_BLUR}");
         }
         Ok(Self {
             volume_max,
@@ -59,6 +76,8 @@ impl Config {
                 .as_deref()
                 .map(parse_hex_color)
                 .transpose()?,
+            panel_opacity,
+            background_blur,
         })
     }
 }

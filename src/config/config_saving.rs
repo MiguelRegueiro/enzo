@@ -17,6 +17,27 @@ pub(crate) fn save_accent_color(
     color: Option<[u8; 3]>,
     custom_color: Option<[u8; 3]>,
 ) -> Result<()> {
+    save_config(path, |document| {
+        if let Some(color) = color {
+            set_color(document, "accent_color", color);
+        } else {
+            document.remove("accent_color");
+        }
+        if let Some(color) = custom_color {
+            set_color(document, "custom_accent_color", color);
+        }
+    })
+}
+
+pub(crate) fn save_panel_opacity(path: &Path, opacity: u8) -> Result<()> {
+    save_config(path, |document| set_u8(document, "panel_opacity", opacity))
+}
+
+pub(crate) fn save_background_blur(path: &Path, blur: u8) -> Result<()> {
+    save_config(path, |document| set_u8(document, "background_blur", blur))
+}
+
+fn save_config(path: &Path, edit: impl FnOnce(&mut DocumentMut)) -> Result<()> {
     // Follow existing symlinks so saving never replaces a user's config link.
     let path = match fs::symlink_metadata(path) {
         Ok(_) => fs::canonicalize(path)?,
@@ -28,7 +49,7 @@ pub(crate) fn save_accent_color(
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.into()),
     };
-    let updated = edit_accent_color(&original, color, custom_color)?;
+    let updated = edit_config(&original, edit)?;
     if updated == original {
         return Ok(());
     }
@@ -73,22 +94,11 @@ pub(crate) fn save_accent_color(
     result.with_context(|| format!("failed to save config to {}", path.display()))
 }
 
-fn edit_accent_color(
-    contents: &str,
-    color: Option<[u8; 3]>,
-    custom_color: Option<[u8; 3]>,
-) -> Result<String> {
+fn edit_config(contents: &str, edit: impl FnOnce(&mut DocumentMut)) -> Result<String> {
     // Never replace malformed config with the defaults used for playback.
     Config::from_str(contents).context("fix the invalid config before saving settings")?;
     let mut document = contents.parse::<DocumentMut>()?;
-    if let Some(color) = color {
-        set_color(&mut document, "accent_color", color);
-    } else {
-        document.remove("accent_color");
-    }
-    if let Some(color) = custom_color {
-        set_color(&mut document, "custom_accent_color", color);
-    }
+    edit(&mut document);
     Ok(document.to_string())
 }
 
@@ -101,6 +111,34 @@ fn set_color(document: &mut DocumentMut, key: &str, [r, g, b]: [u8; 3]) {
     } else {
         document[key] = value(hex);
     }
+}
+
+fn set_u8(document: &mut DocumentMut, key: &str, number: u8) {
+    if let Some(existing) = document.get_mut(key).and_then(|item| item.as_value_mut()) {
+        let decor = existing.decor().clone();
+        *existing = Value::from(i64::from(number));
+        *existing.decor_mut() = decor;
+    } else {
+        document[key] = value(i64::from(number));
+    }
+}
+
+#[cfg(test)]
+fn edit_accent_color(
+    contents: &str,
+    color: Option<[u8; 3]>,
+    custom_color: Option<[u8; 3]>,
+) -> Result<String> {
+    edit_config(contents, |document| {
+        if let Some(color) = color {
+            set_color(document, "accent_color", color);
+        } else {
+            document.remove("accent_color");
+        }
+        if let Some(color) = custom_color {
+            set_color(document, "custom_accent_color", color);
+        }
+    })
 }
 
 #[cfg(test)]

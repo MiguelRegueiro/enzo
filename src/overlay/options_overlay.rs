@@ -18,7 +18,33 @@ pub(crate) struct OptionsMenuState {
     pub(crate) count: usize,
     pub(crate) color: [u8; 3],
     pub(crate) editor: Option<HexInputState>,
+    pub(crate) selected_setting: OptionsSetting,
+    pub(crate) panel_opacity: u8,
+    pub(crate) background_blur: u8,
     pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OptionsSetting {
+    AccentColor,
+    PanelOpacity,
+    BackgroundBlur,
+}
+
+impl OptionsSetting {
+    pub(crate) fn navigate(self, direction: i32) -> Self {
+        const SETTINGS: [OptionsSetting; 3] = [
+            OptionsSetting::AccentColor,
+            OptionsSetting::PanelOpacity,
+            OptionsSetting::BackgroundBlur,
+        ];
+        let index = match self {
+            Self::AccentColor => 0,
+            Self::PanelOpacity => 1,
+            Self::BackgroundBlur => 2,
+        };
+        SETTINGS[(index as i32 + direction).rem_euclid(SETTINGS.len() as i32) as usize]
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +58,11 @@ pub(crate) struct HexInputState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OptionsAction {
     Cycle(i32),
+    CycleAccent(i32),
+    AdjustOpacity(i32),
+    SetOpacity(u8),
+    AdjustBlur(i32),
+    SetBlur(u8),
     Cursor(usize),
     Close,
 }
@@ -55,8 +86,8 @@ impl OptionsGeometry {
         }
     }
 
-    fn arrow(&self, direction: i32) -> HitboxRect {
-        let row = self.row(2);
+    fn arrow(&self, row_index: u32, direction: i32) -> HitboxRect {
+        let row = self.row(row_index);
         let size = self.pitch.min(row.right.saturating_sub(row.left) / 3);
         if direction < 0 {
             HitboxRect {
@@ -74,11 +105,11 @@ impl OptionsGeometry {
     fn editor_rect(&self, name: &str, font: &mut Option<&mut FontRenderer>) -> HitboxRect {
         let row = self.row(2);
         HitboxRect {
-            left: self.arrow(-1).right
+            left: self.arrow(2, -1).right
                 + self.text_height
                 + self.pad * 3
                 + overlay_text_width(font, name, self.scale),
-            right: self.arrow(1).left.saturating_sub(self.pad),
+            right: self.arrow(2, 1).left.saturating_sub(self.pad),
             ..row
         }
     }
@@ -100,7 +131,7 @@ fn geometry(
     let width = (size * 16 + pad * 2)
         .max(overlay_text_width(font, "Custom#ffffff", scale) + pitch * 2 + text_height + pad * 6)
         .min(context.width.saturating_sub(8));
-    let rows = 3 + u32::from(state.error.is_some());
+    let rows = 7 + u32::from(state.error.is_some());
     let height = (pitch * rows + pad * 2).min(context.height.saturating_sub(8));
     let left = context.width.saturating_sub(width) / 2;
     let top = context.height.saturating_sub(height) / 2;
@@ -133,9 +164,32 @@ pub(super) fn options_action(
         return Some(OptionsAction::Close);
     }
     for direction in [-1, 1] {
-        if contains(geometry.arrow(direction), point) {
-            return Some(OptionsAction::Cycle(direction));
+        if contains(geometry.arrow(2, direction), point) {
+            return Some(OptionsAction::CycleAccent(direction));
         }
+        if contains(geometry.arrow(4, direction), point) {
+            return Some(OptionsAction::AdjustOpacity(direction));
+        }
+    }
+    let opacity_track = value_track(&geometry, 4);
+    if contains(opacity_track, point) {
+        let width = opacity_track
+            .right
+            .saturating_sub(opacity_track.left)
+            .max(1);
+        let offset = point.x.saturating_sub(opacity_track.left).min(width);
+        return Some(OptionsAction::SetOpacity(((offset * 100) / width) as u8));
+    }
+    for direction in [-1, 1] {
+        if contains(geometry.arrow(6, direction), point) {
+            return Some(OptionsAction::AdjustBlur(direction));
+        }
+    }
+    let blur_track = value_track(&geometry, 6);
+    if contains(blur_track, point) {
+        let width = blur_track.right.saturating_sub(blur_track.left).max(1);
+        let offset = point.x.saturating_sub(blur_track.left).min(width);
+        return Some(OptionsAction::SetBlur(((offset * 24) / width) as u8));
     }
     if let Some(editor) = &state.editor {
         let row = geometry.editor_rect(state.name, &mut font);
@@ -155,6 +209,21 @@ pub(super) fn options_action(
     None
 }
 
+fn value_track(geometry: &OptionsGeometry, row_index: u32) -> HitboxRect {
+    let row = geometry.row(row_index);
+    HitboxRect {
+        left: geometry
+            .arrow(row_index, -1)
+            .right
+            .saturating_add(geometry.pad),
+        right: geometry
+            .arrow(row_index, 1)
+            .left
+            .saturating_sub(geometry.pad),
+        ..row
+    }
+}
+
 fn rounded(rect: HitboxRect) -> RoundedRect {
     RoundedRect {
         x: f64::from(rect.left),
@@ -170,6 +239,8 @@ pub(super) fn draw_options_menu(
     frame: &mut [u8],
     context: OverlayRenderContext,
     state: &OptionsMenuState,
+    panel_alpha: u8,
+    blur_radius: u32,
     acrylic: &mut AcrylicScratch,
 ) {
     let geometry = geometry(context, state, &mut font);
@@ -181,11 +252,22 @@ pub(super) fn draw_options_menu(
         height,
         rounded(geometry.panel),
         PANEL_COLOR,
-        224,
+        panel_alpha,
+        blur_radius,
         acrylic,
     );
     let accent_label = format!("Accent color  {}/{}", state.position, state.count);
-    let mut rows = vec!["Options", &accent_label, state.name];
+    let opacity_label = format!("Panel opacity  {}%", state.panel_opacity);
+    let blur_label = format!("Background blur  {}px", state.background_blur);
+    let mut rows = vec![
+        "Options",
+        &accent_label,
+        state.name,
+        &opacity_label,
+        "",
+        &blur_label,
+        "",
+    ];
     if let Some(error) = &state.error {
         rows.push(error);
     }
@@ -199,7 +281,7 @@ pub(super) fn draw_options_menu(
         let mut right = row.right.saturating_sub(geometry.pad);
         if index == 2 {
             for (direction, symbol) in [(-1, "<"), (1, ">")] {
-                let button = geometry.arrow(direction);
+                let button = geometry.arrow(2, direction);
                 fill_rounded_rect(frame, width, height, rounded(button), TRACK_COLOR, 100);
                 let symbol_width = overlay_text_width(&mut font, symbol, geometry.scale);
                 let symbol_x = button.left
@@ -221,8 +303,8 @@ pub(super) fn draw_options_menu(
                     248,
                 );
             }
-            x = geometry.arrow(-1).right + geometry.pad;
-            right = geometry.arrow(1).left.saturating_sub(geometry.pad);
+            x = geometry.arrow(2, -1).right + geometry.pad;
+            right = geometry.arrow(2, 1).left.saturating_sub(geometry.pad);
             let swatch = HitboxRect {
                 left: x,
                 right: (x + geometry.text_height).min(right),
@@ -245,9 +327,75 @@ pub(super) fn draw_options_menu(
             y,
             geometry.scale,
             &fitted,
-            if index == 1 { state.color } else { TEXT_COLOR },
+            match index {
+                1 if state.selected_setting == OptionsSetting::AccentColor => state.color,
+                3 if state.selected_setting == OptionsSetting::PanelOpacity => state.color,
+                5 if state.selected_setting == OptionsSetting::BackgroundBlur => state.color,
+                _ => TEXT_COLOR,
+            },
             248,
         );
+        if let Some((value, maximum)) = match index {
+            4 => Some((state.panel_opacity, 100)),
+            6 => Some((state.background_blur, 24)),
+            _ => None,
+        } {
+            for (direction, symbol) in [(-1, "<"), (1, ">")] {
+                let button = geometry.arrow(index as u32, direction);
+                fill_rounded_rect(frame, width, height, rounded(button), TRACK_COLOR, 100);
+                let symbol_width = overlay_text_width(&mut font, symbol, geometry.scale);
+                let symbol_x = button.left
+                    + (button
+                        .right
+                        .saturating_sub(button.left)
+                        .saturating_sub(symbol_width))
+                        / 2;
+                draw_overlay_text(
+                    font.as_deref_mut(),
+                    frame,
+                    width,
+                    height,
+                    symbol_x,
+                    y,
+                    geometry.scale,
+                    symbol,
+                    TEXT_COLOR,
+                    248,
+                );
+            }
+            let track = value_track(&geometry, index as u32);
+            let track_y = y + geometry.text_height / 2;
+            fill_rounded_rect(
+                frame,
+                width,
+                height,
+                RoundedRect {
+                    x: f64::from(track.left),
+                    y: f64::from(track_y),
+                    width: f64::from(track.right.saturating_sub(track.left)),
+                    height: 3.0,
+                    radius: 2.0,
+                },
+                TRACK_COLOR,
+                180,
+            );
+            let filled =
+                track.left + track.right.saturating_sub(track.left) * u32::from(value) / maximum;
+            fill_rounded_rect(
+                frame,
+                width,
+                height,
+                RoundedRect {
+                    x: f64::from(track.left),
+                    y: f64::from(track_y),
+                    width: f64::from(filled.saturating_sub(track.left)),
+                    height: 3.0,
+                    radius: 2.0,
+                },
+                state.color,
+                248,
+            );
+        }
         if index == 2
             && let Some(editor) = &state.editor
         {

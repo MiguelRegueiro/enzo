@@ -148,3 +148,15 @@ fn control_keys_map_to_hex_word_editing() {
         );
     }
 }
+
+#[test]
+fn options_navigation_maps_vertical_keys_to_settings() {
+    assert_eq!(
+        options_input(&KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        Some(OptionsInput::Navigate(-1))
+    );
+    assert_eq!(
+        options_input(&KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        Some(OptionsInput::Navigate(1))
+    );
+}

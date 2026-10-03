@@ -350,7 +350,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 let action = match mouse {
                     PlaybackMouse::ScrollUp => Some(crate::overlay::OptionsAction::Cycle(-1)),
                     PlaybackMouse::ScrollDown => Some(crate::overlay::OptionsAction::Cycle(1)),
-                    PlaybackMouse::Down { column, row } => {
+                    PlaybackMouse::Down { column, row } | PlaybackMouse::Drag { column, row } => {
                         mouse_canvas_position(column, row, self.view.canvas).and_then(|point| {
                             self.ui.options.state.as_ref().and_then(|state| {
                                 self.view.overlay.options_action(context, state, point)
@@ -364,6 +364,12 @@ impl<W: Write> InteractionContext<'_, W> {
                     self.view
                         .overlay
                         .set_accent_color(self.ui.options.preview_color());
+                    self.view
+                        .overlay
+                        .set_panel_opacity(self.ui.options.panel_opacity);
+                    self.view
+                        .overlay
+                        .set_background_blur(self.ui.options.background_blur);
                     self.view.dirty = self.view.have_frame;
                 }
             }

@@ -32,7 +32,15 @@ pub(crate) struct PlaybackOverlay {
 
 impl PlaybackOverlay {
     pub(crate) fn set_accent_color(&mut self, color: [u8; 3]) {
-        self.palette = OverlayPalette::new(color);
+        self.palette.accent = color;
+    }
+
+    pub(crate) fn set_panel_opacity(&mut self, opacity: u8) {
+        self.palette.panel_alpha = (u16::from(opacity) * 255 / 100) as u8;
+    }
+
+    pub(crate) fn set_background_blur(&mut self, blur: u8) {
+        self.palette.blur_radius = u32::from(blur);
     }
 
     pub(crate) fn options_action(
@@ -55,7 +63,12 @@ impl PlaybackOverlay {
         )
     }
 
-    pub(crate) fn new(fonts: &FontSystem, accent_color: [u8; 3]) -> Self {
+    pub(crate) fn new(
+        fonts: &FontSystem,
+        accent_color: [u8; 3],
+        panel_opacity: u8,
+        background_blur: u8,
+    ) -> Self {
         let mut font = fonts
             .resolve_all(FontRole::Ui)
             .find_map(|path| FontRenderer::open_path(path, 18));
@@ -72,7 +85,7 @@ impl PlaybackOverlay {
             scratch: String::new(),
             acrylic: AcrylicScratch::default(),
             font,
-            palette: OverlayPalette::new(accent_color),
+            palette: OverlayPalette::new(accent_color, panel_opacity, background_blur),
         }
     }
 
@@ -325,7 +338,11 @@ pub(super) fn render_overlay_rgb(
         terminal_rows,
         scale_percent,
         state,
-        OverlayPalette::new(crate::config::DEFAULT_ACCENT_COLOR),
+        OverlayPalette::new(
+            crate::config::DEFAULT_ACCENT_COLOR,
+            crate::config::DEFAULT_PANEL_OPACITY,
+            crate::config::DEFAULT_BACKGROUND_BLUR,
+        ),
         scratch,
         acrylic,
         font,

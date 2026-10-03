@@ -24,6 +24,8 @@ pub(super) fn draw_top_message(
     text_height: u32,
     text: &str,
     stack_index: u32,
+    panel_alpha: u8,
+    blur_radius: u32,
     acrylic: &mut AcrylicScratch,
 ) {
     let inset_x = (width / 48).clamp(8, 34).min(width.saturating_sub(1));
@@ -54,7 +56,8 @@ pub(super) fn draw_top_message(
             radius: f64::from(panel_radius),
         },
         PANEL_COLOR,
-        202,
+        panel_alpha,
+        blur_radius,
         acrylic,
     );
 
@@ -83,6 +86,8 @@ pub(super) fn draw_media_info_panel(
     text_height: u32,
     info: &MediaInfoState,
     stack_index: u32,
+    panel_alpha: u8,
+    blur_radius: u32,
     acrylic: &mut AcrylicScratch,
 ) {
     let mut rows = vec![
@@ -150,7 +155,8 @@ pub(super) fn draw_media_info_panel(
             radius: f64::from(radius),
         },
         PANEL_COLOR,
-        202,
+        panel_alpha,
+        blur_radius,
         acrylic,
     );
 

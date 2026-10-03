@@ -79,6 +79,7 @@ fn fused_acrylic_pass_matches_separate_blur_and_tint() {
         rect,
         PANEL_COLOR,
         202,
+        12,
         &mut actual_scratch,
     );
 

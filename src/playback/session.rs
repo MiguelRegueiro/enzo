@@ -78,6 +78,8 @@ pub(super) enum PlaybackOutcome {
 
 pub(super) struct PlaybackSessionResult {
     pub(super) accent_color: [u8; 3],
+    pub(super) panel_opacity: u8,
+    pub(super) background_blur: u8,
     pub(super) outcome: PlaybackOutcome,
     pub(super) carryover: PlaybackCarryover,
 }
@@ -142,6 +144,14 @@ impl<W: Write> PlaybackSession<'_, W> {
                     .view
                     .overlay
                     .set_accent_color(session.ui.options.preview_color());
+                session
+                    .view
+                    .overlay
+                    .set_panel_opacity(session.ui.options.panel_opacity);
+                session
+                    .view
+                    .overlay
+                    .set_background_blur(session.ui.options.background_blur);
                 session.view.dirty = session.view.have_frame;
                 if let Some(outcome) = outcome {
                     break outcome;
@@ -184,9 +194,13 @@ impl<W: Write> PlaybackSession<'_, W> {
             }
         };
         let accent_color = session.ui.options.color;
+        let panel_opacity = session.ui.options.panel_opacity;
+        let background_blur = session.ui.options.background_blur;
         let carryover = session.finish(playback_outcome)?;
         Ok(PlaybackSessionResult {
             accent_color,
+            panel_opacity,
+            background_blur,
             outcome: playback_outcome,
             carryover,
         })

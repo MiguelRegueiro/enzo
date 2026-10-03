@@ -13,6 +13,12 @@ autoplay_next = true
 # Hex colors must be quoted because # begins a TOML comment.
 accent_color = "#ef4444"
 
+# Opacity of the acrylic panel tint, from 0 (clear) to 100 (opaque).
+panel_opacity = 70
+
+# Radius of the acrylic background blur, from 0 to 24 pixels.
+background_blur = 12
+
 # Last confirmed custom color, remembered even while a preset is active.
 # Options saves this automatically; it does not change the active accent.
 # custom_accent_color = "#123abc"

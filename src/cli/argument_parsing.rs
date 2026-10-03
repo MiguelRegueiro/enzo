@@ -49,6 +49,8 @@ pub(crate) struct Options {
     pub(crate) autoplay_next: bool,
     pub(crate) accent_color: [u8; 3],
     pub(crate) custom_accent_color: Option<[u8; 3]>,
+    pub(crate) panel_opacity: u8,
+    pub(crate) background_blur: u8,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) clear_resume: bool,
 }
@@ -178,6 +180,8 @@ fn parse_args_with_config_loader(
         autoplay_next: autoplay_next.unwrap_or(config.autoplay_next),
         accent_color: config.accent_color,
         custom_accent_color: config.custom_accent_color,
+        panel_opacity: config.panel_opacity,
+        background_blur: config.background_blur,
         config_path: config_file.or_else(crate::config::config_path),
         clear_resume,
     }))
