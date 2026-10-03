@@ -126,12 +126,16 @@ impl OptionsGeometry {
 
     fn editor_rect(&self, name: &str, font: &mut Option<&mut FontRenderer>) -> HitboxRect {
         let row = self.row(2);
+        let right = self.arrow(2, 1).left.saturating_sub(self.pad / 2);
+        let minimum_left = self.arrow(2, -1).right
+            + self.text_height
+            + self.pad * 3
+            + overlay_text_width(font, name, self.scale);
         HitboxRect {
-            left: self.arrow(2, -1).right
-                + self.text_height
-                + self.pad * 3
-                + overlay_text_width(font, name, self.scale),
-            right: self.arrow(2, 1).left.saturating_sub(self.pad / 2),
+            left: right
+                .saturating_sub(overlay_text_width(font, "#RRGGBB", self.scale) + self.pad * 2)
+                .max(minimum_left),
+            right,
             ..row
         }
     }
@@ -379,7 +383,7 @@ pub(super) fn draw_options_menu(
             x += geometry.text_height + geometry.pad;
         }
         if index == 8 {
-            x = geometry.arrow(8, -1).right + geometry.pad;
+            x = geometry.arrow(8, -1).right + geometry.pad * 2;
             right = geometry.arrow(8, 1).left.saturating_sub(geometry.pad);
         }
         let fitted = fit_overlay_text(&mut font, text, geometry.scale, right.saturating_sub(x));
@@ -434,9 +438,19 @@ pub(super) fn draw_options_menu(
             }
             if index == 8 {
                 if let Some(editor) = &state.seconds_editor {
-                    let field_left = x
-                        .saturating_add(overlay_text_width(&mut font, "Custom", geometry.scale))
-                        .saturating_add(geometry.pad);
+                    let field_left = right
+                        .saturating_sub(
+                            overlay_text_width(&mut font, "9999s", geometry.scale)
+                                + geometry.pad * 2,
+                        )
+                        .max(
+                            x.saturating_add(overlay_text_width(
+                                &mut font,
+                                "Custom",
+                                geometry.scale,
+                            ))
+                            .saturating_add(geometry.pad),
+                        );
                     let field = HitboxRect {
                         left: field_left,
                         right,
@@ -460,18 +474,19 @@ pub(super) fn draw_options_menu(
                     } else {
                         format!("{}s", editor.text)
                     };
+                    let text_left = field.left.saturating_add(geometry.pad);
                     let fitted = fit_overlay_text(
                         &mut font,
                         &value,
                         geometry.scale,
-                        field.right.saturating_sub(field.left),
+                        field.right.saturating_sub(text_left),
                     );
                     draw_overlay_text(
                         font.as_deref_mut(),
                         frame,
                         width,
                         height,
-                        field.left,
+                        text_left,
                         y,
                         geometry.scale,
                         &fitted,
@@ -479,7 +494,7 @@ pub(super) fn draw_options_menu(
                         if editor.text.is_empty() { 115 } else { 248 },
                     );
                     let cursor_x =
-                        field.left + overlay_text_width(&mut font, &editor.text, geometry.scale);
+                        text_left + overlay_text_width(&mut font, &editor.text, geometry.scale);
                     if editor.focused && cursor_x < field.right {
                         fill_solid_rect(
                             frame,
@@ -582,21 +597,24 @@ pub(super) fn draw_options_menu(
                 &mut font,
                 if empty { "#RRGGBB" } else { &editor.text },
                 geometry.scale,
-                field.right.saturating_sub(field.left),
+                field
+                    .right
+                    .saturating_sub(field.left.saturating_add(geometry.pad)),
             );
+            let text_left = field.left.saturating_add(geometry.pad);
             draw_overlay_text(
                 font.as_deref_mut(),
                 frame,
                 width,
                 height,
-                field.left,
+                text_left,
                 y,
                 geometry.scale,
                 &fitted,
                 TEXT_COLOR,
                 if empty { 115 } else { 248 },
             );
-            let cursor_x = field.left
+            let cursor_x = text_left
                 + overlay_text_width(&mut font, &editor.text[..editor.cursor], geometry.scale);
             if (editor.focused || state.selected_setting == OptionsSetting::AccentColor)
                 && cursor_x < field.right
