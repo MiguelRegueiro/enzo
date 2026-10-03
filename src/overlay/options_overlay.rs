@@ -131,7 +131,7 @@ impl OptionsGeometry {
                 + self.text_height
                 + self.pad * 3
                 + overlay_text_width(font, name, self.scale),
-            right: self.arrow(2, 1).left.saturating_sub(self.pad),
+            right: self.arrow(2, 1).left.saturating_sub(self.pad / 2),
             ..row
         }
     }
@@ -598,7 +598,9 @@ pub(super) fn draw_options_menu(
             );
             let cursor_x = field.left
                 + overlay_text_width(&mut font, &editor.text[..editor.cursor], geometry.scale);
-            if editor.focused && cursor_x < field.right {
+            if (editor.focused || state.selected_setting == OptionsSetting::AccentColor)
+                && cursor_x < field.right
+            {
                 fill_solid_rect(
                     frame,
                     width,
