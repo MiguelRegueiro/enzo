@@ -87,6 +87,10 @@ pub(super) struct PlaybackSessionResult {
 }
 
 impl PlaybackOutcome {
+    fn carryover_paused(&self, paused: bool) -> bool {
+        !matches!(self, Self::SelectPlaylistEntry(_)) && paused
+    }
+
     fn clears_resume(&self) -> bool {
         matches!(self, Self::Completed)
     }
@@ -521,7 +525,7 @@ impl<W: Write> PlaybackSession<'_, W> {
 
     fn finish(mut self, outcome: &PlaybackOutcome) -> Result<PlaybackCarryover> {
         let carryover = PlaybackCarryover {
-            paused: self.engine.paused,
+            paused: outcome.carryover_paused(self.engine.paused),
             muted: self.engine.muted,
             volume_percent: self.engine.volume_percent,
             volume_max: self.engine.volume_max,

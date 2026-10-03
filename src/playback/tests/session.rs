@@ -26,6 +26,13 @@ fn only_explicit_no_save_quit_skips_resume_save() {
 }
 
 #[test]
+fn playlist_selection_starts_the_selected_video() {
+    assert!(!PlaybackOutcome::SelectPlaylistEntry(3).carryover_paused(true));
+    assert!(!PlaybackOutcome::SelectPlaylistEntry(3).carryover_paused(false));
+    assert!(PlaybackOutcome::Switch(PlaylistStep::Next).carryover_paused(true));
+}
+
+#[test]
 fn seek_backward_saturates_at_start() {
     assert_eq!(
         seek_position(Duration::from_secs(3), -5, None),
