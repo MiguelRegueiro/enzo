@@ -70,9 +70,9 @@ jobs:
       - name: Verify crate package
         run: cargo package --locked
 
-  ubuntu-arm64:
-    name: Ubuntu ARM64 / test and release
-    runs-on: ubuntu-24.04-arm
+  macos:
+    name: macOS ARM64 / test and release
+    runs-on: macos-latest
     timeout-minutes: 30
     env:
       CFLAGS: -Werror
@@ -87,21 +87,7 @@ jobs:
 
       - name: Install native dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            build-essential \
-            ffmpeg \
-            libavcodec-dev \
-            libavfilter-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libfreetype6-dev \
-            libfribidi-dev \
-            libharfbuzz-dev \
-            libpulse-dev \
-            libswresample-dev \
-            libswscale-dev \
-            pkg-config
+          brew install ffmpeg freetype harfbuzz fribidi pulseaudio pkgconf
 
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
