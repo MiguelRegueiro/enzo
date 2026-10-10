@@ -1,5 +1,5 @@
 %bcond_with check
-%global fallback_version 1.2.0
+%global fallback_version 1.3.0
 %global fallback_release 1
 
 Name:           enzo
@@ -58,6 +58,9 @@ desktop-file-validate packaging/linux/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Oct 09 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.3.0-1
+- Add file choosers, refine Options controls, and fix macOS shared-memory graphics
+
 * Sat Oct 03 2026 Miguel Regueiro <miguelpr4242@gmail.com> - 1.2.0-1
 - Add persistent configuration, visual options, custom overlay accents, and playback controls auto-hide
 

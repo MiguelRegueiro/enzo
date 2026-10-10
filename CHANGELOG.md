@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-09
+
 ### Added
 
 - XDG desktop file chooser for selecting one video from the empty launcher screen.
@@ -14,12 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refine the Blue accent preset to `#3b82f6`.
 - Selecting a video from the playlist now starts playback immediately.
 - Improve the Help overlay layout across narrow and medium terminal widths.
+- Refine Options control alignment, focus states, and slider handles.
 
 ### Fixed
 
 - Recover interrupted HTTP(S) streams with short, bounded retries instead of stalling playback.
+- Fix shared-memory Kitty graphics rendering on macOS.
 - Make `o` consistently close the Options panel from every setting.
 - Remember the last valid custom playback-controls auto-hide duration when switching between presets and across restarts.
 
@@ -81,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Linux and FreeBSD support, plus Linux desktop entry and application icon assets.
 - Command-line help and version output, terminal detection override, explicit subtitle selection, and resume controls.
 
-[Unreleased]: https://github.com/MiguelRegueiro/enzo/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/MiguelRegueiro/enzo/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/MiguelRegueiro/enzo/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/MiguelRegueiro/enzo/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/MiguelRegueiro/enzo/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/MiguelRegueiro/enzo/releases/tag/v1.0.0
