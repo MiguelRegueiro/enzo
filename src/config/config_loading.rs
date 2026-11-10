@@ -84,7 +84,7 @@ fn platform_config_home(xdg_home: Option<&Path>, home: Option<&Path>) -> Option<
         if xdg_home.join("enzo/config.toml").is_file() {
             return Some(xdg_home);
         }
-        return Some(home.join("Library/Application Support"));
+        Some(home.join("Library/Application Support"))
     }
 
     #[cfg(not(target_os = "macos"))]
