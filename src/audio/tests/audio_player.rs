@@ -6,7 +6,7 @@ use std::{
 
 use super::*;
 use crate::decoder_backend::backend_bindings::{
-    enzo_audio_seek_leading_silence_samples, enzo_audio_seek_trim_samples,
+    AUDIO_OUTPUT_UNAVAILABLE, enzo_audio_seek_leading_silence_samples, enzo_audio_seek_trim_samples,
 };
 
 #[test]
@@ -119,5 +119,64 @@ fn held_audio_seek_applies_and_prebuffers_before_release_when_pulse_is_available
         thread::sleep(Duration::from_millis(2));
     }
 
+    let _ = std::fs::remove_file(media);
+}
+
+#[test]
+fn audio_exit_distinguishes_unavailable_output_from_failure() {
+    assert_eq!(
+        audio_exit(0, || unreachable!()).expect("success should not fail"),
+        AudioExit::Finished
+    );
+    assert_eq!(
+        audio_exit(AUDIO_OUTPUT_UNAVAILABLE, || "no server".to_string())
+            .expect("unavailable output should not fail"),
+        AudioExit::OutputUnavailable("no server".to_string())
+    );
+    let error =
+        audio_exit(-1, || "decode failed".to_string()).expect_err("negative status should fail");
+    assert_eq!(error.to_string(), "decode failed");
+}
+
+#[test]
+fn missing_audio_output_ends_audio_without_failing_when_pulse_is_unavailable() {
+    if Command::new("ffmpeg").arg("-version").output().is_err()
+        || cfg!(target_os = "macos")
+        || Command::new("pactl")
+            .arg("info")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    {
+        return;
+    }
+    let media = std::env::temp_dir().join(format!(
+        "enzo-unavailable-audio-test-{}.mkv",
+        std::process::id()
+    ));
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg("sine=frequency=440:sample_rate=48000:duration=1")
+        .args(["-c:a", "flac"])
+        .arg(&media)
+        .status()
+        .expect("ffmpeg should run");
+    if !status.success() {
+        return;
+    }
+
+    let mut player = AudioPlayer::spawn_held_at(&media, None, Duration::ZERO, false, true, 100)
+        .expect("audio player should start");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !player
+        .is_finished()
+        .expect("missing audio output should not fail playback")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "audio thread should end when no output is available"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(player.output_unavailable().is_some());
     let _ = std::fs::remove_file(media);
 }

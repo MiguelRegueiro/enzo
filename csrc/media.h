@@ -179,6 +179,14 @@ int enzo_audio_seek_leading_silence_samples(
     int64_t target_micros
 );
 
+/*
+ * enzo_play_audio returns 0 when playback ends or is stopped, -1 on failure,
+ * and ENZO_AUDIO_OUTPUT_UNAVAILABLE when no audio output could be opened
+ * (for example, no sound server or output device). Callers may continue
+ * playback without audio in that case.
+ */
+#define ENZO_AUDIO_OUTPUT_UNAVAILABLE (-2)
+
 int enzo_play_audio(
     const char *path,
     int audio_stream_index,

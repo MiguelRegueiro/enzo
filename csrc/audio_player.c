@@ -729,7 +729,7 @@ int enzo_play_audio(
     if (pulse_status != 0) {
         avcodec_free_context(&codec);
         enzo_input_close(&input);
-        return pulse_status > 0 ? 0 : -1;
+        return pulse_status > 0 ? 0 : ENZO_AUDIO_OUTPUT_UNAVAILABLE;
     }
 
     AVPacket *packet = av_packet_alloc();

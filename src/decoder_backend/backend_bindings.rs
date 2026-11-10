@@ -13,6 +13,7 @@ pub(crate) const SUBTITLE_TEXT: c_int = 1;
 pub(crate) const SUBTITLE_ASS: c_int = 2;
 pub(crate) const SUBTITLE_BITMAP: c_int = 3;
 pub(crate) const SUBTITLE_PALETTE_BYTES: usize = 256 * 4;
+pub(crate) const AUDIO_OUTPUT_UNAVAILABLE: c_int = -2;
 
 #[repr(C)]
 pub(crate) struct EnzoVideoInfo {
