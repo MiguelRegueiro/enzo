@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Native CoreAudio output on macOS, so PulseAudio is no longer required there.
+
 ## [1.3.0] - 2026-10-09
 
 ### Added

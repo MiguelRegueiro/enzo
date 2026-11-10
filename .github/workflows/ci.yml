@@ -87,7 +87,7 @@ jobs:
 
       - name: Install native dependencies
         run: |
-          brew install ffmpeg freetype harfbuzz fribidi pulseaudio pkgconf
+          brew install ffmpeg freetype harfbuzz fribidi pkgconf
 
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
