@@ -291,7 +291,7 @@ impl<W: Write> InteractionContext<'_, W> {
                 {
                     let mut seek = seek_playback(
                         self.path,
-                        self.source.has_audio,
+                        self.engine.audio_enabled(self.source.has_audio),
                         &mut self.engine.video,
                         &mut self.engine.audio,
                         &mut self.engine.audio_done,
@@ -632,7 +632,7 @@ impl<W: Write> InteractionContext<'_, W> {
         if seek.exact {
             self.seeking.pending = Some(seek_playback(
                 self.path,
-                self.source.has_audio,
+                self.engine.audio_enabled(self.source.has_audio),
                 &mut self.engine.video,
                 &mut self.engine.audio,
                 &mut self.engine.audio_done,
@@ -942,7 +942,7 @@ impl<W: Write> InteractionContext<'_, W> {
         } else {
             self.seeking.pending = Some(seek_playback(
                 self.path,
-                self.source.has_audio,
+                self.engine.audio_enabled(self.source.has_audio),
                 &mut self.engine.video,
                 &mut self.engine.audio,
                 &mut self.engine.audio_done,
@@ -1166,7 +1166,7 @@ impl<W: Write> InteractionContext<'_, W> {
         self.engine.audio_done = true;
         self.seeking.pending = Some(seek_playback(
             self.path,
-            self.source.has_audio,
+            self.engine.audio_enabled(self.source.has_audio),
             &mut self.engine.video,
             &mut self.engine.audio,
             &mut self.engine.audio_done,

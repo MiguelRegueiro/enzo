@@ -1,4 +1,5 @@
 use std::{
+    ffi::c_int,
     path::Path,
     sync::{
         Arc,
@@ -11,7 +12,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::decoder_backend::{
-    backend_bindings::enzo_play_audio,
+    backend_bindings::{AUDIO_OUTPUT_UNAVAILABLE, enzo_play_audio},
     backend_support::{ErrorBuffer, duration_micros_i64, path_cstring},
 };
 
@@ -29,10 +30,27 @@ struct AudioThreadState {
     playback_micros: Arc<AtomicI64>,
 }
 
+/// How the audio thread ended without failing.
+#[derive(Debug, Eq, PartialEq)]
+enum AudioExit {
+    Finished,
+    /// No audio output could be opened; playback can continue without sound.
+    OutputUnavailable(String),
+}
+
+fn audio_exit(status: c_int, message: impl FnOnce() -> String) -> Result<AudioExit> {
+    match status {
+        AUDIO_OUTPUT_UNAVAILABLE => Ok(AudioExit::OutputUnavailable(message())),
+        status if status < 0 => bail!("{}", message()),
+        _ => Ok(AudioExit::Finished),
+    }
+}
+
 pub(crate) struct AudioPlayer {
     shared: AudioThreadState,
-    handle: Option<thread::JoinHandle<Result<()>>>,
+    handle: Option<thread::JoinHandle<Result<AudioExit>>>,
     finished: bool,
+    output_unavailable: Option<String>,
 }
 
 impl AudioPlayer {
@@ -87,16 +105,14 @@ impl AudioPlayer {
                     error.len(),
                 )
             };
-            if status < 0 {
-                bail!("{}", error.message("audio playback failed"));
-            }
-            Ok(())
+            audio_exit(status, || error.message("audio playback failed"))
         });
 
         Ok(Self {
             shared,
             handle: Some(handle),
             finished: false,
+            output_unavailable: None,
         })
     }
 
@@ -113,10 +129,7 @@ impl AudioPlayer {
         }
 
         let handle = self.handle.take().expect("audio handle should exist");
-        self.finished = true;
-        handle
-            .join()
-            .unwrap_or_else(|_| Err(anyhow!("audio playback thread panicked")))?;
+        self.finish(handle)?;
         Ok(true)
     }
 
@@ -131,13 +144,26 @@ impl AudioPlayer {
 
     pub(crate) fn join(&mut self) -> Result<()> {
         if let Some(handle) = self.handle.take() {
-            self.finished = true;
-            handle
-                .join()
-                .unwrap_or_else(|_| Err(anyhow!("audio playback thread panicked")))?;
+            self.finish(handle)?;
         }
         self.finished = true;
         Ok(())
+    }
+
+    fn finish(&mut self, handle: thread::JoinHandle<Result<AudioExit>>) -> Result<()> {
+        self.finished = true;
+        let exit = handle
+            .join()
+            .unwrap_or_else(|_| Err(anyhow!("audio playback thread panicked")))?;
+        if let AudioExit::OutputUnavailable(message) = exit {
+            self.output_unavailable = Some(message);
+        }
+        Ok(())
+    }
+
+    /// Why audio output could not be opened, once the audio thread has ended.
+    pub(crate) fn output_unavailable(&self) -> Option<&str> {
+        self.output_unavailable.as_deref()
     }
 
     pub(crate) fn set_paused(&self, paused: bool) {

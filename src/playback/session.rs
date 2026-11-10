@@ -225,7 +225,9 @@ impl<W: Write> PlaybackSession<'_, W> {
         if self.view.subtitle_renderer.poll_ready() && self.engine.paused && self.view.have_frame {
             self.view.dirty = true;
         }
-        self.engine.poll_audio()?;
+        if self.engine.poll_audio()? {
+            self.ui.status_message = Some(PlaybackUi::status("AUDIO UNAVAILABLE", Instant::now()));
+        }
         self.engine.sync_audio_clock();
         if progress_pending_seek(
             &mut self.seeking.pending,
@@ -387,7 +389,7 @@ impl<W: Write> PlaybackSession<'_, W> {
         } else {
             self.seeking.pending = Some(seek_playback(
                 &self.path,
-                self.source.has_audio,
+                self.engine.audio_enabled(self.source.has_audio),
                 &mut self.engine.video,
                 &mut self.engine.audio,
                 &mut self.engine.audio_done,

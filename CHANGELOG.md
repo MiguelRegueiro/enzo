@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Continue playback without audio, showing `AUDIO UNAVAILABLE`, when no audio output can be opened (for example, no PulseAudio server) instead of stopping playback.
+
 ## [1.3.0] - 2026-10-09
 
 ### Added

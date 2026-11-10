@@ -35,6 +35,8 @@ pub(super) struct PlaybackEngine {
     pub(super) video: VideoDecoder,
     pub(super) audio: Option<AudioPlayer>,
     pub(super) audio_done: bool,
+    /// Set once audio output fails to open; later seeks stay video-only.
+    pub(super) audio_unavailable: bool,
     pub(super) video_ended: bool,
     pub(super) paused: bool,
     pub(super) muted: bool,
@@ -80,6 +82,7 @@ impl PlaybackEngine {
             video,
             audio,
             audio_done: !has_audio || audio_choice == AudioChoice::Off,
+            audio_unavailable: false,
             video_ended: false,
             paused: carryover.paused,
             muted: carryover.muted,
@@ -92,14 +95,26 @@ impl PlaybackEngine {
         })
     }
 
-    pub(super) fn poll_audio(&mut self) -> Result<()> {
+    /// Reaps a finished audio thread. Returns `true` when audio output has
+    /// just been found unavailable, so the caller can tell the user once.
+    pub(super) fn poll_audio(&mut self) -> Result<bool> {
         if let Some(player) = self.audio.as_mut()
             && player.is_finished()?
         {
+            let unavailable = player.output_unavailable().is_some();
             self.audio = None;
             self.audio_done = true;
+            if unavailable && !self.audio_unavailable {
+                self.audio_unavailable = true;
+                return Ok(true);
+            }
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// Whether seeks should (re)start audio for a source with `has_audio`.
+    pub(super) fn audio_enabled(&self, has_audio: bool) -> bool {
+        has_audio && !self.audio_unavailable
     }
 
     pub(super) fn sync_audio_clock(&self) {
