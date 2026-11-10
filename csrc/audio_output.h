@@ -3,26 +3,38 @@
 
 /* Private interface between audio_player.c and audio_output.c. */
 
-#include <pulse/pulseaudio.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#ifndef __APPLE__
+#include <pulse/pulseaudio.h>
+#endif
 
 #define ENZO_AUDIO_OUTPUT_RATE 48000
 #define ENZO_AUDIO_OUTPUT_CHANNELS 2
 #define ENZO_AUDIO_OUTPUT_BYTES_PER_SAMPLE 2
 
+#ifdef __APPLE__
+/* CoreAudio backend (audio_output_coreaudio.c); state lives behind an opaque pointer. */
+typedef struct EnzoCoreAudioOutput EnzoCoreAudioOutput;
+
+typedef struct EnzoPulseOutput {
+    EnzoCoreAudioOutput *impl;
+} EnzoPulseOutput;
+#else
 typedef struct EnzoPulseOutput {
     pa_threaded_mainloop *mainloop;
     pa_context *context;
     pa_stream *stream;
     int started;
 } EnzoPulseOutput;
+#endif
 
 typedef struct EnzoAudioClock {
     int generation;
     int initialized;
     int64_t media_origin_micros;
-    pa_usec_t pulse_origin_micros;
+    uint64_t pulse_origin_micros;
 } EnzoAudioClock;
 
 int enzo_pulse_output_open(

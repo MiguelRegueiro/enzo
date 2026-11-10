@@ -35,10 +35,11 @@ fn audio_seek_trimming_discards_early_frames_and_leading_samples() {
 #[test]
 fn held_audio_seek_applies_and_prebuffers_before_release_when_pulse_is_available() {
     if Command::new("ffmpeg").arg("-version").output().is_err()
-        || !Command::new("pactl")
-            .arg("info")
-            .output()
-            .is_ok_and(|output| output.status.success())
+        || (!cfg!(target_os = "macos")
+            && !Command::new("pactl")
+                .arg("info")
+                .output()
+                .is_ok_and(|output| output.status.success()))
     {
         return;
     }

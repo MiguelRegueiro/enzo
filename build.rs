@@ -7,9 +7,11 @@ const MEDIA_SOURCES: &[&str] = &[
     "csrc/subtitle_decoder.c",
     "csrc/text_layout.c",
     "csrc/video_decoder.c",
-    "csrc/audio_output.c",
     "csrc/audio_player.c",
 ];
+
+const PULSE_AUDIO_OUTPUT_SOURCE: &str = "csrc/audio_output.c";
+const COREAUDIO_OUTPUT_SOURCE: &str = "csrc/audio_output_coreaudio.c";
 
 const MEDIA_HEADERS: &[&str] = &[
     "csrc/media.h",
@@ -56,10 +58,22 @@ fn main() {
         }
     };
 
+    let macos = target_is_macos();
+    let audio_output_source = if macos {
+        COREAUDIO_OUTPUT_SOURCE
+    } else {
+        PULSE_AUDIO_OUTPUT_SOURCE
+    };
+    let pkg_config_libraries: Vec<&str> = PKG_CONFIG_LIBRARIES
+        .iter()
+        .copied()
+        .filter(|library| !(macos && *library == "libpulse"))
+        .collect();
+
     let mut build = cc::Build::new();
     build.include("csrc");
 
-    let native_libraries = probe_native_libraries(static_ffmpeg);
+    let native_libraries = probe_native_libraries(&pkg_config_libraries, static_ffmpeg);
     if let Some(native_libraries) = &native_libraries {
         for library in native_libraries {
             for include_path in &library.include_paths {
@@ -73,6 +87,7 @@ fn main() {
 
     build
         .files(MEDIA_SOURCES)
+        .file(audio_output_source)
         .std("c11")
         .warnings(true)
         .extra_warnings(true)
@@ -82,12 +97,22 @@ fn main() {
         .flag_if_supported("-Wno-deprecated-declarations")
         .compile("enzo_media");
 
-    for path in MEDIA_SOURCES.iter().chain(MEDIA_HEADERS) {
+    for path in MEDIA_SOURCES
+        .iter()
+        .chain(MEDIA_HEADERS)
+        .chain([&PULSE_AUDIO_OUTPUT_SOURCE, &COREAUDIO_OUTPUT_SOURCE])
+    {
         println!("cargo:rerun-if-changed={path}");
     }
 
+    if macos {
+        for framework in ["AudioToolbox", "CoreAudio", "CoreFoundation"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+    }
+
     if native_libraries.is_some() {
-        for library in PKG_CONFIG_LIBRARIES {
+        for library in &pkg_config_libraries {
             emit_native_library(library, static_ffmpeg && is_ffmpeg_library(library));
         }
     } else {
@@ -97,8 +122,11 @@ fn main() {
     }
 }
 
-fn probe_native_libraries(static_ffmpeg: bool) -> Option<Vec<pkg_config::Library>> {
-    let libraries = PKG_CONFIG_LIBRARIES
+fn probe_native_libraries(
+    pkg_config_libraries: &[&str],
+    static_ffmpeg: bool,
+) -> Option<Vec<pkg_config::Library>> {
+    let libraries = pkg_config_libraries
         .iter()
         .map(|library| {
             let mut config = pkg_config::Config::new();
@@ -127,6 +155,10 @@ fn is_ffmpeg_library(library: &str) -> bool {
 
 fn target_is_linux() -> bool {
     std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|target_os| target_os == "linux")
+}
+
+fn target_is_macos() -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|target_os| target_os == "macos")
 }
 
 fn emit_native_library(library: &str, statik: bool) {

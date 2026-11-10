@@ -15,9 +15,9 @@ Terminal video player with a graphical interface.
 
 ## Requirements
 
-- Linux or FreeBSD
+- Linux, FreeBSD, or macOS
 - Kitty terminal
-- PulseAudio, FreeType, HarfBuzz, and FriBidi
+- PulseAudio (Linux/FreeBSD; macOS uses CoreAudio), FreeType, HarfBuzz, and FriBidi
 - FFmpeg for source builds and distro packages; portable binary releases bundle FFmpeg and dav1d
 
 ## Installation
